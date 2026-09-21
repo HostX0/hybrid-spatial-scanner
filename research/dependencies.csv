@@ -1,0 +1,12 @@
+Component,Role,Shipping decision,Validation still required
+ARKit/RoomPlan,Tracking/depth and optional proposals,Native platform; one tested session,"Physical configuration, calibration and lifecycle"
+Eigen,Small linear algebra,"Candidate reviewed subset, EIGEN_MPL2_ONLY","Exact artifact licence, iOS build and numeric behavior"
+Clipper2,Polygon Boolean and offsets,Candidate; triangulation excluded,"Exact pin, degenerate geometry and licence review"
+Earcut.hpp,Display triangulation,Candidate after polygon validation,"Coverage/area parity, degenerate input, exact licence"
+Open3D,Desktop oracle,Not a default mobile dependency,Versioned comparator and repeatable inputs
+RTAB-Map,Mobile integration/benchmark reference,No wholesale source integration,Pin and dependency review before any reuse
+Voxblox/Voxgraph,Block/submap design references,No ROS runtime selected,"Porting cost, licence/dependencies, device evidence"
+Ceres,Soft optimization comparator,Not general hard-equality authority,Supported problem definition and benchmark
+StandardCyborgCocoa,TrueDepth architecture reference,Not selected rear-LiDAR engine,Scope and source licence before any reuse
+RoomFormer,Research polygon proposals,No production mobile model selected,"Conversion, weights/licence, held-out tests"
+ARKitScenes,Potential research evaluation assets,No dataset downloaded/adopted,Exact conditional licence and intended use

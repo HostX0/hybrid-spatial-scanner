@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hss:export.schema.json",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.1"
+    },
+    "export_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "project_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "scene_revision": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+    },
+    "format": {
+      "type": "string",
+      "enum": [
+        "PDF",
+        "SVG",
+        "DXF",
+        "OBJ",
+        "PLY",
+        "HSSCAN"
+      ]
+    },
+    "units": {
+      "const": "m"
+    },
+    "axes": {
+      "type": "string",
+      "minLength": 1
+    },
+    "view": {
+      "type": "string",
+      "enum": [
+        "floor_footprint",
+        "architectural_cut",
+        "reflected_ceiling",
+        "captured_3d",
+        "structured_3d",
+        "full_project"
+      ]
+    },
+    "cut_height_m": {
+      "oneOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "layers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0
+    },
+    "quality_state": {
+      "type": "string",
+      "enum": [
+        "provisional",
+        "needs_review",
+        "ready",
+        "invalid"
+      ]
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0
+    },
+    "source_is_synthetic": {
+      "type": "boolean"
+    },
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Canonical relative slash-separated path. Runtime rejects dot segments, empty segments, absolute paths, colon, backslash and NUL."
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "scene",
+              "depth",
+              "image",
+              "confidence",
+              "mesh",
+              "events",
+              "commands",
+              "preview",
+              "reference"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "bytes",
+          "sha256",
+          "role"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    }
+  },
+  "required": [
+    "schema_version",
+    "export_id",
+    "project_id",
+    "scene_revision",
+    "format",
+    "units",
+    "axes",
+    "view",
+    "cut_height_m",
+    "layers",
+    "quality_state",
+    "warnings",
+    "source_is_synthetic",
+    "assets"
+  ],
+  "additionalProperties": false
+}

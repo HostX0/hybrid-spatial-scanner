@@ -1,0 +1,42 @@
+{
+  "fixture_id": "rib_050_015",
+  "source_is_synthetic": true,
+  "units": "m",
+  "outer": [
+    [
+      0,
+      0
+    ],
+    [
+      2,
+      0
+    ],
+    [
+      2,
+      0.5
+    ],
+    [
+      2.15,
+      0.5
+    ],
+    [
+      2.15,
+      0
+    ],
+    [
+      6,
+      0
+    ],
+    [
+      6,
+      5
+    ],
+    [
+      0,
+      5
+    ]
+  ],
+  "holes": [],
+  "expected_valid": true,
+  "expected_area_m2": 29.925
+}

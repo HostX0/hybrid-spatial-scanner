@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.1",
+  "command_id": "8702e33c-29e0-5bc2-881d-a19e8a338948",
+  "project_id": "d5708cd1-a901-5786-b7f7-d422ad92be92",
+  "expected_scene_revision": "3",
+  "event_sequence": "103",
+  "targets": [
+    "339c43e0-f6c9-56fd-bbd2-f39bbfe6fe2b",
+    "7ce13d19-1c98-5b02-b9f9-1d8de1afd948"
+  ],
+  "user_intent": "Synthetic example: merge_edges",
+  "type": "merge_edges",
+  "payload": {
+    "preserve_source_lineage": true,
+    "unexpected_field": "must reject"
+  }
+}

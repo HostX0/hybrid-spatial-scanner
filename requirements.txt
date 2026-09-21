@@ -1,0 +1,5 @@
+# Exact package versions used for the retained host checks.
+# Tested interpreter: Python 3.13.5 on x86_64 Linux.
+numpy==2.3.5
+jsonschema==4.26.0
+pytest==9.0.2

@@ -1,0 +1,1 @@
+PASS: three synthetic export sidecars validated, hashes/lengths verified; DXF rib contour has 8 vertices and area 29.925 m2; OBJ indices/16 vertices/16 triangles valid; 4x3 Float32 depth fixture matches metadata. This is a local syntax/arithmetic check, not external CAD interoperability or sensor verification.

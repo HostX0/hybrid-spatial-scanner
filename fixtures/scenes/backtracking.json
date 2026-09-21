@@ -1,0 +1,30 @@
+{
+  "fixture_id": "backtracking",
+  "source_is_synthetic": true,
+  "units": "m",
+  "outer": [
+    [
+      0,
+      0
+    ],
+    [
+      3,
+      0
+    ],
+    [
+      2,
+      0
+    ],
+    [
+      4,
+      3
+    ],
+    [
+      0,
+      3
+    ]
+  ],
+  "holes": [],
+  "expected_valid": false,
+  "expected_area_m2": null
+}

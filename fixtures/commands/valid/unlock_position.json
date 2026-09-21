@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.1",
+  "command_id": "4d96f13f-27e2-59ec-8ca1-59c00f84aa96",
+  "project_id": "d5708cd1-a901-5786-b7f7-d422ad92be92",
+  "expected_scene_revision": "3",
+  "event_sequence": "111",
+  "targets": [
+    "339c43e0-f6c9-56fd-bbd2-f39bbfe6fe2b"
+  ],
+  "user_intent": "Synthetic example: unlock_position",
+  "type": "unlock_position",
+  "payload": {
+    "constraint_id": "5db74022-f02e-57c0-a661-66591799550a"
+  }
+}

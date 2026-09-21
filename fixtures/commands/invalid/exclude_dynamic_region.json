@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.1",
+  "command_id": "68a4c2c4-0fa8-544a-9c3b-0155d1ad4f17",
+  "project_id": "d5708cd1-a901-5786-b7f7-d422ad92be92",
+  "expected_scene_revision": "3",
+  "event_sequence": "113",
+  "targets": [
+    "339c43e0-f6c9-56fd-bbd2-f39bbfe6fe2b"
+  ],
+  "user_intent": "Synthetic example: exclude_dynamic_region",
+  "type": "exclude_dynamic_region",
+  "payload": {
+    "min_m": [
+      1,
+      0,
+      -2
+    ],
+    "max_m": [
+      2,
+      2,
+      -1
+    ],
+    "start_sequence": "10",
+    "end_sequence": "20",
+    "reason": "Moving person",
+    "unexpected_field": "must reject"
+  }
+}

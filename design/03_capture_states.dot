@@ -1,0 +1,14 @@
+digraph G { graph [bgcolor="white",pad="0.35",nodesep="0.45",ranksep="0.55",fontname="Arial"]; node [shape=box,style="rounded,filled",fillcolor="#F5F6F7",color="#707780",fontname="Arial",fontsize=12,margin="0.18,0.13"]; edge [color="#67717D",fontname="Arial",fontsize=10]; rankdir=LR;
+Idle->Preparing->Scanning;
+Scanning->Targeting [label="Assist"];Targeting->Scanning [label="confirm / cancel"];
+Scanning->Limited [label="tracking invalid"];Targeting->Limited;
+Limited->Relocalizing;Relocalizing->Scanning [label="accepted epoch relationship"];
+Relocalizing->Separate [label="cannot align"];
+Scanning->Paused [label="user / resource / interruption"];
+Paused->Relocalizing [label="resume"];
+Scanning->Review [label="Finish"];Review->Scanning [label="recapture"];
+Review->Finalizing [label="save valid/draft"];
+Finalizing->Saved [label="durable commit"];
+Separate [label="Separate unresolved region\nNo guessed frame merge"];
+Limited [label="Tracking limited\nNo new metric commits"];
+ }

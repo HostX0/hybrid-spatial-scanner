@@ -1,0 +1,26 @@
+...F.................................................................... [ 72%]
+...........................                                              [100%]
+=================================== FAILURES ===================================
+________________________ test_polygon_fixtures[oblique] ________________________
+
+path = PosixPath('/mnt/data/HSS_Engineering_v1_1/fixtures/scenes/oblique.json')
+
+    @pytest.mark.parametrize('path',POLYGONS,ids=lambda p:p.stem)
+    def test_polygon_fixtures(path):
+        d=read(path)
+>       if d['expected_valid']:assert region_area(d['outer'],d['holes'])==pytest.approx(d['expected_area_m2'],abs=1e-10)
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       assert 15.0 == 14.0 ± 1.0e-10
+E         
+E         comparison failed
+E         Obtained: 15.0
+E         Expected: 14.0 ± 1.0e-10
+
+tests/test_reference.py:18: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_reference.py::test_polygon_fixtures[oblique] - assert 15.0 == 14.0 ± 1.0e-10
+  
+  comparison failed
+  Obtained: 15.0
+  Expected: 14.0 ± 1.0e-10
+1 failed, 98 passed in 1.13s

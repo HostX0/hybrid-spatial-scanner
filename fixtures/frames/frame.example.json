@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.1",
+  "capture_id": "26f64215-dae6-58d2-acd1-5383c06ac0c1",
+  "event_sequence": "1",
+  "session_epoch": 0,
+  "timestamp_s": 0.0,
+  "depth_width": 4,
+  "depth_height": 3,
+  "depth_row_stride_bytes": 16,
+  "depth_byte_length": 48,
+  "intrinsics": [
+    100,
+    100,
+    2,
+    1.5
+  ],
+  "T_world_camera": [
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1
+  ],
+  "depth_source": "sceneDepth",
+  "tracking_state": "normal",
+  "depth_asset": "synthetic/depth.bin",
+  "confidence_asset": null,
+  "image_asset": null,
+  "image_orientation": "landscape_right",
+  "source_is_synthetic": true
+}

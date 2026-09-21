@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.1",
+  "command_id": "b4051fc4-61c7-51e0-8262-7c08924061d7",
+  "project_id": "d5708cd1-a901-5786-b7f7-d422ad92be92",
+  "expected_scene_revision": "3",
+  "event_sequence": "115",
+  "targets": [],
+  "user_intent": "Synthetic example: redo",
+  "type": "redo",
+  "payload": {
+    "original_command_id": "12701d02-8b60-54ed-a5a0-0b7382165d6a",
+    "unexpected_field": "must reject"
+  }
+}

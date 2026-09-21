@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hss:manifest.schema.json",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.1"
+    },
+    "project_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "units": {
+      "const": "m"
+    },
+    "source_is_synthetic": {
+      "type": "boolean"
+    },
+    "commit_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "committed_scene_revision": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+    },
+    "scene_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Canonical relative slash-separated path. Runtime rejects dot segments, empty segments, absolute paths, colon, backslash and NUL."
+    },
+    "capture_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "minItems": 0
+    },
+    "engine_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tuning_profile_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Canonical relative slash-separated path. Runtime rejects dot segments, empty segments, absolute paths, colon, backslash and NUL."
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "scene",
+              "depth",
+              "image",
+              "confidence",
+              "mesh",
+              "events",
+              "commands",
+              "preview",
+              "reference"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "bytes",
+          "sha256",
+          "role"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    },
+    "previous_commit_id": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "project_id",
+    "units",
+    "source_is_synthetic",
+    "commit_id",
+    "committed_scene_revision",
+    "scene_path",
+    "capture_ids",
+    "engine_version",
+    "tuning_profile_id",
+    "assets",
+    "previous_commit_id"
+  ],
+  "additionalProperties": false
+}

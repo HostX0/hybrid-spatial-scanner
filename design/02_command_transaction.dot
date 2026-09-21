@@ -1,0 +1,12 @@
+digraph G { graph [bgcolor="white",pad="0.35",nodesep="0.45",ranksep="0.55",fontname="Arial"]; node [shape=box,style="rounded,filled",fillcolor="#F5F6F7",color="#707780",fontname="Arial",fontsize=12,margin="0.18,0.13"]; edge [color="#67717D",fontname="Arial",fontsize=10]; rankdir=TB;
+Tap [label="User selects current feature"];
+Receipt [label="Immediate receipt feedback\nNot yet Saved"];
+Validate [label="Schema + semantic + revision checks"];
+Candidate [label="Local candidate + solver\nPreserve protected topology"];
+Check [shape=diamond,label="Valid and feasible?"];
+Reject [label="Conflict / rejection\nKeep prior accepted snapshot"];
+Journal [label="Persist command result + scene assets\nManifest commit last"];
+Publish [label="Publish committed revision\nShow Saved only after durable commit"];
+Tap->Receipt->Validate->Candidate->Check;
+Check->Reject [label="no"];Check->Journal [label="yes"];Journal->Publish;
+ }

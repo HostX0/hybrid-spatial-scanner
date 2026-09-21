@@ -1,0 +1,339 @@
+{
+  "schema_version": "1.1",
+  "project_id": "d5708cd1-a901-5786-b7f7-d422ad92be92",
+  "scene_revision": "1",
+  "source_is_synthetic": true,
+  "units": "m",
+  "basis": {
+    "handedness": "right",
+    "up": "+Y",
+    "floor_origin_m": [
+      0,
+      0,
+      0
+    ],
+    "floor_u": [
+      1,
+      0,
+      0
+    ],
+    "floor_v": [
+      0,
+      0,
+      -1
+    ],
+    "floor_n": [
+      0,
+      1,
+      0
+    ]
+  },
+  "epochs": [],
+  "nodes": [
+    {
+      "id": "d946ced2-f175-5991-bef9-71c7b61b67b8",
+      "position_m": [
+        0,
+        0,
+        0
+      ],
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      },
+      "position_locked": false
+    },
+    {
+      "id": "e8267ec5-b2ff-5bba-8cff-4741e31267b8",
+      "position_m": [
+        2,
+        0,
+        0
+      ],
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      },
+      "position_locked": false
+    },
+    {
+      "id": "1f56edc2-a03e-5206-8141-e506af308ffd",
+      "position_m": [
+        2,
+        0,
+        -0.5
+      ],
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      },
+      "position_locked": false
+    },
+    {
+      "id": "91376da5-1282-53db-ba37-55eb69e7c3e0",
+      "position_m": [
+        2.15,
+        0,
+        -0.5
+      ],
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      },
+      "position_locked": false
+    },
+    {
+      "id": "57ea0f69-d0eb-5530-a96c-ceb0b3ad5e54",
+      "position_m": [
+        2.15,
+        0,
+        0
+      ],
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      },
+      "position_locked": false
+    },
+    {
+      "id": "c36f2cd1-db6e-53a8-99d5-1e968b949dc4",
+      "position_m": [
+        6,
+        0,
+        0
+      ],
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      },
+      "position_locked": false
+    },
+    {
+      "id": "ca8ff67a-905b-5b72-bff5-c64ec5e3eeaf",
+      "position_m": [
+        6,
+        0,
+        -5
+      ],
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      },
+      "position_locked": false
+    },
+    {
+      "id": "f527ec0a-c9b2-5af2-9775-133e091fcdf2",
+      "position_m": [
+        0,
+        0,
+        -5
+      ],
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      },
+      "position_locked": false
+    }
+  ],
+  "edges": [
+    {
+      "id": "8d24f966-9247-5a7d-8682-d3ce654b55b3",
+      "start_node_id": "d946ced2-f175-5991-bef9-71c7b61b67b8",
+      "end_node_id": "e8267ec5-b2ff-5bba-8cff-4741e31267b8",
+      "surface_ids": [],
+      "parent_edge_ids": [],
+      "protected_topology": false,
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      }
+    },
+    {
+      "id": "03e82eca-afee-56e6-9ce8-441a0301afff",
+      "start_node_id": "e8267ec5-b2ff-5bba-8cff-4741e31267b8",
+      "end_node_id": "1f56edc2-a03e-5206-8141-e506af308ffd",
+      "surface_ids": [],
+      "parent_edge_ids": [],
+      "protected_topology": true,
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      }
+    },
+    {
+      "id": "7ce13d19-1c98-5b02-b9f9-1d8de1afd948",
+      "start_node_id": "1f56edc2-a03e-5206-8141-e506af308ffd",
+      "end_node_id": "91376da5-1282-53db-ba37-55eb69e7c3e0",
+      "surface_ids": [],
+      "parent_edge_ids": [],
+      "protected_topology": true,
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      }
+    },
+    {
+      "id": "11c5b08c-3fd3-5da0-9432-05e2aa1f0586",
+      "start_node_id": "91376da5-1282-53db-ba37-55eb69e7c3e0",
+      "end_node_id": "57ea0f69-d0eb-5530-a96c-ceb0b3ad5e54",
+      "surface_ids": [],
+      "parent_edge_ids": [],
+      "protected_topology": true,
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      }
+    },
+    {
+      "id": "80f3fe73-0818-5897-aec3-b12730cd68a4",
+      "start_node_id": "57ea0f69-d0eb-5530-a96c-ceb0b3ad5e54",
+      "end_node_id": "c36f2cd1-db6e-53a8-99d5-1e968b949dc4",
+      "surface_ids": [],
+      "parent_edge_ids": [],
+      "protected_topology": false,
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      }
+    },
+    {
+      "id": "19c42725-6dcc-56fb-bf6c-cb162d47c6d9",
+      "start_node_id": "c36f2cd1-db6e-53a8-99d5-1e968b949dc4",
+      "end_node_id": "ca8ff67a-905b-5b72-bff5-c64ec5e3eeaf",
+      "surface_ids": [],
+      "parent_edge_ids": [],
+      "protected_topology": false,
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      }
+    },
+    {
+      "id": "58cbe781-8405-5f29-81c9-48a423f5a70d",
+      "start_node_id": "ca8ff67a-905b-5b72-bff5-c64ec5e3eeaf",
+      "end_node_id": "f527ec0a-c9b2-5af2-9775-133e091fcdf2",
+      "surface_ids": [],
+      "parent_edge_ids": [],
+      "protected_topology": false,
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      }
+    },
+    {
+      "id": "2ee273c0-8a9f-57f9-ab72-507c4e088bcf",
+      "start_node_id": "f527ec0a-c9b2-5af2-9775-133e091fcdf2",
+      "end_node_id": "d946ced2-f175-5991-bef9-71c7b61b67b8",
+      "surface_ids": [],
+      "parent_edge_ids": [],
+      "protected_topology": false,
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      }
+    }
+  ],
+  "surfaces": [],
+  "features": [
+    {
+      "id": "02778468-a082-566b-8853-e0af40ae9bd7",
+      "kind": "protrusion",
+      "edge_ids": [
+        "8d24f966-9247-5a7d-8682-d3ce654b55b3",
+        "03e82eca-afee-56e6-9ce8-441a0301afff",
+        "7ce13d19-1c98-5b02-b9f9-1d8de1afd948",
+        "11c5b08c-3fd3-5da0-9432-05e2aa1f0586",
+        "80f3fe73-0818-5897-aec3-b12730cd68a4"
+      ],
+      "surface_ids": [],
+      "attachment": "attached",
+      "protected_topology": true,
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      }
+    }
+  ],
+  "regions": [
+    {
+      "id": "e2846b41-6c90-5b69-89e4-a967676e76b8",
+      "outer_node_ids": [
+        "d946ced2-f175-5991-bef9-71c7b61b67b8",
+        "e8267ec5-b2ff-5bba-8cff-4741e31267b8",
+        "1f56edc2-a03e-5206-8141-e506af308ffd",
+        "91376da5-1282-53db-ba37-55eb69e7c3e0",
+        "57ea0f69-d0eb-5530-a96c-ceb0b3ad5e54",
+        "c36f2cd1-db6e-53a8-99d5-1e968b949dc4",
+        "ca8ff67a-905b-5b72-bff5-c64ec5e3eeaf",
+        "f527ec0a-c9b2-5af2-9775-133e091fcdf2"
+      ],
+      "hole_node_ids": [],
+      "area_m2": 29.925,
+      "area_policy": "internal_finished_face",
+      "view": "floor_footprint",
+      "cut_height_m": 0,
+      "provenance": {
+        "geometry_origin": "inferred",
+        "semantic_origin": "user",
+        "support_ids": [],
+        "uncertainty_m": null,
+        "quality_state": "provisional"
+      }
+    }
+  ],
+  "objects": [],
+  "constraints": [],
+  "issues": [],
+  "quality_state": "provisional"
+}

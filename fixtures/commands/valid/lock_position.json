@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.1",
+  "command_id": "762a4876-369d-599d-9043-8cf13977a33c",
+  "project_id": "d5708cd1-a901-5786-b7f7-d422ad92be92",
+  "expected_scene_revision": "3",
+  "event_sequence": "110",
+  "targets": [
+    "339c43e0-f6c9-56fd-bbd2-f39bbfe6fe2b"
+  ],
+  "user_intent": "Synthetic example: lock_position",
+  "type": "lock_position",
+  "payload": {
+    "position_m": [
+      2,
+      0,
+      -0.5
+    ],
+    "explicit_confirmation": true
+  }
+}

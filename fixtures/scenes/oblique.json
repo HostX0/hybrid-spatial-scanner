@@ -1,0 +1,30 @@
+{
+  "fixture_id": "oblique",
+  "source_is_synthetic": true,
+  "units": "m",
+  "outer": [
+    [
+      0,
+      0
+    ],
+    [
+      4,
+      0
+    ],
+    [
+      5,
+      2
+    ],
+    [
+      2,
+      4
+    ],
+    [
+      0,
+      3
+    ]
+  ],
+  "holes": [],
+  "expected_valid": true,
+  "expected_area_m2": 15.0
+}

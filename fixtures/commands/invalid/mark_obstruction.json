@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.1",
+  "command_id": "81398c8d-b796-5b4a-94e1-a7c18415c6cc",
+  "project_id": "d5708cd1-a901-5786-b7f7-d422ad92be92",
+  "expected_scene_revision": "3",
+  "event_sequence": "106",
+  "targets": [
+    "339c43e0-f6c9-56fd-bbd2-f39bbfe6fe2b"
+  ],
+  "user_intent": "Synthetic example: mark_obstruction",
+  "type": "mark_obstruction",
+  "payload": {
+    "footprint_m": [
+      [
+        3,
+        2
+      ],
+      [
+        3,
+        2.5
+      ],
+      [
+        3.3,
+        2.5
+      ],
+      [
+        3.3,
+        2
+      ]
+    ],
+    "attachment": "detached",
+    "fixed": true,
+    "unexpected_field": "must reject"
+  }
+}

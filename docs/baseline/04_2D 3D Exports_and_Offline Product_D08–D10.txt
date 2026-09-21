@@ -1,0 +1,83 @@
+2D, 3D, Exports & Offline Product
+Hybrid Spatial Scanner | Phase 4 | D08–D10 | Baseline v1.1
+v1.1 implementation reference: D15 defines the detailed reconstruction and pose-rebuild pipeline; D16 defines exact scene/export manifests, byte ownership and durable transactions. The engineering pack includes explicitly synthetic SVG/DXF/OBJ examples with validated metadata/hashes, not captured-room results or external-CAD certification. Captured geometry, structured geometry and appearance remain distinct as required below.
+D08 — 2D Plans, Dimensions & CAD Exports
+1. One geometry authority
+Every plan and 3D export references one accepted SceneSnapshot and scene_revision. The renderer does not invent walls to improve neatness. Dimensions map to stable geometry IDs. A platform room proposal is an input, not an untracked second floor-plan authority.
+The product distinguishes floor footprint, architectural cut and reflected-ceiling view. They are different projections and may show different geometry. A shelf above the floor is not automatically a floor obstacle.
+2. Height and area policy
+Floor footprint uses the accepted FloorFrame and supported wall/floor junction. If the junction is obscured, intersect a supported wall fit with the floor and label it fitted. An initial 0.10 m sampling height is a configurable aid, not a universal replacement for the true junction.
+The architectural cut defaults to 1.20 m above the reference floor with a 0.10 m sampling band. Store both values. A sloped wall can have different floor and cut dimensions. The reflected-ceiling view projects observed ceiling patches, soffits and openings with local heights; missing ceiling depth stays unknown.
+Use the internal finished wall face. Wall thickness and structural centerline remain unknown unless independently supported or explicitly entered. Decorative double lines cannot imply measured thickness.
+Gross interior floor area is inside the accepted outer interior boundary. Net fixed-obstruction area subtracts fixed holes. Furniture occupied area is separate. No legal property-area standard is claimed. Outer loops are counterclockwise and holes clockwise; reject self-intersections, zero-length edges and holes outside their parent.
+Signed polygon area is one half the sum of x_i*y_(i+1) minus x_(i+1)*y_i. Open boundaries yield provisional or unavailable area. The 6 m × 5 m synthetic room with a 0.15 m × 0.50 m inward rib has area 29.925 m². A further 0.30 m × 0.50 m detached column produces 29.775 m² net fixed-obstruction area. These are mathematical fixtures, not scan results.
+3. Dimensions and layers
+Chain dimensions around a protrusion include both returns and the front. An overall span is additional, not a substitute. Annotate supported non-right angles when requested. Store endpoint IDs, source, unit, display precision and uncertainty when known. More decimal places do not imply greater accuracy.
+Default length display is metres to two decimals, with explicit alternate unit settings. Internal geometry remains double precision. A reference dimension constrains its specified relationship; global rescaling requires a separate reviewed operation. Recompute affected labels after accepted revisions.
+Layers are boundary, fixed obstructions, openings, furniture footprint, overhead features, ceiling features, dimensions, room labels, quality warnings and provenance. Door swings are symbols with known/unknown hinge direction, not reconstructed motion. Depth gaps alone do not prove openings. Schematic furniture footprints are labeled accordingly.
+4. PDF and SVG
+PDF uses vector geometry and selectable text where supported. Provide A4/A3 portrait/landscape, fit-to-page and explicit scale modes. A 1:50 label is valid only when page size and printing preserve it; include a scale bar and Print at 100% note. Large plans use aligned pages rather than silent cropping.
+Page metadata includes project, level/room, scene revision, units, scale policy, cut height, quality state and measurement caveat. Critical draft warnings cannot be disabled. Collision handling moves labels/leaders, never actual walls. Arabic labels require correct shaping.
+SVG uses a metre-derived viewBox, documented scale and exactly one screen y inversion. Preserve layer groups, IDs and a sidecar manifest. Do not promise font portability without testing. Geometry and labels remain traceable to the snapshot.
+5. DXF baseline
+Implement ASCII DXF with a pinned tested version, initially AC1015. Use LWPOLYLINE for closed/open contours and LINE/TEXT for dimension graphics. The first release does not promise associative DIMENSION entities. Declare $INSUNITS=6 for metres; model-space geometry remains in metres. Autodesk documents unit and polyline encoding. [SRC-14] [SRC-15]
+Layers are HSS_BOUNDARY, HSS_FIXED, HSS_OPENINGS, HSS_FURNITURE, HSS_OVERHEAD, HSS_DIMS, HSS_LABELS and HSS_WARNINGS. Rich provenance and IDs belong in a companion JSON, not proprietary extensions. Test actual viewer scaling despite the unit declaration.
+Curves may initially use polylines with a declared 0.005 m maximum chord-deviation target. This is computational approximation, not sensor accuracy. Preserve the original fit in canonical JSON. Use a tested text-encoding policy; preserve Arabic labels in a UTF-8 sidecar when a consumer cannot render them reliably.
+6. Export transaction and acceptance
+Freeze the snapshot, write a temporary bundle, validate dependencies/hashes/units, then commit. Cancellation removes only that job's temporary files and preserves earlier exports. ExportRecord stores ID, revision, exporter/format versions, view definition, layers, units, hashes and warnings.
+Round-trip a 1 m segment and the protrusion/column fixtures through each format. Check scale, orientation, closure, holes and label association. Verify DXF in two independent actual consumers before claiming compatibility. Test long Arabic labels, negative coordinates, large extents and multi-page output. Invalid coordinate frames block clean export; incomplete but internally valid scenes may export clearly marked drafts.
+D09 — 3D Reconstruction, Appearance & Semantics
+1. Captured versus structured 3D
+Captured 3D preserves visible mesh/point evidence and optional imagery. Structured 3D contains fitted surfaces, features, openings and semantic metadata. They share coordinates and provenance but have different fidelity. A furniture box must not replace the observed mesh while being called an exact copy.
+ARKit reconstruction is an estimated environmental mesh; RoomPlan uses on-device learning for a semantic/parametric representation. Neither guarantees all thin edges, shelf faces, decorations or hidden surfaces. [SRC-03] [SRC-08]
+2. Reconstruction baseline
+Begin with public mesh anchors plus calibrated depth keyframes. Replace anchor revisions and honor removals. Keep links from derived vertices/surfaces to contributing observations. Live preview uses a bounded-resolution mesh. Final local processing may refine seams, normals and evidence-supported gaps.
+Higher-resolution reconstruction from retained depth is a separately benchmarked enhancement path, not assumed platform functionality. Smoothing respects protected topology, sharp transitions and observed discontinuities. Evaluate error around small features separately from global triangle reduction.
+3. Visibility limits
+A shelf retains observed top, front, underside and supports when actually captured. A frontal image cannot reveal its hidden back. Missing faces remain open or explicitly inferred. Transparent, mirrored and glossy regions carry uncertainty; do not insert an opaque wall to make the mesh watertight.
+An optional watertight visualization is an inferred layer. Thin structures are supported only within a validated device/scene domain. A recognizable rail in an image does not prove reliable geometric thickness.
+4. Appearance pipeline
+Select keyframes by sharpness, exposure, angle, coverage and pose stability. Project textures only with verified calibration and accepted transforms. Use depth/visibility consistency to avoid painting background walls onto foreground furniture. Blend seams without moving measured geometry.
+Denoising or improved lighting can make a result look better without improving dimensions. Keep appearance confidence separate from metric residuals. No imagery is uploaded automatically. Offer texture-free export and preview the contents of image-inclusive sharing.
+5. Complex ceilings
+Retain oriented ceiling patches and captured mesh, not one room-height scalar. Coffers and soffits contain bottoms and returns; sloped or curved ceilings can remain mesh-only when no reliable parametric fit exists. Height annotations identify the patch and floor reference.
+A skylight frame may be observed while the opening interior is unknown. Missing or sky depth must not become a ceiling at the sensor's maximum range. Wall coverage does not imply ceiling completeness.
+6. Object semantics
+ObjectInstance stores semantic label/origin, optional label confidence, geometry references and optional footprint/bounds. Unknown category does not delete geometry. User classification changes metadata; choosing Column does not create a perfect rectangular solid or prove structural function.
+Catalog objects are schematic proxies and cannot overwrite measured clearances. Moving people, curtains and screens are conservatively excluded from structural fitting. Do not add face recognition, identity inference or unrelated personal analysis.
+7. 3D export formats
+Required captured export is OBJ + MTL + referenced textures, with a texture-free option and a JSON manifest for metres, axes, revision and provenance. OBJ alone does not provide a universally reliable unit declaration; include the manifest and a 1 m reference test.
+PLY is a diagnostic export with documented properties. Structured USDZ may use supported RoomPlan export paths and is labeled platform-derived parametric output. Custom captured-mesh USDZ and GLB are later capabilities gated by exporter tests, not automatic consequences of viewing a mesh. A future GLB exporter follows Khronos glTF unit/coordinate/material conventions. [SRC-16]
+Do not advertise IFC/BIM semantics without a dedicated schema and validator.
+8. Enhancement revisions
+Separate Measured Capture, Geometry Refinement, Appearance Refinement and External AI Review. Before/after comparison uses identical camera pose, scale and layers. Report geometry displacements and inferred additions when applicable. A prettier image is not a more accurate room by definition.
+Generative additions remain a removable inferred layer. They cannot enter measured canonical geometry without evidence-backed or explicitly user-measured constraints.
+9. Performance and acceptance
+Use display levels of detail, bounded texture atlases and tiled working sets. Never load all source images for a long capture at once. Under pressure, reduce optional preview/appearance work before sacrificing measurement validity; checkpoint and pause when necessary.
+Test anchor replacement, furniture occlusion, shelf undersides, coffered/sloped ceilings, glass, mirrors, moving people, low light and protected ribs. Verify portable texture paths and geometry/semantic consistency. All required reconstruction and exports remain local.
+D10 — Offline Product, Privacy, Recovery & Optional AI
+1. Offline boundary
+Capture, guidance, corrections, geometry processing, save/reopen, review and baseline exports require neither an account nor application internet access. A remote model, analytics event or licence heartbeat cannot block a scan. Operating-system backups, user-selected file providers and sharing may use networks separately; do not promise that no device-managed copy can ever leave the phone.
+2. Lifecycle and durability
+Project states are new, active, paused, recovering, review_required, ready, exporting and archived. Capture and export-job states are separate. An export failure does not invalidate a saved scene. Deletion confirms which sources, derived assets and exports are affected.
+Write chunks, checksums, journal and scene assets before the manifest. Commit atomically and keep an older valid manifest until replacement succeeds. On launch, inspect interrupted transactions and offer the latest validated checkpoint. Saved means referenced files are durable, not merely visible in memory.
+3. Interruptions and resource limits
+Camera permission loss, calls, backgrounding and system interruptions trigger a checkpoint and pause. Resume requires acceptable tracking/relocalization. Never stitch a fresh coordinate frame into an old room without validation.
+Check storage before and during capture. Initial free-space warning/stop reserves are 1 GiB/256 MiB and must be tuned on hardware. Observe system thermal state; reduce optional work in serious conditions and pause safely when critical. These are policies, not a maximum room-size claim. [SRC-18]
+4. Data protection and permissions
+Use app-private source storage, a rebuildable index and explicitly disposable caches. A cache cleanup cannot erase the only evidence copy. Apply an appropriate iOS file-protection policy and test locked-device interruption behavior. Future secrets belong in Keychain, never manifests or source control.
+Apply backup-exclusion hints to sensitive raw capture directories and after relevant file operations. Apple describes exclusion as a hint, not an absolute guarantee. Explain device backup controls honestly. [SRC-17]
+Camera access is required. Photo Library access is requested only for an explicit import/save action. Location, microphone, contacts and broad photo access are not baseline permissions. Logs default to local event codes and nonidentifying counters; no private room labels, geometry, images or thumbnails enter crash reports automatically.
+5. Security and consent
+Imported projects are untrusted. Validate paths, expanded sizes, hashes, schemas, units, finite coordinates and references before engine allocation. Reject traversal, malformed meshes, zip bombs and extreme counts. Scene images and external AI text are data, not instructions to execute commands, upload files or overwrite projects.
+Debug bundles require preview, redaction controls and explicit consent. External sharing lists exactly what will leave the application. No hidden upload accompanies a supposedly local enhancement.
+6. External AI review
+An optional user-controlled bundle contains selected plan PDF/PNG, selected perspective images, a compact scene-summary JSON, unresolved issues and a review prompt. It is not a core dependency and not a promise that any chatbot can ingest raw 3D archives or return an accurate refined mesh.
+The prompt asks for semantic suggestions and useful recapture advice, requires uncertainty and prohibits invented measured dimensions. A suggestion such as “possibly a shelf; capture its underside” is useful but not evidence of hidden geometry.
+Returned labels become proposed classify_object commands; recapture suggestions become guidance tasks. New dimensions require physical evidence or explicit user-measured input. A generated image never replaces the measured canonical model automatically. Validate provider/version compatibility before advertising integration.
+7. Future services and commercial scope
+A future Go API may manage accounts, sharing, subscriptions and optional asynchronous jobs. Python workers may support research/cloud processing. This is deferred, not the initial deployment. Uploads require explicit scope, cancellation, retention/deletion rules, tenant isolation, authentication, encryption, rate limits and audit controls.
+Pricing, final brand and paid tiers are unselected. Core capture cannot depend architecturally on remote entitlement checks. Future policies must preserve offline behavior and access to already-created user projects. Do not label ordinary geometry fitting as AI merely to justify payment.
+8. Release operations and acceptance
+Record app, engine, schema, exporter and tuning versions. Validate migrations and recovery against previous fixtures. Store disclosures and SDK submission requirements must be checked at release against actual implementation rather than frozen assumptions.
+Airplane-mode capture/save/reopen/export must pass on physical hardware. Forced termination at each write stage preserves a valid prior project. Low-storage and thermal tests preserve saves. Malicious archives cannot escape the import directory. AI review requires consent and leaves the measured project unchanged until a validated command is accepted.

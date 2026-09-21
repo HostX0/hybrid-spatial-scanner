@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hss:frame.schema.json",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.1"
+    },
+    "capture_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "event_sequence": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+    },
+    "session_epoch": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "timestamp_s": {
+      "type": "number",
+      "minimum": 0
+    },
+    "depth_width": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8192
+    },
+    "depth_height": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8192
+    },
+    "depth_row_stride_bytes": {
+      "type": "integer",
+      "minimum": 4
+    },
+    "depth_byte_length": {
+      "type": "integer",
+      "minimum": 4,
+      "maximum": 268435456
+    },
+    "intrinsics": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "T_world_camera": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 16,
+      "maxItems": 16
+    },
+    "depth_source": {
+      "type": "string",
+      "enum": [
+        "sceneDepth",
+        "smoothedSceneDepth"
+      ]
+    },
+    "tracking_state": {
+      "type": "string",
+      "enum": [
+        "normal",
+        "limited",
+        "not_available"
+      ]
+    },
+    "depth_asset": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Canonical relative slash-separated path. Runtime rejects dot segments, empty segments, absolute paths, colon, backslash and NUL."
+    },
+    "confidence_asset": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical relative slash-separated path. Runtime rejects dot segments, empty segments, absolute paths, colon, backslash and NUL."
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "image_asset": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical relative slash-separated path. Runtime rejects dot segments, empty segments, absolute paths, colon, backslash and NUL."
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "image_orientation": {
+      "type": "string",
+      "enum": [
+        "landscape_right",
+        "landscape_left",
+        "portrait",
+        "portrait_upside_down"
+      ]
+    },
+    "source_is_synthetic": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema_version",
+    "capture_id",
+    "event_sequence",
+    "session_epoch",
+    "timestamp_s",
+    "depth_width",
+    "depth_height",
+    "depth_row_stride_bytes",
+    "depth_byte_length",
+    "intrinsics",
+    "T_world_camera",
+    "depth_source",
+    "tracking_state",
+    "depth_asset",
+    "confidence_asset",
+    "image_asset",
+    "image_orientation",
+    "source_is_synthetic"
+  ],
+  "additionalProperties": false
+}

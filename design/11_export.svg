@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="430" height="900" viewBox="0 0 430 900">
+<rect x="0" y="0" width="430" height="900" rx="0" fill="#FFFFFF" stroke="#FFFFFF"/>
+<text x="24" y="34" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="#617080">HSS / INTERACTION WIREFRAME</text>
+<text x="24" y="77" font-family="Arial,sans-serif" font-size="24" font-weight="bold" fill="#1F2933">Export preview</text>
+<text x="24" y="103" font-family="Arial,sans-serif" font-size="11" font-weight="normal" fill="#1F2933">Specification v1.1 — not a built-app screenshot</text>
+<rect x="24" y="127" width="382" height="380" rx="9" fill="#FAFAFA" stroke="#BBC3CD"/>
+<text x="43" y="182" font-family="Arial,sans-serif" font-size="16" font-weight="normal" fill="#1F2933">PDF / SVG / DXF</text>
+<text x="43" y="239" font-family="Arial,sans-serif" font-size="16" font-weight="normal" fill="#1F2933">Captured 3D: OBJ bundle</text>
+<text x="43" y="296" font-family="Arial,sans-serif" font-size="16" font-weight="normal" fill="#1F2933">Include imagery: off</text>
+<text x="43" y="353" font-family="Arial,sans-serif" font-size="16" font-weight="normal" fill="#1F2933">Draft warnings: included</text>
+<rect x="24" y="525" width="382" height="161" rx="9" fill="#F2F4F6" stroke="#AAB1BA"/>
+<text x="40" y="558" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="#1F2933">Core work remains offline.</text>
+<text x="40" y="590" font-family="Arial,sans-serif" font-size="13" font-weight="normal" fill="#1F2933">No automatic upload or account required.</text>
+<text x="40" y="622" font-family="Arial,sans-serif" font-size="13" font-weight="normal" fill="#1F2933">Measurements retain source and revision.</text>
+<rect x="24" y="708" width="382" height="42" rx="9" fill="#263746" stroke="#AAB1BA"/><text x="36" y="735" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#FFFFFF">Create local export</text>
+<rect x="24" y="766" width="112" height="42" rx="9" fill="#FFFFFF" stroke="#AAB1BA"/><text x="36" y="793" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#263746">Back</text>
+<rect x="151" y="766" width="112" height="42" rx="9" fill="#FFFFFF" stroke="#AAB1BA"/><text x="163" y="793" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#263746">Preview</text>
+<rect x="278" y="766" width="128" height="42" rx="9" fill="#FFFFFF" stroke="#AAB1BA"/><text x="290" y="793" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#263746">Cancel</text>
+<text x="24" y="843" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#1F2933">One primary action. Target-linked guidance.</text>
+<text x="24" y="866" font-family="Arial,sans-serif" font-size="12" font-weight="normal" fill="#1F2933">Text + line patterns; never color alone.</text>
+</svg>

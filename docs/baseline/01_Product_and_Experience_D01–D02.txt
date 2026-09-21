@@ -1,0 +1,87 @@
+Product Definition & Requirements
+Hybrid Spatial Scanner | D01 | Engineering baseline v1.1
+v1.1 implementation reference: D17 and design/ now provide eight screen wireframes, four engineering diagrams and detailed interaction acceptance. D14–D16 add research, reconstruction algorithms and executable contracts. The authored handoff is English; English/Arabic application localization remains a product requirement. The product requirements below remain in force.
+This is a build specification, not evidence that the application or its accuracy has been validated. Product name is provisional. Product owner: Abdulazeez. Implementation owners are assigned by role, not assumed individuals.
+1. Product outcome
+An iPhone user enters an indoor room, house or hall, captures it in one continuous workflow and leaves with a measured 2D plan and a viewable 3D reconstruction. The application must handle nonorthogonal room boundaries, recesses, attached protrusions, detached columns, furniture, shelves, decorations and complex visible ceilings without silently replacing the real shape with a rectangle.
+The defining workflow is live human assistance inside automatic capture. The user identifies a corner, splits a wrongly merged wall, marks a protrusion, classifies an obstruction or adds a trusted physical measurement while scanning continues. A correction changes our scene model; it does not rewrite Apple's private reconstruction algorithms.
+Engineering priorities are evidence preservation, topology preservation, visible uncertainty, easy correction, dimensional accuracy, appearance and speed—in that order. A convincing rendering must not outrank contradictory measurements.
+2. Product boundaries
+The first release targets indoor, single-level capture on capability-checked LiDAR iPhones. Small connected multiroom capture is an advanced release gate, not a prerequisite for the first prototype. Large halls use explicit zones and quality checks, not an unlimited-size promise. Unsupported phones may view imported projects but must not advertise LiDAR capture.
+Capture, guidance, corrections, saving, reopening, local finalization and baseline exports work without account creation or internet. Final local refinement may continue after capture, but live feedback and assistance cannot be deferred until then.
+Outdoor survey, certified property-area measurement, hidden services, material identification, structural assessment and millimetre fabrication verification are outside the first-release claim. A column label does not prove a load-bearing role. The actual user's phone model is not assumed.
+3. Two linked representations
+Measured scene: revisioned surfaces, boundaries, openings, features, constraints, dimensions and evidence states. Captured scene: visible mesh/point evidence and optional camera appearance. Both share project coordinates and provenance. A simplified semantic furniture box must not replace a captured object while being called an exact reconstruction.
+Use “Measured capture,” not “LiDAR without AI”: platform room understanding may already use machine learning. Optional semantic review, geometry refinement and appearance enhancement are distinct operations. An attractive result is not automatically more accurate.
+4. Users and jobs
+An event or interior designer needs room shape, column positions and usable clearances. An installer needs critical dimensions identified for independent verification before manufacture. A property operator needs a portable measured record. A developer or AI agent needs deterministic evidence, contracts and failure cases. No workflow assumes professional surveying expertise, but the UI must not conceal measurement limitations.
+5. Nonnegotiable requirements
+REQ-001: Baseline capture, processing, save/reopen and export operate offline.
+REQ-002: Preserve supported arbitrary angles; no automatic global 90-degree snapping.
+REQ-003: Preserve provenance separately for geometry, semantics and user inputs.
+REQ-004: Apply reversible human corrections during automatic capture.
+REQ-005: Link 2D and 3D output to one immutable scene revision.
+REQ-006: Export units, axes, view definition, revision and quality warnings.
+REQ-007: Never promote unseen or generated geometry to measured observation.
+REQ-008: Tracking, thermal, memory and storage failures cannot silently corrupt the scene.
+REQ-009: Recover the latest committed project after interrupted writes.
+REQ-010: Progress and quality indicators reflect actual work and evidence.
+S01 extends these requirements into task-level acceptance criteria. D03–D10 define implementation behavior and D11 defines validation.
+6. Signature protrusion fixture
+The owner's concrete case is an attached inward wall protrusion approximately 0.50 m deep and 0.15 m wide. It creates five consecutive wall segments: approach, first return, front, second return and continuation. The engine must not merge this chain into one straight wall.
+A mathematical fixture uses an outer 6 m by 5 m room and ordered plan points (0,0), (2,0), (2,0.50), (2.15,0.50), (2.15,0), (6,0), (6,5), (0,5), closing to the first point. The area is 29.925 m². These are synthetic coordinates, not measured app results.
+The live feature tool must not hardcode those dimensions. It requests missing faces, accepts unequal returns and non-right angles, and distinguishes topology protection from freezing coordinates.
+7. Scope tiers
+Prototype: real device capture, calibration, mesh/depth ingestion, local save, replay and a rudimentary nonrectangular plan.
+Alpha: live hybrid commands, protected protrusions, fixed-column holes, uncertainty overlays and reversible constraints.
+Beta: consistent 2D/3D review, required exports, durable offline projects and representative physical tests.
+Public release: documented supported domain, metrology results, device/performance tests, privacy/accessibility review and no release-blocking defects.
+These are evidence gates, not calendar promises. Completion of documentation does not mean the app has passed any implementation gate.
+8. Success measures
+Track topology preservation, reference-based dimensional error, visible-feature completeness, time to correct a difficult feature, false/missed guidance alerts, crash-free capture, recovery success and export interoperability. Keep appearance quality separate. Do not compress metres, angles and usability into one unsupported accuracy percentage.
+Initial accuracy and latency thresholds are development targets in S02/S03, not validated customer claims. A failed threshold requires investigation, better capture, assisted measurement or a transparent scope limit—not invented precision.
+9. Product and language rules
+Canonical engineering content is English. The app supports English and Arabic with correct right-to-left layouts, readable numeric units, text alternatives to color and accessible controls. Exact dimensions remain traceable even when their displayed values are rounded.
+Keep primary scanning controls sparse: scan/pause, target assistance, undo and finish. Advanced constraints appear only after a target is selected. One actionable coaching message takes priority over a wall of alerts.
+10. Release boundaries and ownership
+Core capture cannot depend on cloud inference, remote login or a subscription heartbeat. Pricing, final branding and optional AI/provider choice remain business decisions. Do not claim universal precision, hidden-surface recovery or superiority over existing products before testing.
+Product owner confirms scope; iOS, geometry, QA/metrology, design and security roles must be assigned before parallel implementation. D12 defines task packets and honest completion reports for humans and agents.
+
+
+D02 — UX Specification & Live Scanning Journeys
+Version 1.0 | Live human assistance is part of capture, not a separate post-scan mode.
+1. Screen architecture
+SC-01 Projects: local project list, create/import, recovery state and storage summary. SC-02 Setup: project name, units, level and capture capability. SC-03 Readiness: camera permission, supported depth/mesh capability, free space and initial tracking. SC-04 Live Scan: camera, linked plan inset, evidence overlays and one coaching message. SC-05 Target Inspector: selected feature, support state and context-sensitive tools. SC-06 Finish Review: unresolved issues, coverage and critical warnings. SC-07 2D Review: boundary, dimensions, layers and cut-height policy. SC-08 3D Review: captured/structured representations, quality overlays and ceiling inspection. SC-09 Export: format, layers, revision, privacy preview and progress. SC-10 Recovery/Settings: checkpoint selection, units, language, diagnostics and permissions.
+2. Capture state machine
+States are idle, preparing, scanning, targeting, paused, tracking_limited, relocalizing, reviewing, finalizing, saved and failed_recoverable. Targeting is a substate inside continuous capture. The user can select a region, add intent and return to scanning without restarting the session.
+Entering tracking_limited pauses new metric commitments, not necessarily camera display. Returning to normal tracking requires an accepted coordinate relationship to the project. Relocalization must not join unrelated coordinate frames merely because the camera is moving again. Review and finalization run against a stable snapshot. Saved means durable storage, not an animation.
+3. Live screen hierarchy
+The camera remains the main surface. A small plan inset gives room-shape orientation. Primary controls are pause/resume, assist, undo and finish. The target inspector opens only after selection. Secondary controls include torch where supported, layers and issue tray. Avoid a large permanent tool palette over the camera.
+Use distinct outline patterns and text labels for observed, fitted, uncertain, inferred and unobserved geometry. Do not rely on color alone. Keep numeric units visible and show whether a dimension is sensor-derived, fitted or user-measured. A global progress percentage is prohibited unless the total domain is actually defined.
+4. Selection and assistance
+Tap a supported surface to select it. The reticle shows the selected observation or fitted intersection; missing depth produces a pending target rather than an invented point. A magnified view and plan inset help select small returns. Dragging a point is a proposed edit that requires confirmation, not silent raw-data rewriting.
+Available tools are Mark Corner, Split Wall, Merge Segments, Mark Protrusion, Mark Recess, Mark Fixed Obstruction, Classify Object, Add Reference Dimension, Protect Feature, Lock Position, Mark Unknown and Exclude Moving Region. Context determines which tools are valid. Every action is undoable or explicitly reports why undo is no longer valid.
+Protect Feature preserves topology while allowing evidence-based coordinate refinement. Lock Position freezes an estimate and requires separate explicit confirmation. These actions must not be conflated.
+5. Attached protrusion journey
+The operator sees a wall with a narrow inward rib. If the automatic fit merges it into one wall, the operator selects the region and chooses Mark Protrusion. The app highlights the approach, first return, front, second return and continuation as a proposed chain. It requests missing faces one at a time and retains automatic scanning.
+The tool accepts unequal returns and non-right angles. It must not automatically insert the 0.50 m and 0.15 m fixture dimensions. The operator can enter a physical measurement with a source label. A guessed number remains inferred. A protected chain cannot later disappear during simplification without a visible conflict.
+6. Detached column and furniture journey
+A detached fixed column becomes an obstruction region inside the room, not part of the outer wall contour. An attached column changes the outer contour. The UI asks for clarification when attachment is uncertain. A cabinet may be movable furniture; classifying it does not prove structural permanence.
+Shelves above the floor appear in overhead/furniture layers. Their observed surfaces remain in Captured 3D even when the object category is unknown. Missing backs or undersides remain unobserved. The app asks for another viewpoint when useful, not for arbitrary waiting.
+7. Nonorthogonal and ceiling journey
+The initial room outline accepts arbitrary supported angles. An optional orthogonal constraint is a deliberate user action with visible consequences, not a default cleanup. Acute, obtuse and nearly collinear corners remain inspectable.
+For sloped, coffered or decorated ceilings, the app shows observed patches and incomplete regions. A single room height cannot replace multiple levels. A skylight or missing depth region is not automatically a flat ceiling. The user can review a reflected-ceiling layer and capture more evidence without discarding the walls already scanned.
+8. Live coaching rules
+Show one dominant actionable message, with secondary issues retained in a tray. Tracking validity precedes completeness. Messages identify the target and the reason: low light, missing return face, insufficient viewpoint baseline, moving too quickly, reflective region or conflicting geometry.
+Apple already supplies broad RoomPlan coaching; the app adds persistent target association and reversible corrections. Do not claim all competitors lack guidance. Stationary waiting only helps when a real pending processing task exists. Occlusion and insufficient baseline require movement or a new view. Exact movement distances are shown only when computed safely from accepted geometry.
+9. Finish review
+Finish opens a review, not an automatic declaration of success. The review lists open boundaries, unsupported dimensions, unobserved ceiling areas, unresolved constraints and possible tracking seams. The user may return to a selected region or save a draft. Draft exports retain warnings. Corrupt coordinate frames block clean geometry export.
+Each issue links to the relevant plan/3D feature and offers one useful action. Cosmetic issues must not hide critical ones. A user dismissing a message does not erase the underlying evidence problem.
+10. Review and export behavior
+2D and 3D viewers expose the same scene revision. Toggling furniture or ceiling layers does not change measured floor area silently. Before/after enhancement views hold camera pose, scale and layers constant. Geometry and appearance changes are reported separately.
+Export previews show selected formats, units, layer policy, unresolved warnings and whether imagery is included. Sharing requires an explicit action. Cancellation leaves previously successful exports intact. No login prompt interrupts core offline export.
+11. Accessibility and localization
+Use a 44-point minimum touch-target design baseline, readable text, Dynamic Type where practical, VoiceOver labels and text equivalents for haptics/visual state. Support portrait and landscape without changing calibration. Arabic screens use correct right-to-left structure; engineering identifiers, numbers and units remain unambiguous.
+Avoid long opaque technical errors. Translate them into actions while retaining a diagnostic code in details. Example: “This corner is not stable yet. Show both adjoining walls from another angle.” Do not say “AI needs one minute” unless an actual measured job warrants such a statement.
+12. UX acceptance
+A user can correct a small protrusion during scanning; automatic observations do not erase the correction; undo restores the previous topology; tracking loss disables precise commits; hidden surfaces remain visibly incomplete; finish review exposes unresolved issues; and all required journeys work offline. S02 records real test results only after execution.

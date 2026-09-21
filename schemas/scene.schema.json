@@ -1,0 +1,1063 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hss:scene.schema.json",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.1"
+    },
+    "project_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "scene_revision": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+    },
+    "source_is_synthetic": {
+      "type": "boolean"
+    },
+    "units": {
+      "const": "m"
+    },
+    "basis": {
+      "type": "object",
+      "properties": {
+        "handedness": {
+          "const": "right"
+        },
+        "up": {
+          "const": "+Y"
+        },
+        "floor_origin_m": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "floor_u": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "floor_v": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "floor_n": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        }
+      },
+      "required": [
+        "handedness",
+        "up",
+        "floor_origin_m",
+        "floor_u",
+        "floor_v",
+        "floor_n"
+      ],
+      "additionalProperties": false
+    },
+    "epochs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "capture_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "session_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "transform_revision": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]{0,19})$",
+            "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+          },
+          "relationship_state": {
+            "type": "string",
+            "enum": [
+              "unresolved",
+              "accepted"
+            ]
+          },
+          "T_project_world": {
+            "oneOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 16,
+                "maxItems": 16
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "capture_id",
+          "session_epoch",
+          "transform_revision",
+          "relationship_state",
+          "T_project_world"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "position_m": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "provenance": {
+            "type": "object",
+            "properties": {
+              "geometry_origin": {
+                "type": "string",
+                "enum": [
+                  "observed",
+                  "fitted",
+                  "user_measured",
+                  "inferred",
+                  "unknown"
+                ]
+              },
+              "semantic_origin": {
+                "type": "string",
+                "enum": [
+                  "platform",
+                  "local_model",
+                  "user",
+                  "imported",
+                  "unknown"
+                ]
+              },
+              "support_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "minItems": 0
+              },
+              "uncertainty_m": {
+                "oneOf": [
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "quality_state": {
+                "type": "string",
+                "enum": [
+                  "provisional",
+                  "needs_review",
+                  "ready",
+                  "invalid"
+                ]
+              }
+            },
+            "required": [
+              "geometry_origin",
+              "semantic_origin",
+              "support_ids",
+              "uncertainty_m",
+              "quality_state"
+            ],
+            "additionalProperties": false
+          },
+          "position_locked": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "position_m",
+          "provenance",
+          "position_locked"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "start_node_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "end_node_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "surface_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "minItems": 0
+          },
+          "parent_edge_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "minItems": 0
+          },
+          "protected_topology": {
+            "type": "boolean"
+          },
+          "provenance": {
+            "type": "object",
+            "properties": {
+              "geometry_origin": {
+                "type": "string",
+                "enum": [
+                  "observed",
+                  "fitted",
+                  "user_measured",
+                  "inferred",
+                  "unknown"
+                ]
+              },
+              "semantic_origin": {
+                "type": "string",
+                "enum": [
+                  "platform",
+                  "local_model",
+                  "user",
+                  "imported",
+                  "unknown"
+                ]
+              },
+              "support_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "minItems": 0
+              },
+              "uncertainty_m": {
+                "oneOf": [
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "quality_state": {
+                "type": "string",
+                "enum": [
+                  "provisional",
+                  "needs_review",
+                  "ready",
+                  "invalid"
+                ]
+              }
+            },
+            "required": [
+              "geometry_origin",
+              "semantic_origin",
+              "support_ids",
+              "uncertainty_m",
+              "quality_state"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "start_node_id",
+          "end_node_id",
+          "surface_ids",
+          "parent_edge_ids",
+          "protected_topology",
+          "provenance"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    },
+    "surfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "plane",
+              "mesh_patch"
+            ]
+          },
+          "normal_unit": {
+            "oneOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offset_m": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "boundary_node_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "minItems": 0
+          },
+          "mesh_asset": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "description": "Canonical relative slash-separated path. Runtime rejects dot segments, empty segments, absolute paths, colon, backslash and NUL."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fit_residual_m": {
+            "oneOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provenance": {
+            "type": "object",
+            "properties": {
+              "geometry_origin": {
+                "type": "string",
+                "enum": [
+                  "observed",
+                  "fitted",
+                  "user_measured",
+                  "inferred",
+                  "unknown"
+                ]
+              },
+              "semantic_origin": {
+                "type": "string",
+                "enum": [
+                  "platform",
+                  "local_model",
+                  "user",
+                  "imported",
+                  "unknown"
+                ]
+              },
+              "support_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "minItems": 0
+              },
+              "uncertainty_m": {
+                "oneOf": [
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "quality_state": {
+                "type": "string",
+                "enum": [
+                  "provisional",
+                  "needs_review",
+                  "ready",
+                  "invalid"
+                ]
+              }
+            },
+            "required": [
+              "geometry_origin",
+              "semantic_origin",
+              "support_ids",
+              "uncertainty_m",
+              "quality_state"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "normal_unit",
+          "offset_m",
+          "boundary_node_ids",
+          "mesh_asset",
+          "fit_residual_m",
+          "provenance"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    },
+    "features": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "protrusion",
+              "recess",
+              "fixed_obstruction",
+              "opening",
+              "overhead",
+              "ceiling_patch",
+              "unknown"
+            ]
+          },
+          "edge_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "minItems": 0
+          },
+          "surface_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "minItems": 0
+          },
+          "attachment": {
+            "type": "string",
+            "enum": [
+              "attached",
+              "detached",
+              "unresolved"
+            ]
+          },
+          "protected_topology": {
+            "type": "boolean"
+          },
+          "provenance": {
+            "type": "object",
+            "properties": {
+              "geometry_origin": {
+                "type": "string",
+                "enum": [
+                  "observed",
+                  "fitted",
+                  "user_measured",
+                  "inferred",
+                  "unknown"
+                ]
+              },
+              "semantic_origin": {
+                "type": "string",
+                "enum": [
+                  "platform",
+                  "local_model",
+                  "user",
+                  "imported",
+                  "unknown"
+                ]
+              },
+              "support_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "minItems": 0
+              },
+              "uncertainty_m": {
+                "oneOf": [
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "quality_state": {
+                "type": "string",
+                "enum": [
+                  "provisional",
+                  "needs_review",
+                  "ready",
+                  "invalid"
+                ]
+              }
+            },
+            "required": [
+              "geometry_origin",
+              "semantic_origin",
+              "support_ids",
+              "uncertainty_m",
+              "quality_state"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "edge_ids",
+          "surface_ids",
+          "attachment",
+          "protected_topology",
+          "provenance"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    },
+    "regions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "outer_node_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "minItems": 3
+          },
+          "hole_node_ids": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "minItems": 3
+            },
+            "minItems": 0
+          },
+          "area_m2": {
+            "oneOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "area_policy": {
+            "type": "string",
+            "enum": [
+              "internal_finished_face",
+              "net_fixed_obstructions"
+            ]
+          },
+          "view": {
+            "type": "string",
+            "enum": [
+              "floor_footprint",
+              "architectural_cut"
+            ]
+          },
+          "cut_height_m": {
+            "type": "number",
+            "minimum": 0
+          },
+          "provenance": {
+            "type": "object",
+            "properties": {
+              "geometry_origin": {
+                "type": "string",
+                "enum": [
+                  "observed",
+                  "fitted",
+                  "user_measured",
+                  "inferred",
+                  "unknown"
+                ]
+              },
+              "semantic_origin": {
+                "type": "string",
+                "enum": [
+                  "platform",
+                  "local_model",
+                  "user",
+                  "imported",
+                  "unknown"
+                ]
+              },
+              "support_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "minItems": 0
+              },
+              "uncertainty_m": {
+                "oneOf": [
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "quality_state": {
+                "type": "string",
+                "enum": [
+                  "provisional",
+                  "needs_review",
+                  "ready",
+                  "invalid"
+                ]
+              }
+            },
+            "required": [
+              "geometry_origin",
+              "semantic_origin",
+              "support_ids",
+              "uncertainty_m",
+              "quality_state"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "outer_node_ids",
+          "hole_node_ids",
+          "area_m2",
+          "area_policy",
+          "view",
+          "cut_height_m",
+          "provenance"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    },
+    "objects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "surface_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "minItems": 0
+          },
+          "mesh_asset": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "description": "Canonical relative slash-separated path. Runtime rejects dot segments, empty segments, absolute paths, colon, backslash and NUL."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "footprint_m": {
+            "oneOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "minItems": 3
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provenance": {
+            "type": "object",
+            "properties": {
+              "geometry_origin": {
+                "type": "string",
+                "enum": [
+                  "observed",
+                  "fitted",
+                  "user_measured",
+                  "inferred",
+                  "unknown"
+                ]
+              },
+              "semantic_origin": {
+                "type": "string",
+                "enum": [
+                  "platform",
+                  "local_model",
+                  "user",
+                  "imported",
+                  "unknown"
+                ]
+              },
+              "support_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "minItems": 0
+              },
+              "uncertainty_m": {
+                "oneOf": [
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "quality_state": {
+                "type": "string",
+                "enum": [
+                  "provisional",
+                  "needs_review",
+                  "ready",
+                  "invalid"
+                ]
+              }
+            },
+            "required": [
+              "geometry_origin",
+              "semantic_origin",
+              "support_ids",
+              "uncertainty_m",
+              "quality_state"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "surface_ids",
+          "mesh_asset",
+          "footprint_m",
+          "provenance"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "distance",
+              "position_lock",
+              "orthogonal",
+              "parallel",
+              "topology_protection"
+            ]
+          },
+          "target_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "minItems": 0
+          },
+          "source_command_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "value": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "m",
+              "rad",
+              "none"
+            ]
+          },
+          "hard": {
+            "type": "boolean"
+          },
+          "weight": {
+            "type": "number",
+            "minimum": 0
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "sensor_fit",
+              "tape",
+              "laser",
+              "reference_survey",
+              "guess",
+              "user_intent"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "conflict",
+              "superseded",
+              "removed"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "target_ids",
+          "source_command_id",
+          "value",
+          "unit",
+          "hard",
+          "weight",
+          "source",
+          "status"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "minItems": 0
+          },
+          "scene_revision": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]{0,19})$",
+            "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "info",
+              "warning",
+              "critical"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "action": {
+            "type": "string",
+            "minLength": 1
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "suppressed",
+              "resolved"
+            ]
+          },
+          "source_sequence": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]{0,19})$",
+            "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "target_ids",
+          "scene_revision",
+          "severity",
+          "reason",
+          "action",
+          "state",
+          "source_sequence"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    },
+    "quality_state": {
+      "type": "string",
+      "enum": [
+        "provisional",
+        "needs_review",
+        "ready",
+        "invalid"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "project_id",
+    "scene_revision",
+    "source_is_synthetic",
+    "units",
+    "basis",
+    "epochs",
+    "nodes",
+    "edges",
+    "surfaces",
+    "features",
+    "regions",
+    "objects",
+    "constraints",
+    "issues",
+    "quality_state"
+  ],
+  "additionalProperties": false
+}

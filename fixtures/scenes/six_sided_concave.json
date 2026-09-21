@@ -1,0 +1,34 @@
+{
+  "fixture_id": "six_sided_concave",
+  "source_is_synthetic": true,
+  "units": "m",
+  "outer": [
+    [
+      0,
+      0
+    ],
+    [
+      6,
+      0
+    ],
+    [
+      6,
+      3
+    ],
+    [
+      4,
+      3
+    ],
+    [
+      4,
+      5
+    ],
+    [
+      0,
+      5
+    ]
+  ],
+  "holes": [],
+  "expected_valid": true,
+  "expected_area_m2": 26.0
+}

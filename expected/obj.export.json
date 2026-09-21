@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.1",
+  "export_id": "760c859b-68dd-5c6e-a329-15ccd32845f3",
+  "project_id": "d5708cd1-a901-5786-b7f7-d422ad92be92",
+  "scene_revision": "1",
+  "format": "OBJ",
+  "units": "m",
+  "axes": "OBJ: +Y up; plan: U=+X,V=-Z; SVG screen Y inversion exactly once",
+  "view": "structured_3d",
+  "cut_height_m": null,
+  "layers": [
+    "synthetic_reference"
+  ],
+  "quality_state": "provisional",
+  "warnings": [
+    "AUTHORED SYNTHETIC EXAMPLE, NOT A PHYSICAL SCAN",
+    "Not validated in an external CAD consumer",
+    "OBJ contains wall surfaces only; no hidden or invented measured geometry"
+  ],
+  "source_is_synthetic": true,
+  "assets": [
+    {
+      "path": "rib_walls.obj",
+      "bytes": 449,
+      "sha256": "248a2341404ecceecb73fa9817ab77a414f820d5c045ef6e19520cc59f56fd55",
+      "role": "reference"
+    }
+  ]
+}

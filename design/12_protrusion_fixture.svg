@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="650" viewBox="0 0 980 650">
+<rect x="0" y="0" width="980" height="650" rx="0" fill="#FFFFFF" stroke="#FFFFFF"/>
+<text x="35" y="45" font-family="Arial,sans-serif" font-size="27" font-weight="bold" fill="#1F2933">Protected protrusion — topology fixture</text>
+<text x="35" y="77" font-family="Arial,sans-serif" font-size="15" font-weight="normal" fill="#1F2933">Synthetic geometry, not an iPhone scan. Units: metres.</text>
+<polygon points="55.0,170.0 189.0,170.0 189.0,203.5 199.0,203.5 199.0,170.0 457.0,170.0 457.0,505.0 55.0,505.0" fill="none" stroke="#334155" stroke-width="3"/><rect x="256" y="304" width="20.099999999999998" height="33.5" fill="#CFD5DC" stroke="#334155"/>
+<text x="70" y="550" font-family="Arial,sans-serif" font-size="20" font-weight="bold" fill="#1F2933">Outer area: 29.925 m²</text>
+<text x="70" y="580" font-family="Arial,sans-serif" font-size="16" font-weight="normal" fill="#1F2933">With 0.30 × 0.50 m detached column: 29.775 m² net</text>
+<rect x="545" y="135" width="390" height="360" rx="9" fill="#FAFAFA" stroke="#AAB1BA"/>
+<text x="567" y="170" font-family="Arial,sans-serif" font-size="18" font-weight="bold" fill="#1F2933">Local return / front / return chain</text>
+<path d="M578 235 L654 235 L654 395 L720 395 L720 235 L900 235" fill="none" stroke="#263746" stroke-width="5"/>
+<text x="574" y="322" font-family="Arial,sans-serif" font-size="17" font-weight="bold" fill="#1F2933">0.50</text>
+<text x="661" y="428" font-family="Arial,sans-serif" font-size="17" font-weight="bold" fill="#1F2933">0.15</text>
+<text x="748" y="324" font-family="Arial,sans-serif" font-size="17" font-weight="bold" fill="#1F2933">0.50</text>
+<text x="565" y="470" font-family="Arial,sans-serif" font-size="13" font-weight="normal" fill="#1F2933">Protection keeps this chain during refinement.</text>
+</svg>

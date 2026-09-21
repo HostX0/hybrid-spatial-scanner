@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.1",
+  "command_id": "0c2f14fa-27a6-57dc-8f90-821ecb644f39",
+  "project_id": "d5708cd1-a901-5786-b7f7-d422ad92be92",
+  "expected_scene_revision": "3",
+  "event_sequence": "108",
+  "targets": [
+    "339c43e0-f6c9-56fd-bbd2-f39bbfe6fe2b"
+  ],
+  "user_intent": "Synthetic example: set_dimension",
+  "type": "set_dimension",
+  "payload": {
+    "endpoint_a": "c6ed6588-7fb3-5fed-9f6e-918224151ce2",
+    "endpoint_b": "abbc7283-07bd-54bd-8c3c-f9b376728c29",
+    "value": 0.15,
+    "unit": "m",
+    "source": "laser",
+    "uncertainty_m": 0.003,
+    "mode": "exact_model",
+    "weight": 1
+  }
+}

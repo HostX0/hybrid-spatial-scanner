@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hss:room-proposal.schema.json",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.1"
+    },
+    "capture_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "session_epoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "event_sequence": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+    },
+    "provider": {
+      "const": "RoomPlan"
+    },
+    "provider_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "proposal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "wall",
+        "floor",
+        "ceiling",
+        "opening",
+        "door",
+        "window",
+        "object",
+        "unknown"
+      ]
+    },
+    "transform": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 16,
+      "maxItems": 16
+    },
+    "dimensions_m": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "semantic_label": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_sequence": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+    },
+    "quality": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "unknown"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "capture_id",
+    "session_epoch",
+    "event_sequence",
+    "provider",
+    "provider_version",
+    "proposal_id",
+    "kind",
+    "transform",
+    "dimensions_m",
+    "semantic_label",
+    "source_sequence",
+    "quality"
+  ],
+  "additionalProperties": false
+}

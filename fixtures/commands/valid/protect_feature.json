@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.1",
+  "command_id": "b1a1e1ae-ec03-5401-af12-faa045864665",
+  "project_id": "d5708cd1-a901-5786-b7f7-d422ad92be92",
+  "expected_scene_revision": "3",
+  "event_sequence": "109",
+  "targets": [
+    "339c43e0-f6c9-56fd-bbd2-f39bbfe6fe2b"
+  ],
+  "user_intent": "Synthetic example: protect_feature",
+  "type": "protect_feature",
+  "payload": {
+    "preserve_topology": true,
+    "lock_position": false
+  }
+}

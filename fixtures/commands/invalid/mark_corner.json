@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.1",
+  "command_id": "4d5b1e94-8daf-5d81-b109-fb6bf1e9199b",
+  "project_id": "d5708cd1-a901-5786-b7f7-d422ad92be92",
+  "expected_scene_revision": "3",
+  "event_sequence": "101",
+  "targets": [
+    "339c43e0-f6c9-56fd-bbd2-f39bbfe6fe2b"
+  ],
+  "user_intent": "Synthetic example: mark_corner",
+  "type": "mark_corner",
+  "payload": {
+    "point_m": [
+      2,
+      0,
+      0
+    ],
+    "support_ids": [
+      "f28998ec-31a8-51a3-a300-b3b45bd1cc7a"
+    ],
+    "pending_ray": null,
+    "unexpected_field": "must reject"
+  }
+}

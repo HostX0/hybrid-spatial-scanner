@@ -1,0 +1,45 @@
+{
+  "fixture_id": "touching_hole",
+  "source_is_synthetic": true,
+  "units": "m",
+  "outer": [
+    [
+      0,
+      0
+    ],
+    [
+      4,
+      0
+    ],
+    [
+      4,
+      3
+    ],
+    [
+      0,
+      3
+    ]
+  ],
+  "holes": [
+    [
+      [
+        0,
+        1
+      ],
+      [
+        0,
+        2
+      ],
+      [
+        1,
+        2
+      ],
+      [
+        1,
+        1
+      ]
+    ]
+  ],
+  "expected_valid": false,
+  "expected_area_m2": null
+}

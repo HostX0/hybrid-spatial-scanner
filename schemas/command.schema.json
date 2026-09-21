@@ -1,0 +1,1259 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hss:command.schema.json",
+  "title": "HSS live command envelope v1.1",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.1"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_scene_revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "event_sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 0,
+          "maxItems": 64
+        },
+        "user_intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "mark_corner"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "point_m": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 3,
+                  "maxItems": 3
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "support_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "minItems": 0
+            },
+            "pending_ray": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "origin_m": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 3,
+                      "maxItems": 3
+                    },
+                    "direction_unit": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 3,
+                      "maxItems": 3
+                    }
+                  },
+                  "required": [
+                    "origin_m",
+                    "direction_unit"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "point_m",
+            "support_ids",
+            "pending_ray"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "project_id",
+        "expected_scene_revision",
+        "event_sequence",
+        "targets",
+        "user_intent",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.1"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_scene_revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "event_sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "user_intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "split_edge"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "edge_parameter": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "exclusiveMaximum": 1
+            }
+          },
+          "required": [
+            "edge_parameter"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "project_id",
+        "expected_scene_revision",
+        "event_sequence",
+        "targets",
+        "user_intent",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.1"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_scene_revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "event_sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 2,
+          "maxItems": 64
+        },
+        "user_intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "merge_edges"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "preserve_source_lineage": {
+              "const": true
+            }
+          },
+          "required": [
+            "preserve_source_lineage"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "project_id",
+        "expected_scene_revision",
+        "event_sequence",
+        "targets",
+        "user_intent",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.1"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_scene_revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "event_sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "user_intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "mark_protrusion"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "parent_edge_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "ordered_points_m": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3
+              },
+              "minItems": 4,
+              "maxItems": 64
+            },
+            "support_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "minItems": 0
+            },
+            "preserve_topology": {
+              "const": true
+            }
+          },
+          "required": [
+            "parent_edge_id",
+            "ordered_points_m",
+            "support_ids",
+            "preserve_topology"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "project_id",
+        "expected_scene_revision",
+        "event_sequence",
+        "targets",
+        "user_intent",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.1"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_scene_revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "event_sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "user_intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "mark_recess"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "parent_edge_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "ordered_points_m": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3
+              },
+              "minItems": 4,
+              "maxItems": 64
+            },
+            "support_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "minItems": 0
+            },
+            "preserve_topology": {
+              "const": true
+            }
+          },
+          "required": [
+            "parent_edge_id",
+            "ordered_points_m",
+            "support_ids",
+            "preserve_topology"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "project_id",
+        "expected_scene_revision",
+        "event_sequence",
+        "targets",
+        "user_intent",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.1"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_scene_revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "event_sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 0,
+          "maxItems": 64
+        },
+        "user_intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "mark_obstruction"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "footprint_m": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "minItems": 3,
+              "maxItems": 4096
+            },
+            "attachment": {
+              "type": "string",
+              "enum": [
+                "detached",
+                "attached",
+                "unresolved"
+              ]
+            },
+            "fixed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "footprint_m",
+            "attachment",
+            "fixed"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "project_id",
+        "expected_scene_revision",
+        "event_sequence",
+        "targets",
+        "user_intent",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.1"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_scene_revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "event_sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "user_intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "classify_object"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": "string",
+              "minLength": 1
+            },
+            "semantic_origin": {
+              "type": "string",
+              "enum": [
+                "user",
+                "external_proposal",
+                "local_model"
+              ]
+            },
+            "confidence": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "label",
+            "semantic_origin",
+            "confidence"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "project_id",
+        "expected_scene_revision",
+        "event_sequence",
+        "targets",
+        "user_intent",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.1"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_scene_revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "event_sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 0,
+          "maxItems": 64
+        },
+        "user_intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "set_dimension"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "endpoint_a": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "endpoint_b": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "value": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "unit": {
+              "type": "string",
+              "enum": [
+                "m",
+                "cm",
+                "mm"
+              ]
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "tape",
+                "laser",
+                "reference_survey",
+                "guess"
+              ]
+            },
+            "uncertainty_m": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "exact_model",
+                "soft_measurement"
+              ]
+            },
+            "weight": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          },
+          "required": [
+            "endpoint_a",
+            "endpoint_b",
+            "value",
+            "unit",
+            "source",
+            "uncertainty_m",
+            "mode",
+            "weight"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "project_id",
+        "expected_scene_revision",
+        "event_sequence",
+        "targets",
+        "user_intent",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.1"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_scene_revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "event_sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "user_intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "protect_feature"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "preserve_topology": {
+              "const": true
+            },
+            "lock_position": {
+              "const": false
+            }
+          },
+          "required": [
+            "preserve_topology",
+            "lock_position"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "project_id",
+        "expected_scene_revision",
+        "event_sequence",
+        "targets",
+        "user_intent",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.1"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_scene_revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "event_sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "user_intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "lock_position"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "position_m": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "explicit_confirmation": {
+              "const": true
+            }
+          },
+          "required": [
+            "position_m",
+            "explicit_confirmation"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "project_id",
+        "expected_scene_revision",
+        "event_sequence",
+        "targets",
+        "user_intent",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.1"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_scene_revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "event_sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "user_intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "unlock_position"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "constraint_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "constraint_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "project_id",
+        "expected_scene_revision",
+        "event_sequence",
+        "targets",
+        "user_intent",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.1"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_scene_revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "event_sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 0,
+          "maxItems": 64
+        },
+        "user_intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "mark_unknown"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "project_id",
+        "expected_scene_revision",
+        "event_sequence",
+        "targets",
+        "user_intent",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.1"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_scene_revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "event_sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 0,
+          "maxItems": 64
+        },
+        "user_intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "exclude_dynamic_region"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "min_m": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "max_m": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "start_sequence": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,19})$",
+              "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+            },
+            "end_sequence": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,19})$",
+              "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "min_m",
+            "max_m",
+            "start_sequence",
+            "end_sequence",
+            "reason"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "project_id",
+        "expected_scene_revision",
+        "event_sequence",
+        "targets",
+        "user_intent",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.1"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_scene_revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "event_sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 0,
+          "maxItems": 0
+        },
+        "user_intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "undo"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "original_command_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "original_command_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "project_id",
+        "expected_scene_revision",
+        "event_sequence",
+        "targets",
+        "user_intent",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.1"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_scene_revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "event_sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical uint64 decimal; additionally reject values above 18446744073709551615."
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 0,
+          "maxItems": 0
+        },
+        "user_intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "const": "redo"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "original_command_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "original_command_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "project_id",
+        "expected_scene_revision",
+        "event_sequence",
+        "targets",
+        "user_intent",
+        "type",
+        "payload"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

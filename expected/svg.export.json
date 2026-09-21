@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.1",
+  "export_id": "1ae8be04-d81c-5a14-94e4-3535721909a7",
+  "project_id": "d5708cd1-a901-5786-b7f7-d422ad92be92",
+  "scene_revision": "1",
+  "format": "SVG",
+  "units": "m",
+  "axes": "OBJ: +Y up; plan: U=+X,V=-Z; SVG screen Y inversion exactly once",
+  "view": "floor_footprint",
+  "cut_height_m": null,
+  "layers": [
+    "synthetic_reference"
+  ],
+  "quality_state": "provisional",
+  "warnings": [
+    "AUTHORED SYNTHETIC EXAMPLE, NOT A PHYSICAL SCAN",
+    "Not validated in an external CAD consumer",
+    "OBJ contains wall surfaces only; no hidden or invented measured geometry"
+  ],
+  "source_is_synthetic": true,
+  "assets": [
+    {
+      "path": "rib_plan.svg",
+      "bytes": 629,
+      "sha256": "5751c65a4d5dbbeceaf007da2314dec5881829e76eab80a891b22f16541e7827",
+      "role": "reference"
+    }
+  ]
+}

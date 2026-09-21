@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.1",
+  "command_id": "5ad5c287-689e-5ab3-9781-e2192b85abcf",
+  "project_id": "d5708cd1-a901-5786-b7f7-d422ad92be92",
+  "expected_scene_revision": "3",
+  "event_sequence": "102",
+  "targets": [
+    "339c43e0-f6c9-56fd-bbd2-f39bbfe6fe2b"
+  ],
+  "user_intent": "Synthetic example: split_edge",
+  "type": "split_edge",
+  "payload": {
+    "edge_parameter": 0.4,
+    "unexpected_field": "must reject"
+  }
+}
