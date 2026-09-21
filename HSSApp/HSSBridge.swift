@@ -10,14 +10,21 @@ public enum HSSBridgeError: Error, Equatable {
 
 @MainActor
 public final class HSSSnapshotLease {
-    private let handle: OpaquePointer
+    private let handleAddress: UInt
 
-    init(adopting handle: OpaquePointer) {
-        self.handle = handle
+    init(adoptingAddress handleAddress: UInt) {
+        self.handleAddress = handleAddress
+    }
+
+    private var handle: OpaquePointer {
+        guard let handle = OpaquePointer(bitPattern: handleAddress) else {
+            preconditionFailure("HSS snapshot handle became null")
+        }
+        return handle
     }
 
     deinit {
-        hss_snapshot_release(handle)
+        hss_snapshot_release(OpaquePointer(bitPattern: handleAddress))
     }
 
     public func counts() throws -> HSSCounts {
@@ -44,7 +51,7 @@ public final class HSSSnapshotLease {
 }
 
 public actor HSSEngineOwner {
-    private var handle: OpaquePointer?
+    private var handleAddress: UInt?
 
     public init(config: HSSConfig) throws {
         var copiedConfig = config
@@ -52,11 +59,15 @@ public actor HSSEngineOwner {
         let status = hss_engine_create(&copiedConfig, &created)
         guard status == HSS_OK else { throw HSSBridgeError.native(status) }
         guard let created else { throw HSSBridgeError.closed }
-        handle = created
+        handleAddress = UInt(bitPattern: created)
+    }
+
+    private var handle: OpaquePointer? {
+        handleAddress.flatMap(OpaquePointer.init(bitPattern:))
     }
 
     deinit {
-        hss_engine_destroy(handle)
+        hss_engine_destroy(handleAddress.flatMap(OpaquePointer.init(bitPattern:)))
     }
 
     public func step(workBudgetUs: UInt32) throws {
@@ -79,6 +90,6 @@ public actor HSSEngineOwner {
         let status = hss_engine_acquire_snapshot(handle, &acquired)
         guard status == HSS_OK else { throw HSSBridgeError.native(status) }
         guard let acquired else { throw HSSBridgeError.closed }
-        return await HSSSnapshotLease(adopting: acquired)
+        return await HSSSnapshotLease(adoptingAddress: UInt(bitPattern: acquired))
     }
 }
