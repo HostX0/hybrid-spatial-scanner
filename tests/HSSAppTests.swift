@@ -217,6 +217,7 @@ private enum StubSessionError: Error {
 private final class StubSessionDriver: CaptureSessionRunning {
     var eventHandler: ((CaptureSessionEvent) -> Void)?
     var sceneDepthIngestionHandler: ((SceneDepthIngestionResult) -> Void)?
+    var meshAnchorLifecycleHandler: ((MeshAnchorLifecycleResult) -> Void)?
     private(set) var runRequests: [CaptureSessionRunConfiguration] = []
     private(set) var stopCount = 0
     private let failingConfigurations: Set<CaptureSessionRunConfiguration>
@@ -235,6 +236,7 @@ private final class StubSessionDriver: CaptureSessionRunning {
         stopCount += 1
         eventHandler = nil
         sceneDepthIngestionHandler = nil
+        meshAnchorLifecycleHandler = nil
     }
 
     func send(_ event: CaptureSessionEvent) {

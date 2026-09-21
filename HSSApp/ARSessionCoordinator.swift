@@ -122,6 +122,7 @@ protocol CaptureFeatureSupportProviding {
 protocol CaptureSessionRunning: AnyObject {
     var eventHandler: ((CaptureSessionEvent) -> Void)? { get set }
     var sceneDepthIngestionHandler: ((SceneDepthIngestionResult) -> Void)? { get set }
+    var meshAnchorLifecycleHandler: ((MeshAnchorLifecycleResult) -> Void)? { get set }
     func run(configuration: CaptureSessionRunConfiguration) throws -> CaptureSessionRunConfiguration
     func stop()
 }
@@ -173,8 +174,10 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
     nonisolated private let sceneDepthNormalizer: SceneDepthFrameNormalizer
     nonisolated private let frameIdentity: SceneDepthFrameIdentitySequence
     nonisolated private let ingestionMailbox = SceneDepthIngestionMailbox()
+    nonisolated private let meshAnchorStore = MeshAnchorLifecycleStore()
     var eventHandler: ((CaptureSessionEvent) -> Void)?
     var sceneDepthIngestionHandler: ((SceneDepthIngestionResult) -> Void)?
+    var meshAnchorLifecycleHandler: ((MeshAnchorLifecycleResult) -> Void)?
 
     init(
         session: ARSession = ARSession(),
@@ -223,6 +226,7 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
         session.delegate = nil
         eventHandler = nil
         sceneDepthIngestionHandler = nil
+        meshAnchorLifecycleHandler = nil
     }
 
     deinit {
@@ -264,6 +268,30 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
         }
     }
 
+    nonisolated func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
+        ingestMeshAnchors(anchors, kind: .add)
+    }
+
+    nonisolated func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
+        ingestMeshAnchors(anchors, kind: .update)
+    }
+
+    nonisolated func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
+        ingestMeshAnchors(anchors, kind: .remove)
+    }
+
+    nonisolated private func ingestMeshAnchors(_ anchors: [ARAnchor], kind: MeshAnchorEventKind) {
+        for meshAnchor in anchors.compactMap({ $0 as? ARMeshAnchor }) {
+            let identity = frameIdentity.next()
+            let input = ARMeshAnchorLifecycleAdapter.makeInput(
+                anchor: meshAnchor, kind: kind, sessionEpoch: identity.epoch,
+                sequence: identity.sequence, monotonicTimestamp: ProcessInfo.processInfo.systemUptime
+            )
+            let result = meshAnchorStore.apply(input)
+            Task { @MainActor [weak self] in self?.meshAnchorLifecycleHandler?(result) }
+        }
+    }
+
     nonisolated func session(_ session: ARSession, didFailWithError error: any Error) {
         Task { @MainActor [weak self] in self?.eventHandler?(.failed) }
     }
@@ -288,12 +316,15 @@ final class ARSessionCoordinator: ObservableObject {
     @Published private(set) var effectiveConfiguration: EffectiveCaptureConfigurationReport?
     @Published private(set) var sceneDepthIngestionCounters: SceneDepthIngestionCounters
     @Published private(set) var lastSceneDepthRejection: SceneDepthFrameRejection?
+    @Published private(set) var meshAnchorLifecycleCounters: MeshAnchorLifecycleCounters
+    @Published private(set) var lastMeshAnchorRejection: MeshAnchorLifecycleRejection?
 
     private let readinessProvider: any CaptureReadinessProviding
     private let permissionRequester: any CameraPermissionRequesting
     private let supportProvider: any CaptureFeatureSupportProviding
     private let sessionDriver: any CaptureSessionRunning
     private let normalizedFrameSink: (NormalizedSceneDepthFrame) -> Void
+    private let meshAnchorSink: (OwnedMeshAnchorRevision?) -> Void
     private var activeConfiguration: CaptureSessionRunConfiguration?
     private var fallbackAttempted = false
 
@@ -302,13 +333,15 @@ final class ARSessionCoordinator: ObservableObject {
         permissionRequester: any CameraPermissionRequesting = SystemCameraPermissionRequester(),
         supportProvider: any CaptureFeatureSupportProviding = SystemCaptureFeatureSupportProvider(),
         sessionDriver: any CaptureSessionRunning = SystemARSessionDriver(),
-        normalizedFrameSink: @escaping (NormalizedSceneDepthFrame) -> Void = { _ in }
+        normalizedFrameSink: @escaping (NormalizedSceneDepthFrame) -> Void = { _ in },
+        meshAnchorSink: @escaping (OwnedMeshAnchorRevision?) -> Void = { _ in }
     ) {
         self.readinessProvider = readinessProvider
         self.permissionRequester = permissionRequester
         self.supportProvider = supportProvider
         self.sessionDriver = sessionDriver
         self.normalizedFrameSink = normalizedFrameSink
+        self.meshAnchorSink = meshAnchorSink
         let baseline = readinessProvider.currentReadiness()
         let initialTracking = CaptureTrackingState.notEstablished
         self.readiness = CaptureReadiness(
@@ -321,6 +354,8 @@ final class ARSessionCoordinator: ObservableObject {
         self.phase = .idle
         self.sceneDepthIngestionCounters = .zero
         self.lastSceneDepthRejection = nil
+        self.meshAnchorLifecycleCounters = .zero
+        self.lastMeshAnchorRejection = nil
         installSessionHandlers()
     }
 
@@ -476,9 +511,22 @@ final class ARSessionCoordinator: ObservableObject {
         }
     }
 
+    private func handle(_ result: MeshAnchorLifecycleResult) {
+        switch result {
+        case .accepted(let revision, let counters):
+            meshAnchorLifecycleCounters = counters
+            lastMeshAnchorRejection = nil
+            meshAnchorSink(revision)
+        case .rejected(let reason, let counters):
+            meshAnchorLifecycleCounters = counters
+            lastMeshAnchorRejection = reason
+        }
+    }
+
     private func installSessionHandlers() {
         sessionDriver.eventHandler = { [weak self] event in self?.handle(event) }
         sessionDriver.sceneDepthIngestionHandler = { [weak self] result in self?.handle(result) }
+        sessionDriver.meshAnchorLifecycleHandler = { [weak self] result in self?.handle(result) }
     }
 
     private func refreshReadiness(permissionOverride: CameraPermissionState? = nil) {
