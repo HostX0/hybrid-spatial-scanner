@@ -14,6 +14,7 @@
 		A10000000000000000000006 /* HSSBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* HSSBridge.swift */; };
 		A10000000000000000000007 /* hss_engine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* hss_engine.cpp */; };
 		A10000000000000000000008 /* ARSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* ARSessionCoordinator.swift */; };
+		A10000000000000000000009 /* coordinate_basis.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* coordinate_basis.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -28,6 +29,7 @@
 		A20000000000000000000005 /* HSSBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HSSBridge.swift; sourceTree = "<group>"; };
 		A20000000000000000000006 /* hss_engine.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ../SpatialCore/src/hss_engine.cpp; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000007 /* ARSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ARSessionCoordinator.swift; sourceTree = "<group>"; };
+		A20000000000000000000008 /* coordinate_basis.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ../SpatialCore/src/coordinate_basis.cpp; sourceTree = SOURCE_ROOT; };
 		A30000000000000000000001 /* HybridSpatialScanner.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HybridSpatialScanner.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A30000000000000000000002 /* libSpatialCore.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libSpatialCore.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		A30000000000000000000003 /* HybridSpatialScannerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HybridSpatialScannerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -42,7 +44,7 @@
 /* Begin PBXGroup section */
 		A80000000000000000000001 = {isa = PBXGroup; children = ( A80000000000000000000002 /* HSSApp */, A80000000000000000000003 /* SpatialCore */, A80000000000000000000004 /* Tests */, A80000000000000000000005 /* Products */, ); sourceTree = "<group>"; };
 		A80000000000000000000002 /* HSSApp */ = {isa = PBXGroup; children = ( A20000000000000000000001 /* HybridSpatialScannerApp.swift */, A20000000000000000000002 /* ReadinessView.swift */, A20000000000000000000007 /* ARSessionCoordinator.swift */, A20000000000000000000005 /* HSSBridge.swift */, ); path = ""; sourceTree = "<group>"; };
-		A80000000000000000000003 /* SpatialCore */ = {isa = PBXGroup; children = ( A20000000000000000000003 /* readiness.cpp */, A20000000000000000000006 /* hss_engine.cpp */, ); path = ../SpatialCore; sourceTree = "<group>"; };
+		A80000000000000000000003 /* SpatialCore */ = {isa = PBXGroup; children = ( A20000000000000000000003 /* readiness.cpp */, A20000000000000000000006 /* hss_engine.cpp */, A20000000000000000000008 /* coordinate_basis.cpp */, ); path = ../SpatialCore; sourceTree = "<group>"; };
 		A80000000000000000000004 /* Tests */ = {isa = PBXGroup; children = ( A20000000000000000000004 /* HSSAppTests.swift */, ); path = ../tests; sourceTree = "<group>"; };
 		A80000000000000000000005 /* Products */ = {isa = PBXGroup; children = ( A30000000000000000000001 /* HybridSpatialScanner.app */, A30000000000000000000002 /* libSpatialCore.a */, A30000000000000000000003 /* HybridSpatialScannerTests.xctest */, ); name = Products; sourceTree = "<group>"; };
 /* End PBXGroup section */
@@ -59,7 +61,7 @@
 
 /* Begin PBXSourcesBuildPhase section */
 		AA00000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = ( A10000000000000000000001 /* HybridSpatialScannerApp.swift in Sources */, A10000000000000000000002 /* ReadinessView.swift in Sources */, A10000000000000000000008 /* ARSessionCoordinator.swift in Sources */, A10000000000000000000006 /* HSSBridge.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
-		AA00000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = ( A10000000000000000000003 /* readiness.cpp in Sources */, A10000000000000000000007 /* hss_engine.cpp in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
+		AA00000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = ( A10000000000000000000003 /* readiness.cpp in Sources */, A10000000000000000000007 /* hss_engine.cpp in Sources */, A10000000000000000000009 /* coordinate_basis.cpp in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
 		AA00000000000000000000003 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = ( A10000000000000000000005 /* HSSAppTests.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
