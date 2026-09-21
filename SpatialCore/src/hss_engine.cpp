@@ -32,6 +32,8 @@ struct HSSSnapshot {
 
 namespace {
 
+constexpr uint64_t kMaxJsonRecordBytes = 16U * 1024U * 1024U;
+
 template <typename T>
 HSSStatus validate_message(const T* value) {
   if (value == nullptr) {
@@ -171,6 +173,14 @@ HSSStatus validate_bytes(HSSBytes bytes) {
   return HSS_OK;
 }
 
+HSSStatus validate_json_bytes(HSSBytes bytes) {
+  const HSSStatus status = validate_bytes(bytes);
+  if (status != HSS_OK) {
+    return status;
+  }
+  return bytes.length > kMaxJsonRecordBytes ? HSS_RESOURCE_LIMIT : HSS_OK;
+}
+
 HSSStatus remembered(HSSEngine* engine, HSSStatus status) {
   engine->last_status = status;
   return status;
@@ -219,8 +229,10 @@ extern "C" HSSStatus hss_engine_set_epoch(HSSEngine* engine, const HSSEpoch* epo
     if (status != HSS_OK) {
       return remembered(engine, status);
     }
-    if (epoch->relationship_state > 1U ||
-        !hss::coordinate::is_rigid_transform(epoch->T_project_world)) {
+    if (epoch->relationship_state > 1U) {
+      return remembered(engine, HSS_INVALID_ARGUMENT);
+    }
+    if (!hss::coordinate::is_rigid_transform(epoch->T_project_world)) {
       return remembered(engine, HSS_INVALID_COORDINATE_FRAME);
     }
     return remembered(engine, HSS_OK);
@@ -240,7 +252,10 @@ extern "C" HSSStatus hss_engine_submit_frame(HSSEngine* engine, const HSSFrame* 
     if (header_status != HSS_OK) {
       return remembered(engine, header_status);
     }
-    if (frame->tracking_state > 2U || frame->depth_source > 1U || !std::isfinite(frame->timestamp_s) ||
+    if (frame->tracking_state > 2U || frame->depth_source > 1U || frame->reserved != 0U) {
+      return remembered(engine, HSS_INVALID_ARGUMENT);
+    }
+    if (!std::isfinite(frame->timestamp_s) ||
         !hss::coordinate::is_rigid_transform(frame->T_world_camera)) {
       return remembered(engine, HSS_INVALID_COORDINATE_FRAME);
     }
@@ -298,7 +313,10 @@ extern "C" HSSStatus hss_engine_submit_mesh_event(HSSEngine* engine, const HSSMe
     if (header_status != HSS_OK) {
       return remembered(engine, header_status);
     }
-    if (event->kind > 2U || !hss::coordinate::is_rigid_transform(event->T_world_anchor)) {
+    if (event->kind > 2U) {
+      return remembered(engine, HSS_INVALID_ARGUMENT);
+    }
+    if (!hss::coordinate::is_rigid_transform(event->T_world_anchor)) {
       return remembered(engine, HSS_INVALID_COORDINATE_FRAME);
     }
     const bool remove = event->kind == 2U;
@@ -335,7 +353,7 @@ extern "C" HSSStatus hss_engine_submit_room_proposal_json(HSSEngine* engine, HSS
     if (engine == nullptr) {
       return HSS_INVALID_ARGUMENT;
     }
-    const HSSStatus bytes_status = validate_bytes(proposal);
+    const HSSStatus bytes_status = validate_json_bytes(proposal);
     if (bytes_status != HSS_OK) {
       return remembered(engine, bytes_status);
     }
@@ -353,7 +371,7 @@ extern "C" HSSStatus hss_engine_apply_command_json(HSSEngine* engine, HSSBytes c
     if (engine == nullptr) {
       return HSS_INVALID_ARGUMENT;
     }
-    const HSSStatus bytes_status = validate_bytes(command);
+    const HSSStatus bytes_status = validate_json_bytes(command);
     if (bytes_status != HSS_OK) {
       return remembered(engine, bytes_status);
     }
