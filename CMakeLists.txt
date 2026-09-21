@@ -11,6 +11,7 @@ option(HSS_BUILD_TESTS "Build portable host tests" ON)
 # immutable-empty-snapshot contracts only. It does not implement a scanner.
 add_library(SpatialCore STATIC
   SpatialCore/src/hss_engine.cpp
+  SpatialCore/src/coordinate_basis.cpp
   SpatialCore/src/readiness.cpp
 )
 target_include_directories(SpatialCore
@@ -29,7 +30,9 @@ add_executable(cpp_math_test tests/cpp_math_test.cpp)
 target_include_directories(cpp_math_test PRIVATE include reference/cpp)
 add_executable(hss_engine_contract_test tests/hss_engine_contract_test.cpp)
 target_link_libraries(hss_engine_contract_test PRIVATE SpatialCore)
-foreach(target abi_smoke cpp_math_test hss_engine_contract_test)
+add_executable(hss_coordinate_basis_test tests/hss_coordinate_basis_test.cpp)
+target_link_libraries(hss_coordinate_basis_test PRIVATE SpatialCore)
+foreach(target abi_smoke cpp_math_test hss_engine_contract_test hss_coordinate_basis_test)
  target_compile_options(${target} PRIVATE -Wall -Wextra -Werror -Wpedantic)
  if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -44,4 +47,5 @@ enable_testing()
 add_test(NAME abi_smoke COMMAND abi_smoke)
 add_test(NAME cpp_math COMMAND cpp_math_test)
 add_test(NAME hss_engine_contract COMMAND hss_engine_contract_test)
+add_test(NAME hss_coordinate_basis COMMAND hss_coordinate_basis_test)
 endif()

@@ -1,7 +1,7 @@
 #include "hss/hss_api.h"
+#include "hss/coordinate_basis.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -31,8 +31,6 @@ struct HSSSnapshot {
 };
 
 namespace {
-
-constexpr double kRigidTolerance = 1.0e-6;
 
 template <typename T>
 HSSStatus validate_message(const T* value) {
@@ -74,44 +72,6 @@ bool multiply_add_fits(uint64_t stride, uint32_t rows, uint64_t row_bytes,
   }
   *required = stride * preceding_rows + row_bytes;
   return true;
-}
-
-bool rigid_transform(const HSSMat4d& matrix) {
-  const double* m = matrix.column_major;
-  for (size_t i = 0; i < 16; ++i) {
-    if (!std::isfinite(m[i])) {
-      return false;
-    }
-  }
-  if (std::abs(m[3]) > kRigidTolerance || std::abs(m[7]) > kRigidTolerance ||
-      std::abs(m[11]) > kRigidTolerance || std::abs(m[15] - 1.0) > kRigidTolerance) {
-    return false;
-  }
-  const std::array<std::array<double, 3>, 3> columns{{
-      {{m[0], m[1], m[2]}}, {{m[4], m[5], m[6]}}, {{m[8], m[9], m[10]}}}};
-  for (size_t column = 0; column < 3; ++column) {
-    double length_squared = 0.0;
-    for (double component : columns[column]) {
-      length_squared += component * component;
-    }
-    if (std::abs(length_squared - 1.0) > kRigidTolerance) {
-      return false;
-    }
-    for (size_t other = column + 1; other < 3; ++other) {
-      double dot = 0.0;
-      for (size_t component = 0; component < 3; ++component) {
-        dot += columns[column][component] * columns[other][component];
-      }
-      if (std::abs(dot) > kRigidTolerance) {
-        return false;
-      }
-    }
-  }
-  const double determinant =
-      m[0] * (m[5] * m[10] - m[9] * m[6]) -
-      m[4] * (m[1] * m[10] - m[9] * m[2]) +
-      m[8] * (m[1] * m[6] - m[5] * m[2]);
-  return std::abs(determinant - 1.0) <= kRigidTolerance;
 }
 
 HSSStatus validate_config(const HSSConfig* config) {
@@ -259,7 +219,8 @@ extern "C" HSSStatus hss_engine_set_epoch(HSSEngine* engine, const HSSEpoch* epo
     if (status != HSS_OK) {
       return remembered(engine, status);
     }
-    if (epoch->relationship_state > 1U || !rigid_transform(epoch->T_project_world)) {
+    if (epoch->relationship_state > 1U ||
+        !hss::coordinate::is_rigid_transform(epoch->T_project_world)) {
       return remembered(engine, HSS_INVALID_COORDINATE_FRAME);
     }
     return remembered(engine, HSS_OK);
@@ -280,7 +241,7 @@ extern "C" HSSStatus hss_engine_submit_frame(HSSEngine* engine, const HSSFrame* 
       return remembered(engine, header_status);
     }
     if (frame->tracking_state > 2U || frame->depth_source > 1U || !std::isfinite(frame->timestamp_s) ||
-        !rigid_transform(frame->T_world_camera)) {
+        !hss::coordinate::is_rigid_transform(frame->T_world_camera)) {
       return remembered(engine, HSS_INVALID_COORDINATE_FRAME);
     }
     if (!finite_positive(frame->depth_intrinsics.fx) || !finite_positive(frame->depth_intrinsics.fy) ||
@@ -337,7 +298,7 @@ extern "C" HSSStatus hss_engine_submit_mesh_event(HSSEngine* engine, const HSSMe
     if (header_status != HSS_OK) {
       return remembered(engine, header_status);
     }
-    if (event->kind > 2U || !rigid_transform(event->T_world_anchor)) {
+    if (event->kind > 2U || !hss::coordinate::is_rigid_transform(event->T_world_anchor)) {
       return remembered(engine, HSS_INVALID_COORDINATE_FRAME);
     }
     const bool remove = event->kind == 2U;
