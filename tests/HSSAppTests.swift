@@ -137,6 +137,7 @@ final class HSSAppTests: XCTestCase {
 
         XCTAssertEqual(driver.stopCount, 1)
         XCTAssertNil(driver.eventHandler)
+        XCTAssertNil(driver.sceneDepthIngestionHandler)
         XCTAssertFalse(coordinator.isSessionRunning)
         XCTAssertEqual(coordinator.phase, .stopped)
     }
@@ -215,6 +216,7 @@ private enum StubSessionError: Error {
 @MainActor
 private final class StubSessionDriver: CaptureSessionRunning {
     var eventHandler: ((CaptureSessionEvent) -> Void)?
+    var sceneDepthIngestionHandler: ((SceneDepthIngestionResult) -> Void)?
     private(set) var runRequests: [CaptureSessionRunConfiguration] = []
     private(set) var stopCount = 0
     private let failingConfigurations: Set<CaptureSessionRunConfiguration>
@@ -232,9 +234,14 @@ private final class StubSessionDriver: CaptureSessionRunning {
     func stop() {
         stopCount += 1
         eventHandler = nil
+        sceneDepthIngestionHandler = nil
     }
 
     func send(_ event: CaptureSessionEvent) {
         eventHandler?(event)
+    }
+
+    func send(_ result: SceneDepthIngestionResult) {
+        sceneDepthIngestionHandler?(result)
     }
 }

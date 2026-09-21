@@ -121,6 +121,7 @@ protocol CaptureFeatureSupportProviding {
 @MainActor
 protocol CaptureSessionRunning: AnyObject {
     var eventHandler: ((CaptureSessionEvent) -> Void)? { get set }
+    var sceneDepthIngestionHandler: ((SceneDepthIngestionResult) -> Void)? { get set }
     func run(configuration: CaptureSessionRunConfiguration) throws -> CaptureSessionRunConfiguration
     func stop()
 }
@@ -169,10 +170,20 @@ enum SystemARSessionDriverError: Error {
 @MainActor
 final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDelegate {
     private let session: ARSession
+    nonisolated private let sceneDepthNormalizer: SceneDepthFrameNormalizer
+    nonisolated private let frameIdentity: SceneDepthFrameIdentitySequence
+    nonisolated private let ingestionMailbox = SceneDepthIngestionMailbox()
     var eventHandler: ((CaptureSessionEvent) -> Void)?
+    var sceneDepthIngestionHandler: ((SceneDepthIngestionResult) -> Void)?
 
-    init(session: ARSession = ARSession()) {
+    init(
+        session: ARSession = ARSession(),
+        sessionEpoch: UInt64 = 0,
+        sceneDepthNormalizer: SceneDepthFrameNormalizer = SceneDepthFrameNormalizer()
+    ) {
         self.session = session
+        self.sceneDepthNormalizer = sceneDepthNormalizer
+        self.frameIdentity = SceneDepthFrameIdentitySequence(sessionEpoch: sessionEpoch)
         super.init()
     }
 
@@ -211,6 +222,7 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
         session.pause()
         session.delegate = nil
         eventHandler = nil
+        sceneDepthIngestionHandler = nil
     }
 
     deinit {
@@ -239,6 +251,19 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
         Task { @MainActor [weak self] in self?.eventHandler?(.tracking(state)) }
     }
 
+    nonisolated func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        let identity = frameIdentity.next()
+        let input = ARFrameSceneDepthAdapter.makeInput(
+            frame: frame,
+            sessionEpoch: identity.epoch,
+            sequence: identity.sequence
+        )
+        let result = sceneDepthNormalizer.normalize(input)
+        ingestionMailbox.submit(result) { [weak self] result in
+            self?.sceneDepthIngestionHandler?(result)
+        }
+    }
+
     nonisolated func session(_ session: ARSession, didFailWithError error: any Error) {
         Task { @MainActor [weak self] in self?.eventHandler?(.failed) }
     }
@@ -261,11 +286,14 @@ final class ARSessionCoordinator: ObservableObject {
     @Published private(set) var readiness: CaptureReadiness
     @Published private(set) var trackingState: CaptureTrackingState
     @Published private(set) var effectiveConfiguration: EffectiveCaptureConfigurationReport?
+    @Published private(set) var sceneDepthIngestionCounters: SceneDepthIngestionCounters
+    @Published private(set) var lastSceneDepthRejection: SceneDepthFrameRejection?
 
     private let readinessProvider: any CaptureReadinessProviding
     private let permissionRequester: any CameraPermissionRequesting
     private let supportProvider: any CaptureFeatureSupportProviding
     private let sessionDriver: any CaptureSessionRunning
+    private let normalizedFrameSink: (NormalizedSceneDepthFrame) -> Void
     private var activeConfiguration: CaptureSessionRunConfiguration?
     private var fallbackAttempted = false
 
@@ -273,12 +301,14 @@ final class ARSessionCoordinator: ObservableObject {
         readinessProvider: any CaptureReadinessProviding = CaptureReadinessProvider(),
         permissionRequester: any CameraPermissionRequesting = SystemCameraPermissionRequester(),
         supportProvider: any CaptureFeatureSupportProviding = SystemCaptureFeatureSupportProvider(),
-        sessionDriver: any CaptureSessionRunning = SystemARSessionDriver()
+        sessionDriver: any CaptureSessionRunning = SystemARSessionDriver(),
+        normalizedFrameSink: @escaping (NormalizedSceneDepthFrame) -> Void = { _ in }
     ) {
         self.readinessProvider = readinessProvider
         self.permissionRequester = permissionRequester
         self.supportProvider = supportProvider
         self.sessionDriver = sessionDriver
+        self.normalizedFrameSink = normalizedFrameSink
         let baseline = readinessProvider.currentReadiness()
         let initialTracking = CaptureTrackingState.notEstablished
         self.readiness = CaptureReadiness(
@@ -289,7 +319,9 @@ final class ARSessionCoordinator: ObservableObject {
         )
         self.trackingState = initialTracking
         self.phase = .idle
-        sessionDriver.eventHandler = { [weak self] event in self?.handle(event) }
+        self.sceneDepthIngestionCounters = .zero
+        self.lastSceneDepthRejection = nil
+        installSessionHandlers()
     }
 
     var canRequestCameraPermission: Bool {
@@ -340,7 +372,7 @@ final class ARSessionCoordinator: ObservableObject {
             return
         }
 
-        sessionDriver.eventHandler = { [weak self] event in self?.handle(event) }
+        installSessionHandlers()
         fallbackAttempted = false
         phase = .starting
 
@@ -430,6 +462,23 @@ final class ARSessionCoordinator: ObservableObject {
             refreshReadiness()
             phase = .awaitingNormalTracking
         }
+    }
+
+    private func handle(_ result: SceneDepthIngestionResult) {
+        switch result {
+        case .accepted(let frame, let counters):
+            sceneDepthIngestionCounters = counters
+            lastSceneDepthRejection = nil
+            normalizedFrameSink(frame)
+        case .rejected(let reason, let counters):
+            sceneDepthIngestionCounters = counters
+            lastSceneDepthRejection = reason
+        }
+    }
+
+    private func installSessionHandlers() {
+        sessionDriver.eventHandler = { [weak self] event in self?.handle(event) }
+        sessionDriver.sceneDepthIngestionHandler = { [weak self] result in self?.handle(result) }
     }
 
     private func refreshReadiness(permissionOverride: CameraPermissionState? = nil) {
