@@ -8,8 +8,8 @@ enum CameraPermissionState: Equatable {
     case authorized, denied, restricted, notDetermined
 }
 
-/// B-003 has no ARSession. `notEstablished` is consequently the honest system
-/// value until the later capture packet owns and observes a session.
+/// `notEstablished` is the honest value until the explicit capture flow starts
+/// the owned ARSession and receives a tracking callback.
 enum InitialTrackingState: Equatable {
     case normal, limited, unavailable, notEstablished
 }
@@ -100,24 +100,53 @@ struct SystemCapturePlatform: CapturePlatformInspecting {
     }
 }
 
-/// A capability gate only: this view does not request access or initialize ARKit.
+/// Readiness and explicit lifecycle controls for the one owned ARKit session.
+/// Merely presenting this view never requests camera permission or starts ARKit.
 struct ReadinessView: View {
-    private let readiness: CaptureReadiness
+    @StateObject private var coordinator: ARSessionCoordinator
 
-    init(provider: any CaptureReadinessProviding = CaptureReadinessProvider()) {
-        readiness = provider.currentReadiness()
+    @MainActor
+    init(coordinator: ARSessionCoordinator = ARSessionCoordinator()) {
+        _coordinator = StateObject(wrappedValue: coordinator)
     }
 
     var body: some View {
         List {
             Section {
-                Label(readiness.isReadyForCapture ? "Capture requirements are ready" : "Capture is unavailable", systemImage: readiness.isReadyForCapture ? "checkmark.circle" : "exclamationmark.triangle")
+                Label(coordinator.phase.summary, systemImage: coordinator.readiness.isReadyForCapture ? "checkmark.circle" : "exclamationmark.triangle")
             } footer: {
-                Text("This screen checks readiness only. It does not request permission, initialize an AR session, start capture, or create geometry.")
+                Text("Camera access and ARKit start only after the corresponding button is selected. RoomPlan is not enabled until shared-session behavior is physically validated.")
             }
-            if !readiness.isReadyForCapture {
+            if !coordinator.readiness.isReadyForCapture {
                 Section("Blocked conditions") {
-                    ForEach(readiness.blockedConditions, id: \.self) { condition in Text(condition) }
+                    ForEach(coordinator.readiness.blockedConditions, id: \.self) { condition in Text(condition) }
+                }
+            }
+            Section("Actions") {
+                if coordinator.canRequestCameraPermission {
+                    Button("Allow Camera") {
+                        Task { await coordinator.requestCameraPermission() }
+                    }
+                }
+                if coordinator.canStartSession && !coordinator.isSessionRunning {
+                    Button("Start ARKit Session") { coordinator.startSession() }
+                }
+                if coordinator.isSessionRunning {
+                    Button("Stop Session", role: .destructive) { coordinator.stopSession() }
+                }
+            }
+            if let report = coordinator.effectiveConfiguration {
+                Section("Effective configuration") {
+                    LabeledContent("Requested depth", value: report.requestedDepthSemantic.rawValue)
+                    LabeledContent("Supported depth", value: report.sceneDepthSupported ? "sceneDepth" : "none")
+                    LabeledContent("Chosen depth", value: report.chosenDepthSemantic.rawValue)
+                    LabeledContent("Requested mesh", value: report.requestedMeshOption.rawValue)
+                    LabeledContent("Supported mesh", value: report.meshReconstructionSupported ? "mesh" : "none")
+                    LabeledContent("Chosen mesh", value: report.chosenMeshOption.rawValue)
+                    LabeledContent("RoomPlan", value: "Not enabled; physical shared-session validation pending")
+                    if let reason = report.fallbackReason {
+                        Text("Fallback: \(reason)")
+                    }
                 }
             }
         }

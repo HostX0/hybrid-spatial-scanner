@@ -4,7 +4,9 @@ import SwiftUI
 struct HybridSpatialScannerApp: App {
     var body: some Scene {
         WindowGroup {
-            ReadinessView()
+            NavigationStack {
+                ReadinessView()
+            }
         }
     }
 }
