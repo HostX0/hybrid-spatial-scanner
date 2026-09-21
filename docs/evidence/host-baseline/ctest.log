@@ -1,0 +1,10 @@
+Internal ctest changing into directory: /Users/abdulazeez/Documents/Codex/2026-09-22/pf-x20/outputs/hybrid-spatial-scanner/docs/evidence/host-baseline/build
+Test project /Users/abdulazeez/Documents/Codex/2026-09-22/pf-x20/outputs/hybrid-spatial-scanner/docs/evidence/host-baseline/build
+    Start 1: abi_smoke
+1/2 Test #1: abi_smoke ........................   Passed    0.31 sec
+    Start 2: cpp_math
+2/2 Test #2: cpp_math .........................   Passed    0.22 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =   0.53 sec
