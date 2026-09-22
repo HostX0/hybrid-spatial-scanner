@@ -105,7 +105,7 @@ int main() {
   HSSEngineStats ingress_stats{};
   check(hss_engine_get_stats(engine, &ingress_stats) == HSS_OK &&
             ingress_stats.accepted_frames == 1U && ingress_stats.pending_frames == 1U &&
-            ingress_stats.working_bytes == 4U,
+            ingress_stats.working_bytes == 2052U,
         "ingress exposes accepted frame, pending frame, and owned byte accounting");
   frame.abi_version = HSS_ABI_VERSION + 1U;
   check(hss_engine_submit_frame(engine, &frame) == HSS_UNSUPPORTED_VERSION,
@@ -169,17 +169,17 @@ int main() {
         "null JSON pointer with length rejected");
   check(hss_engine_apply_command_json(engine, {&byte, 16U * 1024U * 1024U + 1U}) == HSS_RESOURCE_LIMIT,
         "oversized JSON rejected before dereference");
-  check(hss_engine_apply_command_json(engine, {&byte, 1U}) == HSS_OK,
-        "command is synchronously copied into bounded ingress");
+  check(hss_engine_apply_command_json(engine, {&byte, 1U}) == HSS_UNSUPPORTED_CAPABILITY,
+        "unwired command execution is explicitly unsupported");
   check(hss_engine_get_stats(engine, &ingress_stats) == HSS_OK &&
-            ingress_stats.accepted_commands == 1U && ingress_stats.pending_frames == 2U,
+            ingress_stats.accepted_commands == 0U && ingress_stats.pending_frames == 2U,
         "command acceptance and frame queue accounting are visible in stats");
-  check(hss_engine_step(engine, 1U) == HSS_OK, "bounded step drains at most one FIFO event");
+  check(hss_engine_step(engine, 1U) == HSS_INVALID_COORDINATE_FRAME, "unregistered epoch fails without publication");
   check(hss_engine_get_stats(engine, &ingress_stats) == HSS_OK && ingress_stats.pending_frames == 1U,
         "step releases the first queued frame without retaining its input buffer");
 
   HSSConfig constrained_config = valid_config();
-  constrained_config.max_working_bytes = 4U;
+  constrained_config.max_working_bytes = 4100U;
   constrained_config.max_pending_frames = 1U;
   HSSEngine* constrained_engine = nullptr;
   check(hss_engine_create(&constrained_config, &constrained_engine) == HSS_OK,
@@ -200,12 +200,12 @@ int main() {
   removal.T_world_anchor = identity_transform();
   check(hss_engine_submit_mesh_event(constrained_engine, &removal) == HSS_OK,
         "zero-byte mesh removal is retained while frames are full");
-  check(hss_engine_apply_command_json(constrained_engine, {&byte, 1U}) == HSS_RESOURCE_LIMIT,
-        "stalled consumer gets explicit command backpressure");
-  check(hss_engine_step(constrained_engine, 1U) == HSS_OK,
-        "constrained consumer drains one event");
-  check(hss_engine_apply_command_json(constrained_engine, {&byte, 1U}) == HSS_OK,
-        "caller can retry command after capacity returns");
+  check(hss_engine_apply_command_json(constrained_engine, {&byte, 1U}) == HSS_UNSUPPORTED_CAPABILITY,
+        "commands remain explicitly unsupported");
+  check(hss_engine_step(constrained_engine, 1U) == HSS_INVALID_COORDINATE_FRAME,
+        "invalid epoch event releases queued reservation");
+  check(hss_engine_submit_frame(constrained_engine, &constrained_frame) == HSS_OK,
+        "caller can enqueue a frame after capacity returns");
   hss_engine_destroy(constrained_engine);
 
   uint64_t command_required = 99U;
@@ -228,7 +228,7 @@ int main() {
 
   HSSCounts counts{};
   check(hss_snapshot_get_counts(snapshot, &counts) == HSS_OK, "snapshot survives engine destroy");
-  check(counts.vertex_count == 0U && counts.triangle_count == 0U, "empty facade snapshot has no scanner geometry");
+  check(counts.vertex_count == 0U && counts.triangle_count == 0U, "failed evidence does not create geometry");
 
   uint64_t required = 0;
   check(hss_snapshot_copy_scene_json(snapshot, nullptr, 0, &required) == HSS_BUFFER_TOO_SMALL && required > 0U,
@@ -246,6 +246,6 @@ int main() {
   hss_snapshot_release(snapshot);
   hss_snapshot_release(nullptr);
 
-  std::cout << "HSS engine facade ownership and copy-out checks passed (no scanner output)\n";
+  std::cout << "HSS engine facade ownership, rejection and copy-out checks passed\n";
   return EXIT_SUCCESS;
 }

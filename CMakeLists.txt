@@ -7,11 +7,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(HSS_ENABLE_SANITIZERS "Host address and undefined behavior sanitizers" OFF)
 option(HSS_BUILD_TESTS "Build portable host tests" ON)
 
-# This portable facade implements ABI ownership, status, synchronous-copy, and
-# immutable-empty-snapshot contracts only. It does not implement a scanner.
+# Portable captured-mesh reconstruction; physical/device acceptance remains separate.
 add_library(SpatialCore STATIC
   SpatialCore/src/bounded_ingress.cpp
   SpatialCore/src/hss_engine.cpp
+  SpatialCore/src/live_reconstruction.cpp
   SpatialCore/src/coordinate_basis.cpp
   SpatialCore/src/durable_source_store.cpp
   SpatialCore/src/interruption_recovery.cpp
@@ -166,6 +166,8 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   target_link_options(hss_guidance_policy INTERFACE -fsanitize=address,undefined)
 endif()
 
+target_link_libraries(SpatialCore PUBLIC hss_robust_plane_fit hss_boundary_graph hss_topology_protection hss_ring_net_area)
+
 if(HSS_BUILD_TESTS)
 add_executable(abi_smoke tests/abi_smoke.c)
 target_include_directories(abi_smoke PRIVATE include)
@@ -291,4 +293,15 @@ add_test(NAME hss_revisioned_command COMMAND hss_revisioned_command_test)
 add_test(NAME hss_guidance_policy COMMAND hss_guidance_policy_test)
 add_test(NAME hss_project_import_validation COMMAND hss_project_import_validation_test)
 add_test(NAME hss_resource_policy COMMAND hss_resource_policy_test)
+endif()
+
+if(HSS_BUILD_TESTS)
+add_executable(hss_live_reconstruction_test tests/hss_live_reconstruction_test.cpp)
+target_link_libraries(hss_live_reconstruction_test PRIVATE SpatialCore)
+target_compile_options(hss_live_reconstruction_test PRIVATE -Wall -Wextra -Werror -Wpedantic)
+if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+ target_compile_options(hss_live_reconstruction_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+ target_link_options(hss_live_reconstruction_test PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME hss_live_reconstruction COMMAND hss_live_reconstruction_test)
 endif()

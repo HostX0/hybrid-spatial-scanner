@@ -9,6 +9,8 @@ import simd
 struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
     @ObservedObject var workspace: Model
     @State private var isCreatingProject = false
+    @State private var isObjectCapturePresented = false
+    @State private var completedObjectArtifact: ObjectCaptureArtifact?
 
     var body: some View {
         ScannerWorkspaceView(
@@ -35,6 +37,14 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             )
             .presentationDetents([.medium])
         }
+        .sheet(isPresented: $isObjectCapturePresented) {
+            // This is deliberately a separate RealityKit-owned workflow. It is
+            // offered only after room capture has stopped and never enters the
+            // workspace's metric scene or project save path.
+            ObjectCaptureWorkflowView { artifact in
+                completedObjectArtifact = artifact
+            }
+        }
         .task { workspace.reloadProjects() }
     }
 
@@ -42,7 +52,9 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
         let selectedProject = workspace.selectedProjectID.flatMap { selectedID in
             workspace.localProjects.first(where: { $0.id == selectedID })
         }
-        let snapshotPlan = workspace.latestSnapshot.flatMap(ScannerAcceptedPlanDecoder.decode)
+        let reviewData = workspace.latestSnapshot.flatMap(ScannerAcceptedPlanDecoder.decode)
+        let isReferenceScene = reviewData?.isSynthetic == true
+            || workspace.latestSnapshot?.provenance.contains(.syntheticTest) == true
         return ScannerWorkspacePresentation(
             mode: mode,
             captureState: captureState,
@@ -50,15 +62,20 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             project: selectedProject.map(projectPresentation),
             projects: workspace.localProjects.map(projectPresentation),
             issues: issues,
-            measurements: [],
-            plan: snapshotPlan,
-            hasCapturedScene: workspace.latestSnapshot.map { !$0.provenance.contains(.syntheticTest) } ?? false,
+            measurements: reviewData?.measurements ?? [],
+            plan: reviewData?.plan,
+            hasCapturedScene: reviewData != nil && !isReferenceScene,
+            isReferenceScene: isReferenceScene,
+            objectDetailDescription: completedObjectArtifact.map { _ in
+                String(localized: "A detailed object model was saved separately on this device.")
+            },
             canStartCapture: workspace.phase == .ready || workspace.phase == .browsing,
             canFinishCapture: workspace.phase == .capturing,
             canAssist: false,
             canUndo: false,
             canSave: workspace.saveState == .hasUnsavedChanges,
-            canOpenLibrary: false
+            canOpenLibrary: workspace.canShowLibrary,
+            canCaptureObject: canCaptureObject
         )
     }
 
@@ -75,8 +92,9 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             assist: {},
             undo: {},
             save: workspace.saveSelectedProject,
-            openLibrary: {},
+            openLibrary: workspace.showLibrary,
             openProject: workspace.openProject,
+            captureObject: { isObjectCapturePresented = true },
             recover: { _ in workspace.recoverFromCurrentIssue() }
         )
     }
@@ -137,7 +155,8 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
                 )
             )
         }
-        if workspace.latestSnapshot?.provenance.contains(.syntheticTest) == true {
+        if workspace.latestSnapshot?.provenance.contains(.syntheticTest) == true
+            || workspace.latestSnapshot.flatMap(ScannerAcceptedPlanDecoder.decode)?.isSynthetic == true {
             visible.append(
                 ScannerWorkspacePresentation.Issue(
                     id: UUID(),
@@ -168,6 +187,16 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
         case .returnToProjectList: String(localized: "View projects")
         case .stopCaptureAndSaveDraft: String(localized: "Save draft")
         case nil: nil
+        }
+    }
+
+    private var canCaptureObject: Bool {
+        switch workspace.phase {
+        case .frozen, .saving, .openingProject:
+            true
+        case .browsing, .preparingProject, .ready, .startingCapture, .capturing,
+             .stoppingCapture, .captureUnsupported, .failed:
+            false
         }
     }
 }
@@ -296,10 +325,11 @@ private enum ScannerAcceptedPlanDecoder {
         let basis: Basis
         let nodes: [Node]
         let edges: [Edge]
+        let regions: [Region]
 
         enum CodingKeys: String, CodingKey {
             case sourceIsSynthetic = "source_is_synthetic"
-            case basis, nodes, edges
+            case basis, nodes, edges, regions
         }
     }
 
@@ -326,13 +356,32 @@ private enum ScannerAcceptedPlanDecoder {
     }
 
     private struct Edge: Decodable {
+        let id: UUID
         let start: UUID
         let end: UUID
         let provenance: Provenance
 
         enum CodingKeys: String, CodingKey {
-            case start = "start_node_id"
+            case id, start = "start_node_id"
             case end = "end_node_id"
+            case provenance
+        }
+    }
+
+    private struct Region: Decodable {
+        let id: UUID
+        let areaMetresSquared: Double?
+        let areaPolicy: String
+        let view: String
+        let cutHeightMetres: Double
+        let provenance: Provenance
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case areaMetresSquared = "area_m2"
+            case areaPolicy = "area_policy"
+            case view
+            case cutHeightMetres = "cut_height_m"
             case provenance
         }
     }
@@ -343,13 +392,19 @@ private enum ScannerAcceptedPlanDecoder {
         enum CodingKeys: String, CodingKey { case origin = "geometry_origin" }
     }
 
-    static func decode(_ snapshot: ScannerSceneSnapshot) -> ScannerWorkspacePresentation.Plan? {
+    struct ReviewData {
+        let plan: ScannerWorkspacePresentation.Plan
+        let measurements: [ScannerWorkspacePresentation.Measurement]
+        let isSynthetic: Bool
+    }
+
+    static func decode(_ snapshot: ScannerSceneSnapshot) -> ReviewData? {
         guard let scene = try? JSONDecoder().decode(Scene.self, from: snapshot.sceneJSON),
-              !scene.sourceIsSynthetic,
               let origin = vector(scene.basis.floorOrigin),
               let u = vector(scene.basis.floorU),
               let v = vector(scene.basis.floorV),
-              simd_length(u) > 0, simd_length(v) > 0 else { return nil }
+              approximatelyUnit(u), approximatelyUnit(v),
+              abs(simd_dot(u, v)) < 0.001 else { return nil }
 
         let coordinates = Dictionary(uniqueKeysWithValues: scene.nodes.compactMap { node in
             vector(node.position).map {
@@ -359,26 +414,109 @@ private enum ScannerAcceptedPlanDecoder {
                 ))
             }
         })
-        let linePairs = scene.edges.compactMap { edge -> (CGPoint, CGPoint, Bool)? in
+        let linePairs = scene.edges.compactMap { edge -> (UUID, CGPoint, CGPoint, ScannerWorkspacePresentation.Measurement.Evidence)? in
             guard let start = coordinates[edge.start], let end = coordinates[edge.end] else { return nil }
-            return (start, end, edge.provenance.origin == "unknown" || edge.provenance.origin == "inferred")
+            return (edge.id, start, end, evidence(for: edge.provenance.origin))
         }
-        let observed = linePairs.filter { !$0.2 }.map { [$0.0, $0.1] }
-        let unknown = linePairs.filter { $0.2 }.map { [$0.0, $0.1] }
-        let points = linePairs.flatMap { [$0.0, $0.1] }
+        let observed = linePairs.filter { $0.3 != .unknown && $0.3 != .inferred }.map { [$0.1, $0.2] }
+        let unknown = linePairs.filter { $0.3 == .unknown || $0.3 == .inferred }.map { [$0.1, $0.2] }
+        let points = linePairs.flatMap { [$0.1, $0.2] }
         guard let first = points.first else { return nil }
         let bounds = points.dropFirst().reduce(CGRect(origin: first, size: .zero)) { partial, point in
             partial.union(CGRect(origin: point, size: .zero))
         }
-        return ScannerWorkspacePresentation.Plan(
-            polylinesMetres: observed,
-            unknownPolylinesMetres: unknown,
-            boundsMetres: bounds.insetBy(dx: -0.05, dy: -0.05)
+        let dimensions = linePairs.enumerated().compactMap { index, edge -> ScannerWorkspacePresentation.Measurement? in
+            let length = hypot(edge.2.x - edge.1.x, edge.2.y - edge.1.y)
+            guard length.isFinite, length > 0 else { return nil }
+            return ScannerWorkspacePresentation.Measurement(
+                id: edge.0,
+                label: "\(String(localized: "Boundary")) \(index + 1)",
+                value: lengthMetres(length),
+                evidence: edge.3,
+                detail: nil
+            )
+        }
+        let annotations = linePairs.compactMap { edge -> ScannerWorkspacePresentation.DimensionAnnotation? in
+            let length = hypot(edge.2.x - edge.1.x, edge.2.y - edge.1.y)
+            guard length.isFinite, length > 0 else { return nil }
+            return ScannerWorkspacePresentation.DimensionAnnotation(
+                id: edge.0,
+                startMetres: edge.1,
+                endMetres: edge.2,
+                label: lengthMetres(length),
+                evidence: edge.3
+            )
+        }
+        let areaMeasurements = scene.regions.map { region in
+            let isKnown = region.areaMetresSquared.map { $0.isFinite && $0 >= 0 } ?? false
+            return ScannerWorkspacePresentation.Measurement(
+                id: region.id,
+                label: region.view == "architectural_cut"
+                    ? String(localized: "Architectural cut area")
+                    : String(localized: "Floor footprint area"),
+                value: isKnown ? areaMetresSquared(region.areaMetresSquared!) : nil,
+                evidence: isKnown ? evidence(for: region.provenance.origin) : .unknown,
+                detail: regionDetail(region)
+            )
+        }
+        return ReviewData(
+            plan: ScannerWorkspacePresentation.Plan(
+                polylinesMetres: observed,
+                unknownPolylinesMetres: unknown,
+                dimensionAnnotations: annotations,
+                boundsMetres: bounds.insetBy(dx: -0.05, dy: -0.05)
+            ),
+            measurements: dimensions + areaMeasurements,
+            isSynthetic: scene.sourceIsSynthetic
         )
     }
 
     private static func vector(_ values: [Double]) -> SIMD3<Double>? {
         guard values.count == 3, values.allSatisfy(\.isFinite) else { return nil }
         return SIMD3(values[0], values[1], values[2])
+    }
+
+    private static func approximatelyUnit(_ vector: SIMD3<Double>) -> Bool {
+        abs(simd_length(vector) - 1) < 0.001
+    }
+
+    private static func evidence(for origin: String) -> ScannerWorkspacePresentation.Measurement.Evidence {
+        switch origin {
+        case "observed": .observed
+        case "fitted": .fitted
+        case "user_measured": .userMeasured
+        case "inferred": .inferred
+        default: .unknown
+        }
+    }
+
+    private static func lengthMetres(_ value: CGFloat) -> String {
+        let measurement = Measurement(value: Double(value), unit: UnitLength.meters)
+        return measurement.formatted(
+            .measurement(
+                width: .abbreviated,
+                usage: .asProvided,
+                numberFormatStyle: .number.precision(.fractionLength(0...2))
+            )
+        )
+    }
+
+    private static func areaMetresSquared(_ value: Double) -> String {
+        let measurement = Measurement(value: value, unit: UnitArea.squareMeters)
+        return measurement.formatted(
+            .measurement(
+                width: .abbreviated,
+                usage: .asProvided,
+                numberFormatStyle: .number.precision(.fractionLength(0...2))
+            )
+        )
+    }
+
+    private static func regionDetail(_ region: Region) -> String {
+        let policy = region.areaPolicy == "net_fixed_obstructions"
+            ? String(localized: "Net fixed obstructions")
+            : String(localized: "Finished internal face")
+        let cut = lengthMetres(CGFloat(region.cutHeightMetres))
+        return "\(policy) · \(String(localized: "Cut")) \(cut)"
     }
 }

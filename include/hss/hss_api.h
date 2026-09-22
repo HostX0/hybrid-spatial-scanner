@@ -100,6 +100,18 @@ typedef struct HSSEngineStats {
  * HSS_OK from apply_command means a command result is available, not fsync.
  * Durability belongs to the Swift journal transaction, never a C return value. */
 HSSStatus hss_engine_create(const HSSConfig*, HSSEngine** out_engine);
+/* Additive live reconstruction controls; existing layouts are unchanged.
+ * Source origin defaults to captured (0). Set 0/1 before first successful
+ * evidence submission or plan-reference control. Synthetic input MUST set 1; this is source provenance,
+ * not a claim that capture accuracy has been physically validated.
+ * Plan reference is caller-confirmed, rigid T_project_floor: local +X is U,
+ * +Y is N and -Z is V. cut_height_m is positive (normally 1.20 m).
+ * Call only when lifecycle_state==1 (idle), otherwise NOT_READY; acceptance
+ * starts a bounded transactional rebuild and publishes a new scene revision.
+ * A floor change never moves captured mesh. Persist/replay controls in order.
+ * Without a reference, project-Y slicing is provisional and area unavailable. */
+HSSStatus hss_engine_set_source_is_synthetic(HSSEngine*, uint32_t source_is_synthetic);
+HSSStatus hss_engine_set_plan_reference(HSSEngine*, const HSSMat4d* T_project_floor, double cut_height_m);
 void hss_engine_destroy(HSSEngine*); /* NULL allowed; other double destroy invalid */
 HSSStatus hss_engine_set_epoch(HSSEngine*, const HSSEpoch*);
 HSSStatus hss_engine_submit_frame(HSSEngine*, const HSSFrame*);
