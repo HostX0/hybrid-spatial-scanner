@@ -83,6 +83,39 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
         XCTAssertEqual(selector.retainedFrameCount, 2)
     }
 
+    func testCommandJournalDispositionControlsRevisionBoundary() throws {
+        let command = Data("{\"command_id\":\"fixture\"}".utf8)
+        let result = Data("{\"status\":\"fixture\"}".utf8)
+
+        let applied = try HSSCommandJournalEntry(
+            disposition: .applied,
+            commandJSON: command,
+            resultJSON: result,
+            beforeSceneRevision: 7,
+            afterSceneRevision: 8
+        )
+        XCTAssertEqual(applied.afterSceneRevision, 8)
+
+        for disposition in [HSSCommandJournalDisposition.conflict, .rejected, .pendingExclusion] {
+            let audit = try HSSCommandJournalEntry(
+                disposition: disposition,
+                commandJSON: command,
+                resultJSON: result,
+                beforeSceneRevision: 8,
+                afterSceneRevision: 8
+            )
+            XCTAssertEqual(audit.beforeSceneRevision, audit.afterSceneRevision)
+        }
+
+        XCTAssertThrowsError(try HSSCommandJournalEntry(
+            disposition: .conflict,
+            commandJSON: command,
+            resultJSON: result,
+            beforeSceneRevision: 8,
+            afterSceneRevision: 9
+        ))
+    }
+
     private func frame(
         width: Int = 8,
         height: Int = 6,

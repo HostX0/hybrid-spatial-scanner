@@ -157,6 +157,62 @@ struct HSSProjectReplay: Equatable, Sendable {
     let usedPreviousManifest: Bool
 }
 
+/// The durable representation of a scene-edit processor journal outcome. The
+/// command and result are preserved byte-for-byte; only an applied command may
+/// advance the native scene revision.
+enum HSSCommandJournalDisposition: Sendable, Equatable {
+    case applied
+    case conflict
+    case rejected
+    case pendingExclusion
+
+    fileprivate var nativeValue: UInt32 {
+        switch self {
+        case .applied: return UInt32(HSS_PROJECT_COMMAND_APPLIED)
+        case .conflict: return UInt32(HSS_PROJECT_COMMAND_CONFLICT)
+        case .rejected: return UInt32(HSS_PROJECT_COMMAND_REJECTED)
+        case .pendingExclusion: return UInt32(HSS_PROJECT_COMMAND_PENDING_EXCLUSION)
+        }
+    }
+
+    fileprivate func expectedAfterRevision(before: UInt64) throws -> UInt64 {
+        guard self == .applied else { return before }
+        guard before < UInt64.max else {
+            throw HSSBridgeError.invalidValue("An applied command cannot advance the maximum scene revision.")
+        }
+        return before + 1
+    }
+}
+
+struct HSSCommandJournalEntry: Sendable {
+    let disposition: HSSCommandJournalDisposition
+    let commandJSON: Data
+    let resultJSON: Data
+    let beforeSceneRevision: UInt64
+    let afterSceneRevision: UInt64
+
+    init(
+        disposition: HSSCommandJournalDisposition,
+        commandJSON: Data,
+        resultJSON: Data,
+        beforeSceneRevision: UInt64,
+        afterSceneRevision: UInt64
+    ) throws {
+        guard !commandJSON.isEmpty else {
+            throw HSSBridgeError.invalidValue("A command journal record requires exact nonempty command bytes.")
+        }
+        let expectedAfterRevision = try disposition.expectedAfterRevision(before: beforeSceneRevision)
+        guard afterSceneRevision == expectedAfterRevision else {
+            throw HSSBridgeError.invalidValue("Command disposition and scene revision boundary disagree.")
+        }
+        self.disposition = disposition
+        self.commandJSON = commandJSON
+        self.resultJSON = resultJSON
+        self.beforeSceneRevision = beforeSceneRevision
+        self.afterSceneRevision = afterSceneRevision
+    }
+}
+
 /// Serial owner of the native engine and its selected durable source store.
 /// Engine mutation, persistence append, stepping, checkpoint and replay cannot
 /// race because all entry points are isolated to this actor.
@@ -447,6 +503,56 @@ actor HSSProjectRuntime {
         reference.after_scene_revision = afterRevision
         var receipt = HSSProjectStoreReceipt()
         let storeStatus = hss_project_store_append_plan_reference(store, &context, &reference, &receipt)
+        guard storeStatus == HSS_OK else { throw HSSBridgeError.native(storeStatus) }
+    }
+
+    /// Persists a processor journal record after its result is known. The
+    /// processor owns command semantics; this bridge only preserves its exact
+    /// audit bytes and rejects a revision boundary that does not match the
+    /// currently accepted native scene.
+    func appendCommandJournal(
+        _ entry: HSSCommandJournalEntry,
+        sessionEpoch: UInt64,
+        eventSequence: UInt64,
+        monotonicTime: TimeInterval
+    ) throws {
+        guard let store else { throw HSSBridgeError.closed }
+        guard sessionEpoch <= UInt64(UInt32.max), monotonicTime.isFinite, monotonicTime >= 0 else {
+            throw HSSBridgeError.invalidValue("Command journal metadata is invalid.")
+        }
+        let acceptedRevision = try stats().scene_revision
+        guard acceptedRevision == entry.afterSceneRevision else {
+            throw HSSBridgeError.invalidValue("Command journal revision does not match the accepted native scene.")
+        }
+
+        var record = HSSProjectCommandRecord()
+        record.abi_version = HSS_PROJECT_STORE_ABI_VERSION
+        record.struct_size = UInt32(MemoryLayout<HSSProjectCommandRecord>.size)
+        record.context = Self.eventContext(
+            captureID: captureID,
+            eventSequence: eventSequence,
+            sessionEpoch: UInt32(sessionEpoch),
+            monotonicTime: monotonicTime,
+            acceptedSceneRevision: entry.afterSceneRevision
+        )
+        record.before_scene_revision = entry.beforeSceneRevision
+        record.after_scene_revision = entry.afterSceneRevision
+        record.disposition = entry.disposition.nativeValue
+
+        var receipt = HSSProjectStoreReceipt()
+        let storeStatus = entry.commandJSON.withUnsafeBytes { commandBytes in
+            entry.resultJSON.withUnsafeBytes { resultBytes in
+                record.command_json = HSSBytes(
+                    data: commandBytes.bindMemory(to: UInt8.self).baseAddress,
+                    length: UInt64(commandBytes.count)
+                )
+                record.result_json = HSSBytes(
+                    data: resultBytes.bindMemory(to: UInt8.self).baseAddress,
+                    length: UInt64(resultBytes.count)
+                )
+                return hss_project_store_append_command_record(store, &record, &receipt)
+            }
+        }
         guard storeStatus == HSS_OK else { throw HSSBridgeError.native(storeStatus) }
     }
 
