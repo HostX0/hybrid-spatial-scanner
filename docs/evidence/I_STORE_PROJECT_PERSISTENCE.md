@@ -17,8 +17,9 @@ path and there is no account or cloud behavior.
 The facade converts owned ABI inputs to portable records rather than dumping C
 structs. B-008 encoding remains authoritative for epochs, normalized calibrated
 scene-depth frames, and mesh add/replace/remove events. The new control encoder
-retains accepted commands with exact command/result UTF-8 bytes and before/after
-scene revisions, plus confirmed floor-reference matrices and metre cut heights.
+retains applied, conflict, rejected, and pending-exclusion command outcomes with
+exact command/result UTF-8 bytes and before/after scene revisions, plus
+confirmed floor-reference matrices and metre cut heights.
 Every record carries the original capture ID, epoch, sequence, monotonic time,
 and accepted scene revision.
 
@@ -83,10 +84,11 @@ xcrun swiftc -typecheck -I include \
 Observed result: 3/3 tests passed. The project-store test uses a deterministic
 engine-contract fixture because the core owner commit is intentionally outside
 this branch. It proves two checkpoints, process-style destroy/reopen, exact
-seven-event replay order and revision progression, unresolved epoch retention,
-mesh removal, command/result association, floor control, explicit pending-memory
-resource pause, corrupt-active fallback, and survival of the prior two-event
-checkpoint. Existing B-007/B-008 tests continue to pass.
+eight-record replay order and revision progression, unresolved epoch retention,
+mesh removal, applied command/result association, non-mutating conflict audit,
+floor control, explicit pending-memory resource pause, corrupt-active fallback,
+and survival of the prior two-event checkpoint. Existing B-007/B-008 tests
+continue to pass.
 The inline Swift smoke imported `HSSProjectStoreConfig`,
 `HSSProjectEventContext.accepted_scene_revision`, create, and destroy through
 `HSSContracts` with no diagnostics. `git diff --check` produced no output.

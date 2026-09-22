@@ -28,6 +28,13 @@ enum {
   HSS_PROJECT_STORE_PROJECT_MISMATCH = 102
 };
 
+enum {
+  HSS_PROJECT_COMMAND_APPLIED = 0,
+  HSS_PROJECT_COMMAND_CONFLICT = 1,
+  HSS_PROJECT_COMMAND_REJECTED = 2,
+  HSS_PROJECT_COMMAND_PENDING_EXCLUSION = 3
+};
+
 typedef struct HSSProjectStoreConfig {
   uint32_t abi_version, struct_size;
   HSSId project_id;
@@ -95,6 +102,10 @@ typedef struct HSSProjectCommandRecord {
   HSSProjectEventContext context;
   uint64_t before_scene_revision;
   uint64_t after_scene_revision;
+  /* Applies one revision only for APPLIED. Every other durable audit outcome
+   * preserves the revision and exact result bytes. */
+  uint32_t disposition;
+  uint32_t reserved;
   /* Exact validated UTF-8 bytes. result_json may be empty only when the engine
    * contract produced an accepted zero-byte result. */
   HSSBytes command_json;

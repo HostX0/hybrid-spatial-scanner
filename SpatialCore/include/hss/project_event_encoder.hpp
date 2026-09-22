@@ -20,6 +20,8 @@ struct CommandControl {
   Context context;
   uint64_t before_scene_revision{0};
   uint64_t after_scene_revision{0};
+  enum class Disposition : uint8_t { kApplied, kConflict, kRejected, kPendingExclusion };
+  Disposition disposition{Disposition::kApplied};
   std::vector<uint8_t> command_json;
   std::vector<uint8_t> result_json;
 };

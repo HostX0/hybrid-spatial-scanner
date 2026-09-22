@@ -11,10 +11,13 @@ JSON metadata containing the project ID, format version, and
 `source_is_synthetic`. Reopen validates those fields before exposing records.
 There is no account, cloud, or automatic upload behavior.
 
-Epoch, normalized scene-depth frame, mesh add/replace/remove, accepted command,
+Epoch, normalized scene-depth frame, mesh add/replace/remove, command journal,
 and confirmed plan-reference controls share one strictly increasing event
-sequence. Accepted command records retain exact UTF-8 command/result bytes and
-before/after revisions; undo and redo append history rather than deleting it.
+sequence. Command records retain exact UTF-8 command/result bytes and
+before/after revisions with an explicit disposition: applied, conflict,
+rejected, or pending-exclusion. Applied commands advance exactly one revision;
+the other durable audit outcomes preserve it. Undo and redo append history
+rather than deleting it.
 Plan references retain the exact rigid project-floor matrix and positive metre
 cut height plus before/after scene revisions without changing captured
 coordinates. Every event context retains the scene revision observed after that
@@ -43,6 +46,12 @@ whether recovery used the previous manifest, the applied count, and the exact
 failing event sequence/status when the engine rejects an otherwise valid record.
 The caller discards a newly created engine when replay fails after partial
 application; no failed replay engine may become the live project.
+
+Replay submits every command disposition to the engine processor and compares
+its exact result bytes and revision boundary to the journal. For conflict,
+rejected, and pending-exclusion records it also compares the immutable scene
+bytes before and after processing; a non-mutating audit record cannot change
+the accepted scene.
 
 The implementation hard maxima remain within the D16 package bounds: paths at
 4096 bytes, individual records at 256 MiB, JSON commands at 16 MiB, and total

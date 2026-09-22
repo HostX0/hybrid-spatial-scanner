@@ -240,19 +240,25 @@ HSSStatus accept_control(StreamState *state,
       },
       control);
   StreamState next = *state;
-  HSSStatus status = accept_common(
-      &next, replay_id(context.capture_id), context.event_sequence,
-      context.monotonic_time_s, context.accepted_scene_revision);
-  if (status != HSS_OK || !next.epoch_revisions.contains(context.session_epoch))
+  if (!next.have_event || replay_id(context.capture_id) != next.capture_id ||
+      context.event_sequence <= next.last_sequence ||
+      context.monotonic_time_s < next.last_time ||
+      !next.epoch_revisions.contains(context.session_epoch))
     return HSS_STALE_REVISION;
   const uint64_t before = std::visit(
       [](const auto &value) { return value.before_scene_revision; }, control);
   const uint64_t after = std::visit(
       [](const auto &value) { return value.after_scene_revision; }, control);
-  if (before + 1U != after || after != context.accepted_scene_revision ||
-      before + 1U != next.last_scene_revision) {
+  const auto* command = std::get_if<hss::project::CommandControl>(&control);
+  const bool mutates = command == nullptr ||
+      command->disposition == hss::project::CommandControl::Disposition::kApplied;
+  if (before != next.last_scene_revision || after != context.accepted_scene_revision ||
+      (mutates && after != before + 1U) || (!mutates && after != before)) {
     return HSS_STALE_REVISION;
   }
+  next.last_sequence = context.event_sequence;
+  next.last_time = context.monotonic_time_s;
+  next.last_scene_revision = after;
   *state = std::move(next);
   return HSS_OK;
 }
@@ -671,7 +677,11 @@ hss_project_store_append_command_record(HSSProjectStore *store,
     if (status != HSS_OK || store == nullptr || receipt == nullptr ||
         input->context.reserved != 0U ||
         input->context.accepted_scene_revision != input->after_scene_revision ||
-        input->after_scene_revision != input->before_scene_revision + 1U ||
+        input->disposition > HSS_PROJECT_COMMAND_PENDING_EXCLUSION ||
+        (input->disposition == HSS_PROJECT_COMMAND_APPLIED &&
+         input->after_scene_revision != input->before_scene_revision + 1U) ||
+        (input->disposition != HSS_PROJECT_COMMAND_APPLIED &&
+         input->after_scene_revision != input->before_scene_revision) ||
         input->command_json.length == 0U ||
         input->command_json.length > kMaximumJsonBytes ||
         input->result_json.length > kMaximumJsonBytes ||
@@ -685,6 +695,7 @@ hss_project_store_append_command_record(HSSProjectStore *store,
     command.context = control_context(input->context);
     command.before_scene_revision = input->before_scene_revision;
     command.after_scene_revision = input->after_scene_revision;
+    command.disposition = static_cast<hss::project::CommandControl::Disposition>(input->disposition);
     command.command_json.assign(input->command_json.data,
                                 input->command_json.data +
                                     input->command_json.length);
@@ -926,6 +937,32 @@ HSSStatus copy_command_result(HSSEngine *engine, std::vector<uint8_t> *bytes) {
              : (status == HSS_OK ? HSS_INTERNAL_ERROR : status);
 }
 
+HSSStatus copy_scene_json(HSSEngine *engine, std::vector<uint8_t> *bytes) {
+  HSSSnapshot *snapshot = nullptr;
+  HSSStatus status = hss_engine_acquire_snapshot(engine, &snapshot);
+  if (status != HSS_OK || snapshot == nullptr)
+    return status == HSS_OK ? HSS_INTERNAL_ERROR : status;
+  uint64_t required = 0U;
+  status = hss_snapshot_copy_scene_json(snapshot, nullptr, 0U, &required);
+  if (status == HSS_OK && required == 0U) {
+    bytes->clear();
+    hss_snapshot_release(snapshot);
+    return HSS_OK;
+  }
+  if (status != HSS_BUFFER_TOO_SMALL || required > kMaximumJsonBytes ||
+      required > std::numeric_limits<size_t>::max()) {
+    hss_snapshot_release(snapshot);
+    return status == HSS_BUFFER_TOO_SMALL ? HSS_RESOURCE_LIMIT : status;
+  }
+  bytes->resize(static_cast<size_t>(required));
+  uint64_t second_required = 0U;
+  status = hss_snapshot_copy_scene_json(snapshot, bytes->data(), bytes->size(), &second_required);
+  hss_snapshot_release(snapshot);
+  return status == HSS_OK && second_required == required
+             ? HSS_OK
+             : (status == HSS_OK ? HSS_INTERNAL_ERROR : status);
+}
+
 HSSStatus apply_control(HSSEngine *engine,
                         const hss::project::Control &control) {
   const uint64_t before = std::visit(
@@ -938,6 +975,10 @@ HSSStatus apply_control(HSSEngine *engine,
   }
   if (const auto *command =
           std::get_if<hss::project::CommandControl>(&control)) {
+    std::vector<uint8_t> scene_before;
+    const bool nonmutating = command->disposition != hss::project::CommandControl::Disposition::kApplied;
+    if (nonmutating && (status = copy_scene_json(engine, &scene_before)) != HSS_OK)
+      return status;
     status = hss_engine_apply_command_json(
         engine, {command->command_json.data(), command->command_json.size()});
     if (status != HSS_OK)
@@ -947,9 +988,15 @@ HSSStatus apply_control(HSSEngine *engine,
       return status;
     std::vector<uint8_t> actual;
     status = copy_command_result(engine, &actual);
-    return status == HSS_OK && actual == command->result_json
+    if (status != HSS_OK || actual != command->result_json)
+      return status == HSS_OK ? HSS_DUPLICATE_MISMATCH : status;
+    if (!nonmutating)
+      return HSS_OK;
+    std::vector<uint8_t> scene_after;
+    status = copy_scene_json(engine, &scene_after);
+    return status == HSS_OK && scene_after == scene_before
                ? HSS_OK
-               : (status == HSS_OK ? HSS_DUPLICATE_MISMATCH : status);
+               : (status == HSS_OK ? HSS_STALE_REVISION : status);
   }
   const auto &plan = std::get<hss::project::PlanReferenceControl>(control);
   if (hss_engine_set_plan_reference == nullptr)

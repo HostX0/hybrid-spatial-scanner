@@ -21,6 +21,7 @@ struct HSSEngine {
   std::vector<uint32_t> epoch_relationships;
   std::vector<uint8_t> command_result;
 };
+struct HSSSnapshot { std::string scene; };
 
 extern "C" HSSStatus hss_engine_set_source_is_synthetic(HSSEngine *engine,
                                                         uint32_t value) {
@@ -56,13 +57,33 @@ extern "C" HSSStatus hss_engine_submit_mesh_event(HSSEngine *engine,
   return HSS_OK;
 }
 extern "C" HSSStatus hss_engine_apply_command_json(HSSEngine *engine,
-                                                   HSSBytes) {
+                                                     HSSBytes command) {
   if (!engine || engine->pending)
     return HSS_NOT_READY;
+  const std::string input(reinterpret_cast<const char *>(command.data), command.length);
+  if (input.find("conflict") != std::string::npos) {
+    const std::string result = "{\"state\":\"conflict\"}";
+    engine->command_result.assign(result.begin(), result.end());
+    return HSS_OK;
+  }
   engine->pending = true;
   engine->pending_name = "command";
   const std::string result = "{\"accepted\":true}";
   engine->command_result.assign(result.begin(), result.end());
+  return HSS_OK;
+}
+extern "C" HSSStatus hss_engine_acquire_snapshot(const HSSEngine *engine, HSSSnapshot **out) {
+  if (!engine || !out) return HSS_INVALID_ARGUMENT;
+  *out = new HSSSnapshot{"{\"revision\":" + std::to_string(engine->revision) + "}"};
+  return HSS_OK;
+}
+extern "C" void hss_snapshot_release(HSSSnapshot *snapshot) { delete snapshot; }
+extern "C" HSSStatus hss_snapshot_copy_scene_json(const HSSSnapshot *snapshot, uint8_t *out,
+                                                     uint64_t capacity, uint64_t *required) {
+  if (!snapshot || !required || (!out && capacity != 0U)) return HSS_INVALID_ARGUMENT;
+  *required = snapshot->scene.size();
+  if (capacity < *required) return HSS_BUFFER_TOO_SMALL;
+  if (*required != 0U) std::memcpy(out, snapshot->scene.data(), snapshot->scene.size());
   return HSS_OK;
 }
 extern "C" HSSStatus
@@ -272,9 +293,20 @@ void run() {
   check(hss_project_store_append_plan_reference(store, &c7, &plan, &receipt) ==
             HSS_OK,
         "append plan reference");
+  const std::string conflict_command = "{\"command_id\":\"conflict\"}";
+  const std::string conflict_result = "{\"state\":\"conflict\"}";
+  auto c8 = context(8, 7, 1, 8.0);
+  cmd.context = c8;
+  cmd.before_scene_revision = 7;
+  cmd.after_scene_revision = 7;
+  cmd.disposition = HSS_PROJECT_COMMAND_CONFLICT;
+  cmd.command_json = {reinterpret_cast<const uint8_t *>(conflict_command.data()), conflict_command.size()};
+  cmd.result_json = {reinterpret_cast<const uint8_t *>(conflict_result.data()), conflict_result.size()};
+  check(hss_project_store_append_command_record(store, &cmd, &receipt) == HSS_OK,
+        "append nonmutating conflict audit");
   check(hss_project_store_checkpoint(store, &checkpoint) == HSS_OK &&
             checkpoint.durable_revision == 2 &&
-            checkpoint.durable_event_count == 7,
+            checkpoint.durable_event_count == 8,
         "second checkpoint");
   hss_project_store_destroy(store);
   store = nullptr;
@@ -284,7 +316,7 @@ void run() {
   HSSProjectReplayResult replay{};
   check(hss_project_store_replay(store, &engine, &replay) == HSS_OK,
         "replay committed project");
-  check(replay.applied_event_count == 7 && engine.revision == 7,
+  check(replay.applied_event_count == 8 && engine.revision == 7,
         "all events replay with exact revisions");
   check(engine.applied ==
             std::vector<std::string>({"epoch", "frame", "epoch", "mesh-add",

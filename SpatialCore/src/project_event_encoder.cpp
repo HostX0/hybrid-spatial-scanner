@@ -102,11 +102,11 @@ bool valid_context(const Context &context) {
          context.monotonic_time_s >= 0.0;
 }
 
-void write_common(Writer &writer, uint16_t type, const Context &context,
-                  uint64_t payload_bytes) {
+void write_common(Writer &writer, uint16_t minor, uint16_t type,
+                  const Context &context, uint64_t payload_bytes) {
   writer.raw(kMagic.data(), kMagic.size());
   writer.u16(1U);
-  writer.u16(0U);
+  writer.u16(minor);
   writer.u16(type);
   writer.u16(0U);
   writer.u64(kFixedHeaderBytes + payload_bytes);
@@ -118,21 +118,24 @@ void write_common(Writer &writer, uint16_t type, const Context &context,
   writer.f64(context.monotonic_time_s);
 }
 
-bool read_common(Reader &reader, uint16_t *type, Context *context,
+bool read_common(Reader &reader, uint16_t *minor, uint16_t *type, Context *context,
                  uint64_t *total) {
   std::array<uint8_t, 8> magic{};
-  uint16_t major = 0, minor = 0, reserved16 = 0;
+  uint16_t major = 0, stored_minor = 0, reserved16 = 0;
   uint32_t reserved32 = 0;
-  return reader.raw(magic.data(), magic.size()) && magic == kMagic &&
-         reader.u16(&major) && reader.u16(&minor) && reader.u16(type) &&
+  const bool valid = reader.raw(magic.data(), magic.size()) && magic == kMagic &&
+         reader.u16(&major) && reader.u16(&stored_minor) && reader.u16(type) &&
          reader.u16(&reserved16) && reader.u64(total) &&
          reader.raw(context->capture_id.bytes,
                     sizeof(context->capture_id.bytes)) &&
          reader.u64(&context->event_sequence) &&
          reader.u64(&context->accepted_scene_revision) &&
          reader.u32(&context->session_epoch) && reader.u32(&reserved32) &&
-         reader.f64(&context->monotonic_time_s) && major == 1U && minor == 0U &&
+         reader.f64(&context->monotonic_time_s) && major == 1U && stored_minor <= 1U &&
          reserved16 == 0U && reserved32 == 0U && valid_context(*context);
+  if (valid)
+    *minor = stored_minor;
+  return valid;
 }
 
 } // namespace
@@ -185,23 +188,27 @@ ControlStatus encode_control(const Control &control, uint64_t max_record_bytes,
     return ControlStatus::kInvalidArgument;
   Writer writer;
   if (const auto *command = std::get_if<CommandControl>(&control)) {
+    const bool applied = command->disposition == CommandControl::Disposition::kApplied;
     if (!valid_context(command->context) ||
-        command->after_scene_revision < command->before_scene_revision ||
+        command->disposition > CommandControl::Disposition::kPendingExclusion ||
+        (applied && command->after_scene_revision != command->before_scene_revision + 1U) ||
+        (!applied && command->after_scene_revision != command->before_scene_revision) ||
         command->command_json.empty() ||
         !valid_utf8(command->command_json.data(),
                     command->command_json.size()) ||
         !valid_utf8(command->result_json.data(), command->result_json.size()) ||
         command->command_json.size() > std::numeric_limits<uint64_t>::max() -
-                                           command->result_json.size() - 32U) {
+                                           command->result_json.size() - 36U) {
       return ControlStatus::kInvalidArgument;
     }
     const uint64_t payload =
-        32U + command->command_json.size() + command->result_json.size();
+        36U + command->command_json.size() + command->result_json.size();
     if (payload > max_record_bytes - kFixedHeaderBytes)
       return ControlStatus::kResourceLimit;
-    write_common(writer, kCommand, command->context, payload);
+    write_common(writer, 1U, kCommand, command->context, payload);
     writer.u64(command->before_scene_revision);
     writer.u64(command->after_scene_revision);
+    writer.u32(static_cast<uint32_t>(command->disposition));
     writer.u64(command->command_json.size());
     writer.u64(command->result_json.size());
     writer.raw(command->command_json.data(), command->command_json.size());
@@ -216,7 +223,7 @@ ControlStatus encode_control(const Control &control, uint64_t max_record_bytes,
       return ControlStatus::kInvalidArgument;
     if (payload > max_record_bytes - kFixedHeaderBytes)
       return ControlStatus::kResourceLimit;
-    write_common(writer, kPlanReference, plan.context, payload);
+    write_common(writer, 0U, kPlanReference, plan.context, payload);
     writer.u64(plan.before_scene_revision);
     writer.u64(plan.after_scene_revision);
     for (double value : plan.project_from_floor.column_major)
@@ -237,27 +244,32 @@ DecodedControl decode_control(const std::vector<uint8_t> &bytes,
     return result;
   }
   Reader reader(bytes);
-  uint16_t type = 0;
+  uint16_t minor = 0, type = 0;
   uint64_t total = 0;
   Context context;
-  if (!read_common(reader, &type, &context, &total) || total != bytes.size())
+  if (!read_common(reader, &minor, &type, &context, &total) || total != bytes.size())
     return result;
   if (type == kCommand) {
     CommandControl command;
     command.context = context;
     uint64_t command_size = 0, result_size = 0;
+    uint32_t disposition = 0U;
     if (!reader.u64(&command.before_scene_revision) ||
         !reader.u64(&command.after_scene_revision) ||
+        (minor == 1U && !reader.u32(&disposition)) || disposition > 3U ||
         !reader.u64(&command_size) || !reader.u64(&result_size) ||
         command_size > reader.remaining() ||
         result_size > reader.remaining() - command_size ||
         command_size + result_size != reader.remaining() ||
         command_size == 0U ||
-        command.after_scene_revision < command.before_scene_revision ||
+        (minor == 0U && command.after_scene_revision != command.before_scene_revision + 1U) ||
+        (minor == 1U && disposition == 0U && command.after_scene_revision != command.before_scene_revision + 1U) ||
+        (minor == 1U && disposition != 0U && command.after_scene_revision != command.before_scene_revision) ||
         command_size >
             static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
         result_size > static_cast<uint64_t>(std::numeric_limits<size_t>::max()))
       return result;
+    command.disposition = static_cast<CommandControl::Disposition>(disposition);
     command.command_json.assign(
         reader.current(), reader.current() + static_cast<size_t>(command_size));
     reader.skip(command_size);
@@ -271,6 +283,8 @@ DecodedControl decode_control(const std::vector<uint8_t> &bytes,
     result.control = std::move(command);
   } else if (type == kPlanReference) {
     PlanReferenceControl plan;
+    if (minor != 0U)
+      return result;
     plan.context = context;
     if (!reader.u64(&plan.before_scene_revision) ||
         !reader.u64(&plan.after_scene_revision))
