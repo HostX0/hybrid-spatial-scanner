@@ -1,0 +1,10 @@
+# Synthetic surface-policy fixture. It is not captured geometry or metrology.
+# REQUEST,area_policy
+# ENTITY,id,semantic_class,semantic_origin,floor_support,explicitly_fixed
+# SURFACE,entity_id,id,evidence_role,geometry_origin,kind,face,geometry_reference,nx,ny,nz,offset_m,support_id
+REQUEST,net_fixed_obstructions
+ENTITY,81000000-0000-4000-8000-000000000001,wall,local_model,none,0
+SURFACE,81000000-0000-4000-8000-000000000001,82000000-0000-4000-8000-000000000001,structural,fitted,plane,front,plane:wall-fitted,0.6,0,0.8,0,83000000-0000-4000-8000-000000000001
+ENTITY,81000000-0000-4000-8000-000000000002,shelf,platform,none,0
+SURFACE,81000000-0000-4000-8000-000000000002,82000000-0000-4000-8000-000000000002,object,observed,plane,front,plane:shelf-front,0.6,0,0.8,-0.08,83000000-0000-4000-8000-000000000002
+SURFACE,81000000-0000-4000-8000-000000000002,82000000-0000-4000-8000-000000000003,object,observed,mesh_patch,top,mesh:shelf-visible-top,-,-,-,-,83000000-0000-4000-8000-000000000003
