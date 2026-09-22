@@ -88,6 +88,23 @@ typedef struct HSSProjectReplayResult {
   uint32_t used_previous_manifest;
 } HSSProjectReplayResult;
 
+typedef struct HSSProjectCommandRecord {
+  uint32_t abi_version, struct_size;
+  HSSProjectEventContext context;
+  uint64_t before_scene_revision;
+  uint64_t after_scene_revision;
+  /* Exact validated UTF-8 bytes. result_json may be empty only when the engine
+   * contract produced an accepted zero-byte result. */
+  HSSBytes command_json;
+  HSSBytes result_json;
+} HSSProjectCommandRecord;
+
+typedef struct HSSProjectPlanReference {
+  uint32_t abi_version, struct_size;
+  HSSMat4d T_project_floor;
+  double cut_height_m;
+} HSSProjectPlanReference;
+
 /* Creation copies config and path bytes. It creates or validates immutable
  * checksummed project metadata according to open_mode. On failure *out_store is
  * NULL. Calls on one store must be serialized; destroy during a call is invalid. */
@@ -116,6 +133,19 @@ HSSStatus hss_project_store_append_command_json(HSSProjectStore* store,
                                                 const HSSProjectEventContext* context,
                                                 HSSBytes command_json,
                                                 HSSProjectStoreReceipt* receipt);
+/* Preferred accepted-command journal entry. It retains exact command/result
+ * bytes and before/after revision evidence; undo/redo remain ordinary appended
+ * commands and never delete history. */
+HSSStatus hss_project_store_append_command_record(HSSProjectStore* store,
+                                                  const HSSProjectCommandRecord* record,
+                                                  HSSProjectStoreReceipt* receipt);
+/* Retains a caller-confirmed floor reference as an ordered control. Replay
+ * drains prior engine work, applies this reference, then continues. It changes
+ * interpretation and cut height, never captured coordinates or provenance. */
+HSSStatus hss_project_store_append_plan_reference(HSSProjectStore* store,
+                                                  const HSSProjectEventContext* context,
+                                                  const HSSProjectPlanReference* reference,
+                                                  HSSProjectStoreReceipt* receipt);
 
 /* Commits every pending event as one new durable revision. Success means the
  * immutable chunks and checksummed manifest are flushed and published. Failure
