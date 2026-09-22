@@ -4,7 +4,9 @@ import simd
 /// A platform-neutral, owned representation of one AR mesh-anchor revision.
 /// No ARKit/Metal buffer or pointer may escape into this type.
 struct MeshAnchorPayload: Equatable, Sendable {
-    let vertices: [SIMD3<Float>]
+    /// Mutable only while assembling synthetic/platform input. The lifecycle
+    /// store always creates an independent immutable owned revision.
+    var vertices: [SIMD3<Float>]
     let normals: [SIMD3<Float>]
     let triangleIndices: [UInt32]
     /// One optional ARKit classification byte per triangle. An empty array means
