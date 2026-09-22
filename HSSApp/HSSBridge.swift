@@ -260,12 +260,15 @@ actor HSSProjectRuntime {
         epoch.relationship_state = control.relationshipState.rawValue
         epoch.T_project_world = try Self.nativeMatrix(control.projectFromWorld)
         epoch.transform_revision = control.transformRevision
+        let beforeRevision = try stats().scene_revision
         let engineStatus = hss_engine_set_epoch(engine, &epoch)
         guard engineStatus == HSS_OK else { throw HSSBridgeError.native(engineStatus) }
+        let acceptedRevision = try completeAcceptedEvent(after: beforeRevision)
 
         var context = Self.eventContext(
             captureID: captureID, eventSequence: eventSequence,
-            sessionEpoch: UInt32(control.sessionEpoch), monotonicTime: monotonicTime
+            sessionEpoch: UInt32(control.sessionEpoch), monotonicTime: monotonicTime,
+            acceptedSceneRevision: acceptedRevision
         )
         var receipt = HSSProjectStoreReceipt()
         let storeStatus = hss_project_store_append_epoch(store, &context, &epoch, &receipt)
@@ -308,19 +311,30 @@ actor HSSProjectRuntime {
         frame.confidence_byte_length = UInt64(normalized.confidence.count)
         frame.depth_source = 0
 
-        let statuses = normalized.depthMeters.withUnsafeBytes { depthBytes in
+        let beforeRevision = try stats().scene_revision
+        let engineStatus = normalized.depthMeters.withUnsafeBytes { depthBytes in
             normalized.confidence.withUnsafeBytes { confidenceBytes in
                 frame.depth_bytes = depthBytes.bindMemory(to: UInt8.self).baseAddress
                 frame.confidence_bytes = confidenceBytes.bindMemory(to: UInt8.self).baseAddress
-                let engineStatus = hss_engine_submit_frame(engine, &frame)
-                guard engineStatus == HSS_OK else { return (engineStatus, HSSStatus(HSS_OK)) }
-                var receipt = HSSProjectStoreReceipt()
-                let storeStatus = hss_project_store_append_frame(store, &frame, &receipt)
-                return (engineStatus, storeStatus)
+                return hss_engine_submit_frame(engine, &frame)
             }
         }
-        guard statuses.0 == HSS_OK else { throw HSSBridgeError.native(statuses.0) }
-        guard statuses.1 == HSS_OK else { throw HSSBridgeError.native(statuses.1) }
+        guard engineStatus == HSS_OK else { throw HSSBridgeError.native(engineStatus) }
+        let acceptedRevision = try completeAcceptedEvent(after: beforeRevision)
+        var context = Self.eventContext(
+            captureID: captureID, eventSequence: eventSequence,
+            sessionEpoch: frame.session_epoch, monotonicTime: frame.timestamp_s,
+            acceptedSceneRevision: acceptedRevision
+        )
+        var receipt = HSSProjectStoreReceipt()
+        let storeStatus = normalized.depthMeters.withUnsafeBytes { depthBytes in
+            normalized.confidence.withUnsafeBytes { confidenceBytes in
+                frame.depth_bytes = depthBytes.bindMemory(to: UInt8.self).baseAddress
+                frame.confidence_bytes = confidenceBytes.bindMemory(to: UInt8.self).baseAddress
+                return hss_project_store_append_frame(store, &context, &frame, &receipt)
+            }
+        }
+        guard storeStatus == HSS_OK else { throw HSSBridgeError.native(storeStatus) }
     }
 
     func submitMeshEvent(_ event: OwnedMeshAnchorEvent, eventSequence: UInt64) throws {
@@ -357,23 +371,30 @@ actor HSSProjectRuntime {
             indices = []
         }
 
-        let statuses = packedVertices.withUnsafeBufferPointer { vertices in
+        let beforeRevision = try stats().scene_revision
+        let engineStatus = packedVertices.withUnsafeBufferPointer { vertices in
             indices.withUnsafeBufferPointer { triangles in
                 native.vertices_xyz = vertices.baseAddress
                 native.triangle_indices = triangles.baseAddress
-                let engineStatus = hss_engine_submit_mesh_event(engine, &native)
-                guard engineStatus == HSS_OK else { return (engineStatus, HSSStatus(HSS_OK)) }
-                var context = Self.eventContext(
-                    captureID: captureID, eventSequence: eventSequence,
-                    sessionEpoch: UInt32(event.sessionEpoch), monotonicTime: event.monotonicTimestamp
-                )
-                var receipt = HSSProjectStoreReceipt()
-                let storeStatus = hss_project_store_append_mesh_event(store, &context, &native, &receipt)
-                return (engineStatus, storeStatus)
+                return hss_engine_submit_mesh_event(engine, &native)
             }
         }
-        guard statuses.0 == HSS_OK else { throw HSSBridgeError.native(statuses.0) }
-        guard statuses.1 == HSS_OK else { throw HSSBridgeError.native(statuses.1) }
+        guard engineStatus == HSS_OK else { throw HSSBridgeError.native(engineStatus) }
+        let acceptedRevision = try completeAcceptedEvent(after: beforeRevision)
+        var context = Self.eventContext(
+            captureID: captureID, eventSequence: eventSequence,
+            sessionEpoch: UInt32(event.sessionEpoch), monotonicTime: event.monotonicTimestamp,
+            acceptedSceneRevision: acceptedRevision
+        )
+        var receipt = HSSProjectStoreReceipt()
+        let storeStatus = packedVertices.withUnsafeBufferPointer { vertices in
+            indices.withUnsafeBufferPointer { triangles in
+                native.vertices_xyz = vertices.baseAddress
+                native.triangle_indices = triangles.baseAddress
+                return hss_project_store_append_mesh_event(store, &context, &native, &receipt)
+            }
+        }
+        guard storeStatus == HSS_OK else { throw HSSBridgeError.native(storeStatus) }
     }
 
     func setPlanReference(
@@ -411,7 +432,8 @@ actor HSSProjectRuntime {
 
         var context = Self.eventContext(
             captureID: captureID, eventSequence: eventSequence,
-            sessionEpoch: UInt32(sessionEpoch), monotonicTime: monotonicTime
+            sessionEpoch: UInt32(sessionEpoch), monotonicTime: monotonicTime,
+            acceptedSceneRevision: afterRevision
         )
         var reference = HSSProjectPlanReference()
         reference.abi_version = HSS_PROJECT_STORE_ABI_VERSION
@@ -435,7 +457,7 @@ actor HSSProjectRuntime {
         guard maximumSteps > 0 else { return }
         for _ in 0..<maximumSteps {
             let before = try stats()
-            if before.pending_frames == 0 { return }
+            if before.pending_frames == 0 && before.lifecycle_state == 1 { return }
             try step(workBudgetUs: workBudgetUs)
         }
         throw HSSBridgeError.native(HSS_RESOURCE_LIMIT)
@@ -515,7 +537,8 @@ actor HSSProjectRuntime {
         captureID: UUID,
         eventSequence: UInt64,
         sessionEpoch: UInt32,
-        monotonicTime: TimeInterval
+        monotonicTime: TimeInterval,
+        acceptedSceneRevision: UInt64
     ) -> HSSProjectEventContext {
         var context = HSSProjectEventContext()
         context.abi_version = HSS_PROJECT_STORE_ABI_VERSION
@@ -524,6 +547,24 @@ actor HSSProjectRuntime {
         context.event_sequence = eventSequence
         context.session_epoch = sessionEpoch
         context.monotonic_time_s = monotonicTime
+        context.accepted_scene_revision = acceptedSceneRevision
         return context
+    }
+
+    private func completeAcceptedEvent(
+        after beforeRevision: UInt64,
+        maximumSteps: Int = 100_000
+    ) throws -> UInt64 {
+        for _ in 0..<maximumSteps {
+            let current = try stats()
+            if current.scene_revision == beforeRevision + 1, current.lifecycle_state == 1 {
+                return current.scene_revision
+            }
+            if current.scene_revision > beforeRevision + 1 {
+                throw HSSBridgeError.native(HSS_INTERNAL_ERROR)
+            }
+            try step()
+        }
+        throw HSSBridgeError.native(HSS_RESOURCE_LIMIT)
     }
 }

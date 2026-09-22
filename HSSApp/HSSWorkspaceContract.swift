@@ -9,6 +9,8 @@ enum ScannerWorkspacePhase: Equatable, Sendable {
     case ready
     case startingCapture
     case capturing
+    case captureLimited(String)
+    case captureInterrupted
     case stoppingCapture
     case frozen
     case saving
