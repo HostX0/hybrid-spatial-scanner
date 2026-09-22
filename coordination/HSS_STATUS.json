@@ -9,7 +9,7 @@
   "review_policy": "Milestone-based, targeted and evidence-driven; no routine extra review agents or repeated successful unchanged tests.",
   "routine_authorization": "Owner authorizes local work, parallel tasks/model selection, private GitHub repository and project backup. No public release, paid service setup or external messages.",
   "parallelism_policy": "Owner removed the two-worker cap on 2026-09-22; dispatch all useful dependency-ready independent work within actual tool/host capacity and review throughput.",
-  "main_commit": "d6373fc",
+  "main_commit": "a88684e",
   "physical_tests": "not_run_owner_plans_iPhone15ProMax_at_software_readiness",
   "tasks": {
     "B-001": {
@@ -605,7 +605,11 @@
       "cursor": "414a4610-48c3-4841-93e9-8e7e6ef5012c:1",
       "evidence": "docs/evidence/I-STORE.md",
       "scope_type": "integration_gap",
-      "acceptance": "not_verified"
+      "acceptance": "not_verified",
+      "contract_commits": [
+        "e5d2c8b8116731779e6f8cd8dc3b7b6be404092e",
+        "80fba422325018fd684ce43a3a795295c2db4267"
+      ]
     },
     "I-UI": {
       "state": "active",
@@ -638,6 +642,30 @@
       "evidence": "docs/evidence/OBJECT-001.md",
       "scope_type": "owner_scope_extension",
       "acceptance": "not_verified"
+    },
+    "I-EDIT": {
+      "state": "active",
+      "thread_id": "01a0c8b2-cee6-7143-96a3-d4d4884854a8",
+      "host_id": "local",
+      "title": "HSS — Live editing, undo and measurement constraints",
+      "model": "gpt-5.6-sol",
+      "effort": "high",
+      "model_reason": "Coupled schema-aware graph mutation, exact constraints, idempotency and journal reversals",
+      "worktree": "/Users/abdulazeez/Documents/Codex/2026-09-22/pf-x20/work/scene-editing",
+      "branch": "hss/scene-editing",
+      "base_commit": "d6373fc",
+      "covers": [
+        "B-023",
+        "B-024",
+        "B-025",
+        "B-035 dynamic audit"
+      ],
+      "implementation_depends_on": [
+        "B-023"
+      ],
+      "acceptance": "not_verified",
+      "evidence": "docs/evidence/I-EDIT.md",
+      "agreed_seam": "Canonical accepted scene JSON + exact command bytes -> candidate JSON/exact result/journal; core owns atomic publish and preserves captured mesh; later source rebuild must reconcile accepted edit overlay/lineage."
     }
   },
   "next_dispatch": "Collect five native integration workers and early shared contracts. Native worker serializes Xcode build. After integrated snapshot/command contracts, complete commands/undo/constraints, plan dimensions and frozen exporters. Do not replace missing native paths with detached policy modules.",
@@ -645,12 +673,12 @@
   "coordination_mode": "event-driven completion callbacks plus hourly recovery; collect EVERY active result, not just first wait_threads wake",
   "coordinator_routine_model": "gpt-5.6-terra",
   "coordinator_routine_effort": "medium",
-  "updated_at_utc": "2026-09-22T10:36:14.233178+00:00",
+  "updated_at_utc": "2026-09-22T10:40:18.461606+00:00",
   "github": {
     "url": "https://github.com/HostX0/hybrid-spatial-scanner",
     "visibility": "PRIVATE",
     "remote": "origin",
-    "last_verified_pushed_commit": "d6373fc",
+    "last_verified_pushed_commit": "a88684e",
     "account": "HostX0"
   },
   "delivery": {
@@ -669,5 +697,13 @@
     ],
     "accuracy_claim": "unverified until held-out physical tests; synthetic provenance is distinct from physical validation",
     "custom_dense_fusion": "gated optional per D15 section 2; current main target uses ARKit measured mesh base"
-  }
+  },
+  "contract_decisions": {
+    "source_provenance": "Core additive hss_engine_set_source_is_synthetic 0/1 before first evidence; captured is not synonymous with physically verified. Store retains flag.",
+    "floor_reference": "Core owns additive hss_engine_set_plan_reference rigid T_project_floor plus cut_height_m default1.20. Runtime confirmation uses transactional rebuild, persists ordered control; AR world origin is not floor.",
+    "native_contract": "work/native-pipeline/HSSApp/HSSWorkspaceContract.swift published to UI, production model owns same ARSession.",
+    "store_contract": "e5d2c8b8116731779e6f8cd8dc3b7b6be404092e; exact additive include/hss/hss_project_store.h. Core floor/source additions coordinated.",
+    "replay_publication": "Core/Store/Edit must make IDs/revisions deterministic across step scheduling or persist publication boundaries; fresh native engine swapped only after complete reopen success."
+  },
+  "owner_checklist": "HSS_OWNER_TEST_CHECKLIST.md (planned, all unrun, start only at build readiness)"
 }
