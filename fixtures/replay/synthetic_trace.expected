@@ -1,0 +1,7 @@
+epoch seq=1 epoch=4 relation=accepted transform_revision=1
+depth seq=2 epoch=4 samples=4 valid=3 low_confidence=1 unavailable_confidence=1
+mesh seq=3 epoch=4 kind=add anchor=0000000000000000000000000000002a generation=1 revision=1 vertices=4 triangles=2
+mesh seq=4 epoch=4 kind=replace anchor=0000000000000000000000000000002a generation=1 revision=2 vertices=3 triangles=1
+mesh seq=5 epoch=4 kind=remove anchor=0000000000000000000000000000002a generation=1 revision=2 vertices=0 triangles=0
+mesh seq=6 epoch=4 kind=add anchor=0000000000000000000000000000002a generation=2 revision=1 vertices=4 triangles=2
+topology live_anchors=1 vertices=4 triangles=2 generation=2 revision=1
