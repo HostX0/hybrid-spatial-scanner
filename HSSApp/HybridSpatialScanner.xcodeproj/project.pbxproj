@@ -20,6 +20,8 @@
 		A1000000000000000000000C /* MeshAnchorLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000B /* MeshAnchorLifecycle.swift */; };
 		A1000000000000000000000D /* ARMeshAnchorAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* ARMeshAnchorAdapter.swift */; };
 		A1000000000000000000000E /* MeshAnchorLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* MeshAnchorLifecycleTests.swift */; };
+		A1000000000000000000000F /* EpochRelocalization.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* EpochRelocalization.swift */; };
+		A10000000000000000000010 /* EpochRelocalizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000F /* EpochRelocalizationTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -40,6 +42,8 @@
 		A2000000000000000000000B /* MeshAnchorLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshAnchorLifecycle.swift; sourceTree = "<group>"; };
 		A2000000000000000000000C /* ARMeshAnchorAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ARMeshAnchorAdapter.swift; sourceTree = "<group>"; };
 		A2000000000000000000000D /* MeshAnchorLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../tests/MeshAnchorLifecycleTests.swift; sourceTree = SOURCE_ROOT; };
+		A2000000000000000000000E /* EpochRelocalization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EpochRelocalization.swift; sourceTree = "<group>"; };
+		A2000000000000000000000F /* EpochRelocalizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../tests/EpochRelocalizationTests.swift; sourceTree = SOURCE_ROOT; };
 		A30000000000000000000001 /* HybridSpatialScanner.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HybridSpatialScanner.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A30000000000000000000002 /* libSpatialCore.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libSpatialCore.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		A30000000000000000000003 /* HybridSpatialScannerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HybridSpatialScannerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -53,9 +57,9 @@
 
 /* Begin PBXGroup section */
 		A80000000000000000000001 = {isa = PBXGroup; children = ( A80000000000000000000002 /* HSSApp */, A80000000000000000000003 /* SpatialCore */, A80000000000000000000004 /* Tests */, A80000000000000000000005 /* Products */, ); sourceTree = "<group>"; };
-		A80000000000000000000002 /* HSSApp */ = {isa = PBXGroup; children = ( A20000000000000000000001 /* HybridSpatialScannerApp.swift */, A20000000000000000000002 /* ReadinessView.swift */, A20000000000000000000007 /* ARSessionCoordinator.swift */, A20000000000000000000009 /* SceneDepthIngestion.swift */, A2000000000000000000000B /* MeshAnchorLifecycle.swift */, A2000000000000000000000C /* ARMeshAnchorAdapter.swift */, A20000000000000000000005 /* HSSBridge.swift */, ); path = ""; sourceTree = "<group>"; };
+		A80000000000000000000002 /* HSSApp */ = {isa = PBXGroup; children = ( A20000000000000000000001 /* HybridSpatialScannerApp.swift */, A20000000000000000000002 /* ReadinessView.swift */, A20000000000000000000007 /* ARSessionCoordinator.swift */, A2000000000000000000000E /* EpochRelocalization.swift */, A20000000000000000000009 /* SceneDepthIngestion.swift */, A2000000000000000000000B /* MeshAnchorLifecycle.swift */, A2000000000000000000000C /* ARMeshAnchorAdapter.swift */, A20000000000000000000005 /* HSSBridge.swift */, ); path = ""; sourceTree = "<group>"; };
 		A80000000000000000000003 /* SpatialCore */ = {isa = PBXGroup; children = ( A20000000000000000000003 /* readiness.cpp */, A20000000000000000000006 /* hss_engine.cpp */, A20000000000000000000008 /* coordinate_basis.cpp */, ); path = ../SpatialCore; sourceTree = "<group>"; };
-		A80000000000000000000004 /* Tests */ = {isa = PBXGroup; children = ( A20000000000000000000004 /* HSSAppTests.swift */, A2000000000000000000000A /* SceneDepthIngestionTests.swift */, A2000000000000000000000D /* MeshAnchorLifecycleTests.swift */, ); path = ../tests; sourceTree = "<group>"; };
+		A80000000000000000000004 /* Tests */ = {isa = PBXGroup; children = ( A20000000000000000000004 /* HSSAppTests.swift */, A2000000000000000000000A /* SceneDepthIngestionTests.swift */, A2000000000000000000000D /* MeshAnchorLifecycleTests.swift */, A2000000000000000000000F /* EpochRelocalizationTests.swift */, ); path = ../tests; sourceTree = "<group>"; };
 		A80000000000000000000005 /* Products */ = {isa = PBXGroup; children = ( A30000000000000000000001 /* HybridSpatialScanner.app */, A30000000000000000000002 /* libSpatialCore.a */, A30000000000000000000003 /* HybridSpatialScannerTests.xctest */, ); name = Products; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
@@ -70,9 +74,9 @@
 /* End PBXProject section */
 
 /* Begin PBXSourcesBuildPhase section */
-		AA00000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = ( A10000000000000000000001 /* HybridSpatialScannerApp.swift in Sources */, A10000000000000000000002 /* ReadinessView.swift in Sources */, A10000000000000000000008 /* ARSessionCoordinator.swift in Sources */, A1000000000000000000000A /* SceneDepthIngestion.swift in Sources */, A1000000000000000000000C /* MeshAnchorLifecycle.swift in Sources */, A1000000000000000000000D /* ARMeshAnchorAdapter.swift in Sources */, A10000000000000000000006 /* HSSBridge.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
+		AA00000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = ( A10000000000000000000001 /* HybridSpatialScannerApp.swift in Sources */, A10000000000000000000002 /* ReadinessView.swift in Sources */, A10000000000000000000008 /* ARSessionCoordinator.swift in Sources */, A1000000000000000000000F /* EpochRelocalization.swift in Sources */, A1000000000000000000000A /* SceneDepthIngestion.swift in Sources */, A1000000000000000000000C /* MeshAnchorLifecycle.swift in Sources */, A1000000000000000000000D /* ARMeshAnchorAdapter.swift in Sources */, A10000000000000000000006 /* HSSBridge.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
 		AA00000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = ( A10000000000000000000003 /* readiness.cpp in Sources */, A10000000000000000000007 /* hss_engine.cpp in Sources */, A10000000000000000000009 /* coordinate_basis.cpp in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
-		AA00000000000000000000003 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = ( A10000000000000000000005 /* HSSAppTests.swift in Sources */, A1000000000000000000000B /* SceneDepthIngestionTests.swift in Sources */, A1000000000000000000000E /* MeshAnchorLifecycleTests.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
+		AA00000000000000000000003 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = ( A10000000000000000000005 /* HSSAppTests.swift in Sources */, A1000000000000000000000B /* SceneDepthIngestionTests.swift in Sources */, A1000000000000000000000E /* MeshAnchorLifecycleTests.swift in Sources */, A10000000000000000000010 /* EpochRelocalizationTests.swift in Sources */, ); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */

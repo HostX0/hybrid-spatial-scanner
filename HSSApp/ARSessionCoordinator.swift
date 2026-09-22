@@ -123,8 +123,21 @@ protocol CaptureSessionRunning: AnyObject {
     var eventHandler: ((CaptureSessionEvent) -> Void)? { get set }
     var sceneDepthIngestionHandler: ((SceneDepthIngestionResult) -> Void)? { get set }
     var meshAnchorLifecycleHandler: ((MeshAnchorLifecycleResult) -> Void)? { get set }
+    var epochStampedMeshLifecycleHandler: ((EpochStampedMeshLifecycleResult) -> Void)? { get set }
     func run(configuration: CaptureSessionRunConfiguration) throws -> CaptureSessionRunConfiguration
+    func setCaptureEpoch(_ epoch: UInt64)
     func stop()
+}
+
+extension CaptureSessionRunning {
+    var epochStampedMeshLifecycleHandler: ((EpochStampedMeshLifecycleResult) -> Void)? {
+        get { nil }
+        set { _ = newValue }
+    }
+
+    func setCaptureEpoch(_ epoch: UInt64) {
+        _ = epoch
+    }
 }
 
 @MainActor
@@ -172,12 +185,13 @@ enum SystemARSessionDriverError: Error {
 final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDelegate {
     private let session: ARSession
     nonisolated private let sceneDepthNormalizer: SceneDepthFrameNormalizer
-    nonisolated private let frameIdentity: SceneDepthFrameIdentitySequence
+    nonisolated private let frameIdentity: CaptureEventIdentitySequence
     nonisolated private let ingestionMailbox = SceneDepthIngestionMailbox()
     nonisolated private let meshAnchorStore = MeshAnchorLifecycleStore()
     var eventHandler: ((CaptureSessionEvent) -> Void)?
     var sceneDepthIngestionHandler: ((SceneDepthIngestionResult) -> Void)?
     var meshAnchorLifecycleHandler: ((MeshAnchorLifecycleResult) -> Void)?
+    var epochStampedMeshLifecycleHandler: ((EpochStampedMeshLifecycleResult) -> Void)?
 
     init(
         session: ARSession = ARSession(),
@@ -186,8 +200,12 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
     ) {
         self.session = session
         self.sceneDepthNormalizer = sceneDepthNormalizer
-        self.frameIdentity = SceneDepthFrameIdentitySequence(sessionEpoch: sessionEpoch)
+        self.frameIdentity = CaptureEventIdentitySequence(epoch: sessionEpoch)
         super.init()
+    }
+
+    func setCaptureEpoch(_ epoch: UInt64) {
+        frameIdentity.transition(to: epoch)
     }
 
     func run(configuration requested: CaptureSessionRunConfiguration) throws -> CaptureSessionRunConfiguration {
@@ -227,6 +245,7 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
         eventHandler = nil
         sceneDepthIngestionHandler = nil
         meshAnchorLifecycleHandler = nil
+        epochStampedMeshLifecycleHandler = nil
     }
 
     deinit {
@@ -288,7 +307,24 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
                 sequence: identity.sequence, monotonicTimestamp: ProcessInfo.processInfo.systemUptime
             )
             let result = meshAnchorStore.apply(input)
-            Task { @MainActor [weak self] in self?.meshAnchorLifecycleHandler?(result) }
+            let stamped = EpochStampedMeshLifecycleResult(
+                identity: EpochObservationIdentity(
+                    epoch: identity.epoch,
+                    sequence: identity.sequence,
+                    source: .meshAnchor
+                ),
+                eventKind: kind,
+                anchorID: meshAnchor.identifier,
+                lifecycleResult: result
+            )
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let epochStampedMeshLifecycleHandler {
+                    epochStampedMeshLifecycleHandler(stamped)
+                } else {
+                    meshAnchorLifecycleHandler?(result)
+                }
+            }
         }
     }
 
@@ -318,6 +354,8 @@ final class ARSessionCoordinator: ObservableObject {
     @Published private(set) var lastSceneDepthRejection: SceneDepthFrameRejection?
     @Published private(set) var meshAnchorLifecycleCounters: MeshAnchorLifecycleCounters
     @Published private(set) var lastMeshAnchorRejection: MeshAnchorLifecycleRejection?
+    @Published private(set) var epochRelocalization: EpochRelocalizationSnapshot
+    @Published private(set) var lastEpochObservationDisposition: EpochObservationDisposition?
 
     private let readinessProvider: any CaptureReadinessProviding
     private let permissionRequester: any CameraPermissionRequesting
@@ -325,14 +363,18 @@ final class ARSessionCoordinator: ObservableObject {
     private let sessionDriver: any CaptureSessionRunning
     private let normalizedFrameSink: (NormalizedSceneDepthFrame) -> Void
     private let meshAnchorSink: (OwnedMeshAnchorRevision?) -> Void
+    private let epochPolicy: EpochRelocalizationPolicy
     private var activeConfiguration: CaptureSessionRunConfiguration?
     private var fallbackAttempted = false
+    private var hasAcceptedSessionRun = false
+    private var nextEpochPolicyEventSequence: UInt64 = 0
 
     init(
         readinessProvider: any CaptureReadinessProviding = CaptureReadinessProvider(),
         permissionRequester: any CameraPermissionRequesting = SystemCameraPermissionRequester(),
         supportProvider: any CaptureFeatureSupportProviding = SystemCaptureFeatureSupportProvider(),
         sessionDriver: any CaptureSessionRunning = SystemARSessionDriver(),
+        epochPolicy: EpochRelocalizationPolicy = EpochRelocalizationPolicy(),
         normalizedFrameSink: @escaping (NormalizedSceneDepthFrame) -> Void = { _ in },
         meshAnchorSink: @escaping (OwnedMeshAnchorRevision?) -> Void = { _ in }
     ) {
@@ -340,6 +382,7 @@ final class ARSessionCoordinator: ObservableObject {
         self.permissionRequester = permissionRequester
         self.supportProvider = supportProvider
         self.sessionDriver = sessionDriver
+        self.epochPolicy = epochPolicy
         self.normalizedFrameSink = normalizedFrameSink
         self.meshAnchorSink = meshAnchorSink
         let baseline = readinessProvider.currentReadiness()
@@ -356,6 +399,8 @@ final class ARSessionCoordinator: ObservableObject {
         self.lastSceneDepthRejection = nil
         self.meshAnchorLifecycleCounters = .zero
         self.lastMeshAnchorRejection = nil
+        self.epochRelocalization = epochPolicy.snapshot()
+        self.lastEpochObservationDisposition = nil
         installSessionHandlers()
     }
 
@@ -419,6 +464,7 @@ final class ARSessionCoordinator: ObservableObject {
                 let effective = try sessionDriver.run(configuration: .requested)
                 if effective == .requested {
                     activeConfiguration = effective
+                    recordAcceptedSessionRun()
                     refreshReadiness()
                     recordReport(support: support, chosen: effective, fallbackReason: nil)
                     phase = .awaitingNormalTracking
@@ -435,6 +481,7 @@ final class ARSessionCoordinator: ObservableObject {
     }
 
     func stopSession() {
+        advanceEpochPolicy(.sessionStopped)
         sessionDriver.stop()
         activeConfiguration = nil
         trackingState = .notEstablished
@@ -450,6 +497,7 @@ final class ARSessionCoordinator: ObservableObject {
                 throw SystemARSessionDriverError.effectiveConfigurationUnavailable
             }
             activeConfiguration = effective
+            recordAcceptedSessionRun()
             refreshReadiness()
             recordReport(support: support, chosen: effective, fallbackReason: reason)
             phase = .fallback(reason)
@@ -463,6 +511,7 @@ final class ARSessionCoordinator: ObservableObject {
     private func handle(_ event: CaptureSessionEvent) {
         switch event {
         case .tracking(let state):
+            advanceEpochPolicy(epochEvent(for: state))
             trackingState = state
             refreshReadiness()
             switch state {
@@ -480,6 +529,7 @@ final class ARSessionCoordinator: ObservableObject {
                 phase = .awaitingNormalTracking
             }
         case .failed:
+            advanceEpochPolicy(.sessionFailure)
             let support = supportProvider.currentSupport()
             if activeConfiguration == .requested && !fallbackAttempted {
                 startFallback(support: support, reason: "The requested ARKit configuration failed while running.")
@@ -489,10 +539,12 @@ final class ARSessionCoordinator: ObservableObject {
                 phase = .failed("The ARKit session failed. Capture is unavailable until it is restarted.")
             }
         case .interrupted:
+            advanceEpochPolicy(.interruptionBegan)
             trackingState = .unavailable
             refreshReadiness()
             phase = .interrupted
         case .interruptionEnded:
+            advanceEpochPolicy(.interruptionEnded)
             trackingState = .notEstablished
             refreshReadiness()
             phase = .awaitingNormalTracking
@@ -504,7 +556,16 @@ final class ARSessionCoordinator: ObservableObject {
         case .accepted(let frame, let counters):
             sceneDepthIngestionCounters = counters
             lastSceneDepthRejection = nil
-            normalizedFrameSink(frame)
+            let disposition = epochPolicy.authorizeObservation(EpochObservationIdentity(
+                epoch: frame.identity.sessionEpoch,
+                sequence: frame.identity.sequence,
+                source: .sceneDepth
+            ))
+            lastEpochObservationDisposition = disposition
+            epochRelocalization = epochPolicy.snapshot()
+            if case .accepted = disposition {
+                normalizedFrameSink(frame)
+            }
         case .rejected(let reason, let counters):
             sceneDepthIngestionCounters = counters
             lastSceneDepthRejection = reason
@@ -516,7 +577,26 @@ final class ARSessionCoordinator: ObservableObject {
         case .accepted(let revision, let counters):
             meshAnchorLifecycleCounters = counters
             lastMeshAnchorRejection = nil
-            meshAnchorSink(revision)
+            lastEpochObservationDisposition = epochPolicy.noteMissingObservationIdentity()
+            epochRelocalization = epochPolicy.snapshot()
+            _ = revision
+        case .rejected(let reason, let counters):
+            meshAnchorLifecycleCounters = counters
+            lastMeshAnchorRejection = reason
+        }
+    }
+
+    private func handle(_ stamped: EpochStampedMeshLifecycleResult) {
+        switch stamped.lifecycleResult {
+        case .accepted(let revision, let counters):
+            meshAnchorLifecycleCounters = counters
+            lastMeshAnchorRejection = nil
+            let disposition = epochPolicy.authorizeObservation(stamped.identity)
+            lastEpochObservationDisposition = disposition
+            epochRelocalization = epochPolicy.snapshot()
+            if case .accepted = disposition {
+                meshAnchorSink(revision)
+            }
         case .rejected(let reason, let counters):
             meshAnchorLifecycleCounters = counters
             lastMeshAnchorRejection = reason
@@ -527,6 +607,70 @@ final class ARSessionCoordinator: ObservableObject {
         sessionDriver.eventHandler = { [weak self] event in self?.handle(event) }
         sessionDriver.sceneDepthIngestionHandler = { [weak self] result in self?.handle(result) }
         sessionDriver.meshAnchorLifecycleHandler = { [weak self] result in self?.handle(result) }
+        sessionDriver.epochStampedMeshLifecycleHandler = { [weak self] result in self?.handle(result) }
+    }
+
+    /// Called only by the single session owner when a run option explicitly
+    /// resets tracking. It creates an epoch boundary before later callbacks.
+    func recordTrackingReset() {
+        advanceEpochPolicy(.sessionReset)
+    }
+
+    func evaluateEpochRelationship(_ proposal: EpochRelationshipProposal) -> EpochTransformDecision {
+        let decision = epochPolicy.evaluateRelationship(proposal)
+        epochRelocalization = epochPolicy.snapshot()
+        return decision
+    }
+
+    func authorizeEpochUse(
+        from sourceEpoch: UInt64,
+        to targetEpoch: UInt64,
+        purpose: EpochUsePurpose
+    ) -> EpochUseDecision {
+        let decision = epochPolicy.authorizeUse(from: sourceEpoch, to: targetEpoch, purpose: purpose)
+        epochRelocalization = epochPolicy.snapshot()
+        return decision
+    }
+
+    private func recordAcceptedSessionRun() {
+        advanceEpochPolicy(hasAcceptedSessionRun ? .sessionRestartAccepted : .sessionRunAccepted)
+        hasAcceptedSessionRun = true
+    }
+
+    private func advanceEpochPolicy(_ event: EpochPolicyEvent) {
+        let sequence = nextEpochPolicyEventSequence
+        if nextEpochPolicyEventSequence != UInt64.max {
+            nextEpochPolicyEventSequence += 1
+        }
+        let priorEpoch = epochRelocalization.currentEpoch
+        switch epochPolicy.apply(event, sequence: sequence) {
+        case .accepted(let snapshot), .rejected(_, let snapshot):
+            epochRelocalization = snapshot
+        }
+        if let currentEpoch = epochRelocalization.currentEpoch, currentEpoch != priorEpoch {
+            sessionDriver.setCaptureEpoch(currentEpoch)
+        }
+    }
+
+    private func epochEvent(for state: CaptureTrackingState) -> EpochPolicyEvent {
+        switch state {
+        case .notEstablished:
+            return .interruptionEnded
+        case .normal:
+            return .trackingNormal
+        case .unavailable:
+            return .trackingUnavailable
+        case .limited(let limitation):
+            let epochLimitation: EpochTrackingLimitation
+            switch limitation {
+            case .initializing: epochLimitation = .initializing
+            case .excessiveMotion: epochLimitation = .excessiveMotion
+            case .insufficientFeatures: epochLimitation = .insufficientFeatures
+            case .relocalizing: epochLimitation = .relocalizing
+            case .unknown: epochLimitation = .unknown
+            }
+            return .trackingLimited(epochLimitation)
+        }
     }
 
     private func refreshReadiness(permissionOverride: CameraPermissionState? = nil) {
