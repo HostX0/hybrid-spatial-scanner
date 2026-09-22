@@ -15,7 +15,7 @@ inline constexpr size_t kHardMaxEvidenceIds = 262'144U;
 
 // Annotation geometry always remains in the metre-based floor frame of the
 // frozen plan. Display units affect labels only; stored coordinates do not.
-enum class DisplayUnit : uint8_t { kMetres, kMillimetres, kFeet }; 
+enum class DisplayUnit : uint8_t { kMetres, kMillimetres, kFeet };
 
 enum class Kind : uint8_t { kLength, kAngle, kHeight, kLabel };
 
