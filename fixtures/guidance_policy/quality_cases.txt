@@ -1,0 +1,7 @@
+# Each row is a bounded normalized quality-vector case. Values are evidence,
+# not measurements of travel, frame timing, clearance, or physical accuracy.
+# revision tracking resources unresolved depth support diversity fit stability domain coverage occlusion conflict pending expected
+1 normal exhausted false .9 .9 .9 .9 .9 7 .1 .1 false false preserve_resources
+2 relocalizing available true .9 .9 .9 .9 .9 7 .9 .1 false false stabilize_tracking_hide_precision
+3 normal available false .9 .9 .9 .9 .9 7 .9 .8 false false observe_feature_side
+4 normal available false .2 .9 .9 .9 .9 7 .9 .1 false false acquire_depth
