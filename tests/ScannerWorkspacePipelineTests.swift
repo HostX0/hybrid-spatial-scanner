@@ -136,7 +136,7 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
                 sessionEpoch: 1,
                 relationshipState: .unresolved,
                 projectFromWorld: identity,
-                transformRevision: 0
+                transformRevision: 1
             ),
             eventSequence: 1,
             monotonicTime: 1
@@ -146,7 +146,7 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
                 sessionEpoch: 1,
                 relationshipState: .accepted,
                 projectFromWorld: identity,
-                transformRevision: 1
+                transformRevision: 2
             ),
             eventSequence: 2,
             monotonicTime: 2

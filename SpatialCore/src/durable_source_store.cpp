@@ -605,7 +605,7 @@ parse_project_metadata(const std::vector<uint8_t> &bytes) {
       "{\"format\":\"hss.project\",\"version\":1,\"project_id\":\"";
   constexpr std::string_view boolean_prefix = "\",\"source_is_synthetic\":";
   constexpr std::string_view checksum_prefix = ",\"metadata_sha256\":\"";
-  if (text.size() < prefix.size() + 32U + boolean_prefix.size() + 5U +
+  if (text.size() < prefix.size() + 32U + boolean_prefix.size() + 4U +
                         checksum_prefix.size() + 64U + 3U ||
       text.rfind(prefix, 0U) != 0U || text.back() != '\n') {
     return std::nullopt;

@@ -723,7 +723,6 @@ final class ARSessionCoordinator: ObservableObject {
             lastMeshAnchorRejection = nil
             lastEpochObservationDisposition = epochPolicy.noteMissingObservationIdentity()
             epochRelocalization = epochPolicy.snapshot()
-            _ = revision
         case .rejected(let reason, let counters):
             meshAnchorLifecycleCounters = counters
             lastMeshAnchorRejection = reason
@@ -732,7 +731,7 @@ final class ARSessionCoordinator: ObservableObject {
 
     private func handle(_ stamped: EpochStampedMeshLifecycleResult) {
         switch stamped.lifecycleResult {
-        case .accepted(let revision, let counters):
+        case .accepted(_, let counters):
             meshAnchorLifecycleCounters = counters
             lastMeshAnchorRejection = nil
             let disposition = epochPolicy.authorizeObservation(stamped.identity)
@@ -798,7 +797,7 @@ final class ARSessionCoordinator: ObservableObject {
                 sessionEpoch: currentEpoch,
                 relationshipState: .unresolved,
                 projectFromWorld: Self.identityTransform,
-                transformRevision: 0
+                transformRevision: 1
             ))
         }
         if event == .trackingNormal,
@@ -810,7 +809,7 @@ final class ARSessionCoordinator: ObservableObject {
                 sessionEpoch: currentEpoch,
                 relationshipState: .accepted,
                 projectFromWorld: Self.identityTransform,
-                transformRevision: 1
+                transformRevision: 2
             ))
         }
     }
