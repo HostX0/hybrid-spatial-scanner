@@ -12,7 +12,7 @@ namespace hss::pdf_svg_export {
 // This is a portable, in-memory export boundary. Persistence owns its own
 // manifest-last transaction and writes these immutable bytes atomically.
 enum class Paper : uint8_t { kA4Portrait, kA4Landscape, kA3Portrait, kA3Landscape };
-enum class ScalePolicy : uint8_t { kFitToPage, kExplicit }; 
+enum class ScalePolicy : uint8_t { kFitToPage, kExplicit };
 
 struct Input {
   std::string project_id;
