@@ -128,6 +128,10 @@ hss_engine_copy_command_result_json(const HSSEngine *engine, uint8_t *out,
                 engine->command_result.size());
   return HSS_OK;
 }
+extern "C" HSSStatus hss_engine_apply_dynamic_evidence(
+    HSSEngine *, const HSSDynamicEvidenceBatch *, HSSDynamicExclusionAudit *) {
+  return HSS_UNSUPPORTED_CAPABILITY;
+}
 
 namespace {
 int failures = 0;

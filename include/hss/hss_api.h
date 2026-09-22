@@ -79,6 +79,62 @@ typedef struct HSSMeshEvent {
  /* remove requires null pointers and zero counts. */
 } HSSMeshEvent;
 
+enum {
+ HSS_DYNAMIC_SOURCE_DEPTH_FRAME=0,
+ HSS_DYNAMIC_SOURCE_MESH_ANCHOR=1
+};
+enum {
+ HSS_DYNAMIC_EVIDENCE_TEMPORAL_DEPTH_CHANGE=0,
+ HSS_DYNAMIC_EVIDENCE_TRACKED_MULTI_FRAME_MOTION=1
+};
+enum {
+ HSS_DYNAMIC_NO_VERIFIED_EFFECT=0,
+ HSS_DYNAMIC_VERIFIED_MASK=1
+};
+
+/* Independently verified captured-source evidence for one pending
+ * exclude_dynamic_region command. source_id names the exact frame or mesh
+ * anchor revision; capture/epoch/sequence prevent evidence from crossing a
+ * source identity boundary. Bounds are canonical project metres. */
+typedef struct HSSDynamicEvidence {
+ uint32_t abi_version, struct_size;
+ HSSId evidence_id, exclusion_command_id, project_id;
+ HSSId source_id, capture_id;
+ uint64_t session_epoch, event_sequence;
+ HSSVec3d bounds_min_m, bounds_max_m;
+ uint32_t source_kind, evidence_kind;
+ uint32_t reserved[2];
+} HSSDynamicEvidence;
+
+typedef struct HSSDynamicEvidenceBatch {
+ uint32_t abi_version, struct_size;
+ HSSId exclusion_command_id;
+ /* Must equal the immutable snapshot revision against which the pending
+  * command was validated. A stale batch has no effect. */
+ uint64_t expected_scene_revision;
+ const HSSDynamicEvidence* evidence;
+ uint64_t evidence_count;
+ uint32_t flags; /* v1: must be zero. */
+ uint32_t reserved;
+} HSSDynamicEvidenceBatch;
+
+typedef struct HSSDynamicExclusionAudit {
+ uint32_t abi_version, struct_size;
+ HSSId exclusion_command_id;
+ uint64_t scene_revision;
+ uint64_t linked_evidence_count, masked_triangle_count;
+ uint64_t triangle_mask_fingerprint;
+ uint32_t disposition;
+ uint32_t reserved;
+} HSSDynamicExclusionAudit;
+
+typedef struct HSSDynamicMaskSummary {
+ uint32_t abi_version, struct_size;
+ uint64_t scene_revision, triangle_count;
+ uint64_t included_triangle_count, excluded_triangle_count;
+ uint64_t applied_exclusion_count, stale_exclusion_count;
+} HSSDynamicMaskSummary;
+
 typedef struct HSSCounts {
  uint32_t abi_version, struct_size;
  uint64_t scene_revision, vertex_count, triangle_count;
@@ -118,6 +174,11 @@ HSSStatus hss_engine_submit_frame(HSSEngine*, const HSSFrame*);
 HSSStatus hss_engine_submit_mesh_event(HSSEngine*, const HSSMeshEvent*);
 HSSStatus hss_engine_submit_room_proposal_json(HSSEngine*, HSSBytes);
 HSSStatus hss_engine_apply_command_json(HSSEngine*, HSSBytes);
+/* Applies independently verified evidence to a previously journaled pending
+ * exclusion. Raw vertices/indices and scene revision remain unchanged. The
+ * batch is copied on success and is replayable; invalid or stale input has no
+ * partial effect. Calls must be serialized while the engine is idle. */
+HSSStatus hss_engine_apply_dynamic_evidence(HSSEngine*, const HSSDynamicEvidenceBatch*, HSSDynamicExclusionAudit*);
 /* Poll copies most recent command result, UTF-8 WITHOUT trailing NUL.
  * NULL destination with capacity=0 is a size query: BUFFER_TOO_SMALL and required
  * length, unless the result has zero bytes. Never writes partial JSON. */
@@ -131,6 +192,10 @@ void hss_snapshot_release(HSSSnapshot*);
 HSSStatus hss_snapshot_get_counts(const HSSSnapshot*, HSSCounts*);
 HSSStatus hss_snapshot_copy_vertices(const HSSSnapshot*, HSSVec3d*, uint64_t capacity, uint64_t* required);
 HSSStatus hss_snapshot_copy_triangles(const HSSSnapshot*, uint32_t*, uint64_t index_capacity, uint64_t* required_indices);
+/* One byte per raw triangle: 1=included in the derived view, 0=excluded by a
+ * currently valid verified mask. This never changes copy_triangles output. */
+HSSStatus hss_snapshot_copy_triangle_inclusion(const HSSSnapshot*, uint8_t*, uint64_t capacity, uint64_t* required);
+HSSStatus hss_snapshot_get_dynamic_mask_summary(const HSSSnapshot*, HSSDynamicMaskSummary*);
 HSSStatus hss_snapshot_copy_scene_json(const HSSSnapshot*, uint8_t*, uint64_t capacity, uint64_t* required_bytes);
 /* No function permits C++ exceptions to cross this C boundary. Pointer/count
  * validation cannot make arbitrary dangling pointers safe; valid ownership is

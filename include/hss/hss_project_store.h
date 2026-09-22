@@ -120,6 +120,24 @@ typedef struct HSSProjectPlanReference {
   uint64_t after_scene_revision;
 } HSSProjectPlanReference;
 
+/* Durable typed verification for a previously journaled pending exclusion.
+ * The control is nonmutating: scene_revision and the context's accepted scene
+ * revision are identical. Replay reapplies the evidence and verifies the
+ * recorded disposition/counts before exposing the reopened engine. */
+typedef struct HSSProjectDynamicExclusionRecord {
+  uint32_t abi_version, struct_size;
+  HSSProjectEventContext context;
+  uint64_t scene_revision;
+  HSSId exclusion_command_id;
+  const HSSDynamicEvidence* evidence;
+  uint64_t evidence_count;
+  uint64_t linked_evidence_count;
+  uint64_t masked_triangle_count;
+  uint64_t triangle_mask_fingerprint;
+  uint32_t disposition;
+  uint32_t reserved;
+} HSSProjectDynamicExclusionRecord;
+
 /* Creation copies config and path bytes. It creates or validates immutable
  * checksummed project metadata according to open_mode. On failure *out_store is
  * NULL. Calls on one store must be serialized; destroy during a call is invalid. */
@@ -156,6 +174,10 @@ HSSStatus hss_project_store_append_plan_reference(HSSProjectStore* store,
                                                   const HSSProjectEventContext* context,
                                                   const HSSProjectPlanReference* reference,
                                                   HSSProjectStoreReceipt* receipt);
+HSSStatus hss_project_store_append_dynamic_exclusion_record(
+    HSSProjectStore* store,
+    const HSSProjectDynamicExclusionRecord* record,
+    HSSProjectStoreReceipt* receipt);
 
 /* Commits every pending event as one new durable revision. Success means the
  * immutable chunks and checksummed manifest are flushed and published. Failure

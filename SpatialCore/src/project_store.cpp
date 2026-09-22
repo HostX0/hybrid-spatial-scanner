@@ -25,6 +25,9 @@ extern "C" HSSStatus hss_engine_set_source_is_synthetic(HSSEngine *, uint32_t)
 extern "C" HSSStatus hss_engine_set_plan_reference(HSSEngine *,
                                                    const HSSMat4d *, double)
     __attribute__((weak));
+extern "C" HSSStatus hss_engine_apply_dynamic_evidence(
+    HSSEngine *, const HSSDynamicEvidenceBatch *, HSSDynamicExclusionAudit *)
+    __attribute__((weak));
 
 namespace {
 
@@ -250,8 +253,11 @@ HSSStatus accept_control(StreamState *state,
   const uint64_t after = std::visit(
       [](const auto &value) { return value.after_scene_revision; }, control);
   const auto* command = std::get_if<hss::project::CommandControl>(&control);
-  const bool mutates = command == nullptr ||
-      command->disposition == hss::project::CommandControl::Disposition::kApplied;
+  const bool mutates =
+      std::holds_alternative<hss::project::PlanReferenceControl>(control) ||
+      (command != nullptr &&
+       command->disposition ==
+           hss::project::CommandControl::Disposition::kApplied);
   if (before != next.last_scene_revision || after != context.accepted_scene_revision ||
       (mutates && after != before + 1U) || (!mutates && after != before)) {
     return HSS_STALE_REVISION;
@@ -774,6 +780,84 @@ extern "C" HSSStatus hss_project_store_append_plan_reference(
   }
 }
 
+extern "C" HSSStatus hss_project_store_append_dynamic_exclusion_record(
+    HSSProjectStore *store, const HSSProjectDynamicExclusionRecord *input,
+    HSSProjectStoreReceipt *receipt) {
+  try {
+    HSSStatus status = validate_message(input, HSS_PROJECT_STORE_ABI_VERSION);
+    if (status != HSS_OK)
+      return status;
+    status = validate_message(&input->context, HSS_PROJECT_STORE_ABI_VERSION);
+    if (status != HSS_OK || store == nullptr || receipt == nullptr ||
+        input->context.reserved != 0U || input->reserved != 0U ||
+        input->scene_revision == 0U ||
+        input->context.accepted_scene_revision != input->scene_revision ||
+        input->evidence == nullptr || input->evidence_count == 0U ||
+        input->evidence_count > 8'192U ||
+        input->linked_evidence_count > input->evidence_count ||
+        input->disposition > HSS_DYNAMIC_VERIFIED_MASK ||
+        (input->disposition == HSS_DYNAMIC_NO_VERIFIED_EFFECT &&
+         input->masked_triangle_count != 0U)) {
+      return status == HSS_OK ? HSS_INVALID_ARGUMENT : status;
+    }
+    hss::project::DynamicExclusionControl dynamic;
+    dynamic.context = control_context(input->context);
+    dynamic.before_scene_revision = input->scene_revision;
+    dynamic.after_scene_revision = input->scene_revision;
+    dynamic.exclusion_command_id = input->exclusion_command_id;
+    dynamic.linked_evidence_count = input->linked_evidence_count;
+    dynamic.masked_triangle_count = input->masked_triangle_count;
+    dynamic.triangle_mask_fingerprint = input->triangle_mask_fingerprint;
+    dynamic.disposition = input->disposition;
+    dynamic.evidence.reserve(static_cast<size_t>(input->evidence_count));
+    for (uint64_t index = 0U; index < input->evidence_count; ++index) {
+      status = validate_message(&input->evidence[index], HSS_ABI_VERSION);
+      if (status != HSS_OK ||
+          std::memcmp(input->evidence[index].exclusion_command_id.bytes,
+                      input->exclusion_command_id.bytes, 16U) != 0 ||
+          std::memcmp(input->evidence[index].project_id.bytes,
+                      store->project_id.bytes, 16U) != 0) {
+        return status == HSS_OK ? HSS_INVALID_ARGUMENT : status;
+      }
+      dynamic.evidence.push_back(input->evidence[index]);
+      dynamic.evidence.back().struct_size = sizeof(HSSDynamicEvidence);
+    }
+    std::sort(dynamic.evidence.begin(), dynamic.evidence.end(),
+              [](const HSSDynamicEvidence &left,
+                 const HSSDynamicEvidence &right) {
+                return std::lexicographical_compare(
+                    std::begin(left.evidence_id.bytes),
+                    std::end(left.evidence_id.bytes),
+                    std::begin(right.evidence_id.bytes),
+                    std::end(right.evidence_id.bytes));
+              });
+    hss::project::Control control = std::move(dynamic);
+    std::vector<uint8_t> bytes;
+    const auto encoded =
+        hss::project::encode_control(control, store->max_record_bytes, &bytes);
+    if (encoded == hss::project::ControlStatus::kResourceLimit)
+      return HSS_RESOURCE_LIMIT;
+    if (encoded != hss::project::ControlStatus::kOk)
+      return HSS_INVALID_ARGUMENT;
+    const auto &stored =
+        std::get<hss::project::DynamicExclusionControl>(control);
+    hss::storage::SourceRecord record;
+    record.kind = hss::storage::SourceKind::kCommand;
+    record.provenance = hss::storage::SourceProvenance::kAcceptedControl;
+    record.capture_id = replay_id(stored.context.capture_id);
+    record.session_epoch = stored.context.session_epoch;
+    record.event_sequence = stored.context.event_sequence;
+    record.monotonic_time_s = stored.context.monotonic_time_s;
+    record.source_revision = stored.context.accepted_scene_revision;
+    record.payload = std::move(bytes);
+    return append_encoded(store, std::move(record), nullptr, &control, receipt);
+  } catch (const std::bad_alloc &) {
+    return HSS_RESOURCE_LIMIT;
+  } catch (...) {
+    return HSS_INTERNAL_ERROR;
+  }
+}
+
 extern "C" HSSStatus
 hss_project_store_checkpoint(HSSProjectStore *store,
                              HSSProjectCheckpointResult *result) {
@@ -1009,6 +1093,32 @@ HSSStatus apply_control(HSSEngine *engine,
                ? HSS_OK
                : (status == HSS_OK ? HSS_STALE_REVISION : status);
   }
+  if (const auto *dynamic =
+          std::get_if<hss::project::DynamicExclusionControl>(&control)) {
+    if (hss_engine_apply_dynamic_evidence == nullptr)
+      return HSS_UNSUPPORTED_CAPABILITY;
+    HSSDynamicEvidenceBatch batch{};
+    batch.abi_version = HSS_ABI_VERSION;
+    batch.struct_size = sizeof(batch);
+    batch.exclusion_command_id = dynamic->exclusion_command_id;
+    batch.expected_scene_revision = dynamic->before_scene_revision;
+    batch.evidence = dynamic->evidence.data();
+    batch.evidence_count = dynamic->evidence.size();
+    HSSDynamicExclusionAudit audit{};
+    status = hss_engine_apply_dynamic_evidence(engine, &batch, &audit);
+    if (status != HSS_OK)
+      return status;
+    return audit.scene_revision == dynamic->after_scene_revision &&
+                   audit.linked_evidence_count ==
+                       dynamic->linked_evidence_count &&
+                   audit.masked_triangle_count ==
+                       dynamic->masked_triangle_count &&
+                   audit.triangle_mask_fingerprint ==
+                       dynamic->triangle_mask_fingerprint &&
+                   audit.disposition == dynamic->disposition
+               ? HSS_OK
+               : HSS_DUPLICATE_MISMATCH;
+  }
   const auto &plan = std::get<hss::project::PlanReferenceControl>(control);
   if (hss_engine_set_plan_reference == nullptr)
     return HSS_UNSUPPORTED_CAPABILITY;
@@ -1104,9 +1214,11 @@ HSSStatus validate_stored_record(HSSProjectStore *store,
         hss::project::decode_control(payload, store->max_record_bytes);
     if (decoded.status != hss::project::ControlStatus::kOk)
       return HSS_PROJECT_STORE_CORRUPT;
-    const bool command =
-        std::holds_alternative<hss::project::CommandControl>(decoded.control);
-    if (command != (stored.source.kind == hss::storage::SourceKind::kCommand))
+    const bool command_like =
+        !std::holds_alternative<hss::project::PlanReferenceControl>(
+            decoded.control);
+    if (command_like !=
+        (stored.source.kind == hss::storage::SourceKind::kCommand))
       return HSS_PROJECT_STORE_CORRUPT;
     const auto &common = std::visit(
         [](const auto &value) -> const hss::project::Context & {

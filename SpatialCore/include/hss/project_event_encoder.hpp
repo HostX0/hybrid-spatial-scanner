@@ -34,7 +34,20 @@ struct PlanReferenceControl {
   uint64_t after_scene_revision{0};
 };
 
-using Control = std::variant<CommandControl, PlanReferenceControl>;
+struct DynamicExclusionControl {
+  Context context;
+  uint64_t before_scene_revision{0};
+  uint64_t after_scene_revision{0};
+  HSSId exclusion_command_id{};
+  std::vector<HSSDynamicEvidence> evidence;
+  uint64_t linked_evidence_count{0};
+  uint64_t masked_triangle_count{0};
+  uint64_t triangle_mask_fingerprint{0};
+  uint32_t disposition{HSS_DYNAMIC_NO_VERIFIED_EFFECT};
+};
+
+using Control =
+    std::variant<CommandControl, PlanReferenceControl, DynamicExclusionControl>;
 
 enum class ControlStatus : uint8_t {
   kOk,

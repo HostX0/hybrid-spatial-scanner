@@ -310,7 +310,7 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_link_options(hss_privacy_policy INTERFACE -fsanitize=address,undefined)
 endif()
 
-target_link_libraries(SpatialCore PUBLIC hss_robust_plane_fit hss_boundary_graph hss_topology_protection hss_ring_net_area hss_scene_editing)
+target_link_libraries(SpatialCore PUBLIC hss_robust_plane_fit hss_boundary_graph hss_topology_protection hss_ring_net_area hss_scene_editing hss_dynamic_provenance)
 
 if(HSS_BUILD_TESTS)
 add_executable(abi_smoke tests/abi_smoke.c)
@@ -549,4 +549,22 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_link_options(hss_engine_scene_editing_adapter_test PRIVATE -fsanitize=address,undefined)
 endif()
 add_test(NAME hss_engine_scene_editing_adapter COMMAND hss_engine_scene_editing_adapter_test)
+add_executable(hss_dynamic_runtime_integration_test
+  tests/hss_dynamic_runtime_integration_test.cpp
+)
+target_link_libraries(hss_dynamic_runtime_integration_test PRIVATE SpatialCore)
+target_compile_options(hss_dynamic_runtime_integration_test PRIVATE
+  -Wall -Wextra -Werror -Wpedantic
+)
+if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+ target_compile_options(hss_dynamic_runtime_integration_test PRIVATE
+   -fsanitize=address,undefined -fno-omit-frame-pointer
+ )
+ target_link_options(hss_dynamic_runtime_integration_test PRIVATE
+   -fsanitize=address,undefined
+ )
+endif()
+add_test(NAME hss_dynamic_runtime_integration
+  COMMAND hss_dynamic_runtime_integration_test
+)
 endif()

@@ -1,5 +1,6 @@
 #include "hss/bounded_ingress.hpp"
 #include "hss/coordinate_basis.hpp"
+#include "hss/dynamic_provenance.hpp"
 #include "hss/hss_api.h"
 #include "hss/live_reconstruction.hpp"
 #include "hss/scene_editing.hpp"
@@ -11,10 +12,47 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <new>
+#include <optional>
+#include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
+
+namespace runtime_provenance {
+
+struct AcceptedEpoch {
+  HSSEpoch epoch{};
+  std::shared_ptr<hss::live::Lease> lease;
+};
+
+struct AcceptedMesh {
+  hss::ingress::Event event;
+  std::shared_ptr<hss::live::Lease> lease;
+};
+
+struct State {
+  std::map<std::string, AcceptedEpoch> epochs;
+  std::map<std::string, AcceptedMesh> active_meshes;
+};
+
+struct Inflight {
+  hss::ingress::Event event;
+  std::shared_ptr<hss::live::Lease> lease;
+};
+
+struct VerifiedExclusion {
+  hss::scene_editing::DynamicExclusion exclusion;
+  std::vector<hss::dynamic_provenance::VerifiedDynamicEvidence> evidence;
+  hss::dynamic_provenance::Audit audit;
+  uint64_t triangle_mask_fingerprint{0U};
+  uint64_t accepted_scene_revision{0U};
+  std::shared_ptr<hss::live::Lease> lease;
+};
+
+} // namespace runtime_provenance
 
 struct HSSEngine {
   explicit HSSEngine(const HSSConfig &c)
@@ -27,16 +65,25 @@ struct HSSEngine {
   std::deque<std::shared_ptr<hss::live::Lease>> queued_leases;
   std::string command_result;
   bool has_command_result{false};
+  runtime_provenance::State provenance;
+  std::optional<runtime_provenance::Inflight> provenance_inflight;
+  std::map<std::string, std::pair<hss::scene_editing::DynamicExclusion,
+                                  uint64_t>> pending_exclusions;
+  std::map<std::string, runtime_provenance::VerifiedExclusion>
+      verified_exclusions;
   uint64_t accepted_frames{}, accepted_commands{};
   HSSStatus last_status{HSS_OK};
 };
 struct HSSSnapshot {
   std::shared_ptr<const hss::live::Snapshot> data;
+  std::vector<uint8_t> triangle_inclusion;
+  HSSDynamicMaskSummary dynamic_summary{};
 };
 
 namespace {
 
 constexpr uint64_t kMaxJsonRecordBytes = 16U * 1024U * 1024U;
+constexpr uint64_t kMaxDynamicEvidenceRecords = 8'192U;
 
 template <typename T> HSSStatus validate_message(const T *value) {
   if (value == nullptr) {
@@ -209,6 +256,240 @@ HSSStatus validate_json_bytes(HSSBytes bytes) {
 HSSStatus remembered(HSSEngine *engine, HSSStatus status) {
   engine->last_status = status;
   return status;
+}
+
+std::string uuid(const HSSId &value) {
+  constexpr char digits[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(36U);
+  for (size_t index = 0U; index < 16U; ++index) {
+    if (index == 4U || index == 6U || index == 8U || index == 10U)
+      result.push_back('-');
+    result.push_back(digits[value.bytes[index] >> 4U]);
+    result.push_back(digits[value.bytes[index] & 0x0fU]);
+  }
+  return result;
+}
+
+bool zero_id(const HSSId &value) {
+  return std::all_of(std::begin(value.bytes), std::end(value.bytes),
+                     [](uint8_t byte) { return byte == 0U; });
+}
+
+std::string epoch_key(const hss::ingress::Event &event) {
+  return uuid(event.capture_id) + ":" + std::to_string(event.session_epoch);
+}
+
+std::string anchor_key(const hss::ingress::Event &event) {
+  return epoch_key(event) + ":" + uuid(event.anchor_id);
+}
+
+void accept_provenance_event(runtime_provenance::State *state,
+                             runtime_provenance::Inflight inflight) {
+  hss::ingress::Event &event = inflight.event;
+  if (event.kind == hss::ingress::EventKind::epoch) {
+    state->epochs[epoch_key(event)] =
+        {event.epoch, std::move(inflight.lease)};
+    return;
+  }
+  if (event.kind == hss::ingress::EventKind::mesh_add ||
+      event.kind == hss::ingress::EventKind::mesh_replace) {
+    state->active_meshes[anchor_key(event)] =
+        {std::move(event), std::move(inflight.lease)};
+  } else if (event.kind == hss::ingress::EventKind::mesh_remove) {
+    state->active_meshes.erase(anchor_key(event));
+  }
+}
+
+hss::dynamic_provenance::CapturedMesh
+captured_mesh(const HSSEngine &engine) {
+  namespace dp = hss::dynamic_provenance;
+  dp::CapturedMesh result;
+  result.project_id = uuid(engine.config.project_id);
+  for (const auto &[key, accepted_mesh] : engine.provenance.active_meshes) {
+    (void)key;
+    const auto &mesh = accepted_mesh.event;
+    const auto epoch = engine.provenance.epochs.find(epoch_key(mesh));
+    if (epoch == engine.provenance.epochs.end() ||
+        epoch->second.epoch.relationship_state != 1U) {
+      continue;
+    }
+    const size_t source_index = result.sources.size();
+    result.sources.push_back(
+        {dp::SourceKind::kMeshAnchor, uuid(mesh.anchor_id),
+         uuid(mesh.capture_id), mesh.session_epoch, mesh.event_sequence});
+    const size_t base = result.vertices_m.size();
+    for (uint64_t vertex = 0U; vertex < mesh.mesh.vertex_count; ++vertex) {
+      float local[3]{};
+      std::memcpy(local, mesh.payload.data() + vertex * 3U * sizeof(float),
+                  sizeof(local));
+      HSSVec3d point = hss::coordinate::transform_point(
+          mesh.mesh.T_world_anchor, {local[0], local[1], local[2]});
+      point = hss::coordinate::transform_point(
+          epoch->second.epoch.T_project_world, point);
+      result.vertices_m.push_back({point.x, point.y, point.z});
+    }
+    const size_t triangle_offset =
+        static_cast<size_t>(mesh.mesh.vertex_count) * 3U * sizeof(float);
+    for (uint64_t triangle = 0U; triangle < mesh.mesh.triangle_count;
+         ++triangle) {
+      uint32_t local[3]{};
+      std::memcpy(local,
+                  mesh.payload.data() + triangle_offset +
+                      triangle * 3U * sizeof(uint32_t),
+                  sizeof(local));
+      result.triangles.push_back(
+          {{{static_cast<uint32_t>(base + local[0]),
+             static_cast<uint32_t>(base + local[1]),
+             static_cast<uint32_t>(base + local[2])}},
+           {source_index}});
+    }
+  }
+  return result;
+}
+
+HSSStatus dynamic_status(hss::dynamic_provenance::Status status) {
+  using S = hss::dynamic_provenance::Status;
+  switch (status) {
+  case S::kOk:
+    return HSS_OK;
+  case S::kInputLimitExceeded:
+  case S::kResourceLimit:
+    return HSS_RESOURCE_LIMIT;
+  case S::kEvidenceOutsideExclusion:
+  case S::kEvidenceSourceMissing:
+    return HSS_INSUFFICIENT_EVIDENCE;
+  case S::kInternalFailure:
+    return HSS_INTERNAL_ERROR;
+  default:
+    return HSS_INVALID_ARGUMENT;
+  }
+}
+
+HSSStatus convert_evidence(
+    const HSSDynamicEvidenceBatch &batch,
+    std::vector<hss::dynamic_provenance::VerifiedDynamicEvidence> *out) {
+  namespace dp = hss::dynamic_provenance;
+  if (batch.evidence_count == 0U || batch.evidence == nullptr ||
+      batch.evidence_count > kMaxDynamicEvidenceRecords ||
+      batch.evidence_count > std::numeric_limits<size_t>::max()) {
+    return batch.evidence_count > kMaxDynamicEvidenceRecords
+               ? HSS_RESOURCE_LIMIT
+               : HSS_INVALID_ARGUMENT;
+  }
+  out->reserve(static_cast<size_t>(batch.evidence_count));
+  const std::string command_id = uuid(batch.exclusion_command_id);
+  for (uint64_t index = 0U; index < batch.evidence_count; ++index) {
+    const HSSDynamicEvidence &input = batch.evidence[index];
+    const HSSStatus message = validate_message(&input);
+    if (message != HSS_OK || input.source_kind > 1U ||
+        input.evidence_kind > 1U || input.reserved[0] != 0U ||
+        input.reserved[1] != 0U || zero_id(input.evidence_id) ||
+        zero_id(input.exclusion_command_id) || zero_id(input.project_id) ||
+        zero_id(input.source_id) || zero_id(input.capture_id) ||
+        uuid(input.exclusion_command_id) != command_id) {
+      return message == HSS_OK ? HSS_INVALID_ARGUMENT : message;
+    }
+    dp::VerifiedDynamicEvidence value;
+    value.evidence_id = uuid(input.evidence_id);
+    value.exclusion_command_id = command_id;
+    value.project_id = uuid(input.project_id);
+    value.source = {
+        input.source_kind == HSS_DYNAMIC_SOURCE_DEPTH_FRAME
+            ? dp::SourceKind::kDepthFrame
+            : dp::SourceKind::kMeshAnchor,
+        uuid(input.source_id), uuid(input.capture_id), input.session_epoch,
+        input.event_sequence};
+    value.bounds_m = {{input.bounds_min_m.x, input.bounds_min_m.y,
+                       input.bounds_min_m.z},
+                      {input.bounds_max_m.x, input.bounds_max_m.y,
+                       input.bounds_max_m.z}};
+    value.kind = input.evidence_kind ==
+                         HSS_DYNAMIC_EVIDENCE_TEMPORAL_DEPTH_CHANGE
+                     ? dp::EvidenceKind::kTemporalDepthChange
+                     : dp::EvidenceKind::kTrackedMultiFrameMotion;
+    out->push_back(std::move(value));
+  }
+  std::sort(out->begin(), out->end(), [](const auto &left, const auto &right) {
+    return std::tie(left.evidence_id, left.source.source_id,
+                    left.source.event_sequence) <
+           std::tie(right.evidence_id, right.source.source_id,
+                    right.source.event_sequence);
+  });
+  return HSS_OK;
+}
+
+void fill_dynamic_audit(const HSSId &command_id, uint64_t scene_revision,
+                        const hss::dynamic_provenance::Audit &source,
+                        uint64_t triangle_mask_fingerprint,
+                        HSSDynamicExclusionAudit *audit) {
+  std::memset(audit, 0, sizeof(*audit));
+  audit->abi_version = HSS_ABI_VERSION;
+  audit->struct_size = sizeof(*audit);
+  audit->exclusion_command_id = command_id;
+  audit->scene_revision = scene_revision;
+  audit->linked_evidence_count = source.linked_evidence_count;
+  audit->masked_triangle_count = source.masked_triangle_count;
+  audit->triangle_mask_fingerprint = triangle_mask_fingerprint;
+  audit->disposition = source.disposition ==
+                               hss::dynamic_provenance::Disposition::kVerifiedMask
+                           ? HSS_DYNAMIC_VERIFIED_MASK
+                           : HSS_DYNAMIC_NO_VERIFIED_EFFECT;
+}
+
+uint64_t triangle_mask_fingerprint(const std::vector<uint8_t> &mask) {
+  uint64_t hash = 14695981039346656037ULL;
+  const auto mix = [&hash](uint8_t byte) {
+    hash ^= byte;
+    hash *= 1099511628211ULL;
+  };
+  uint64_t size = mask.size();
+  for (size_t byte = 0U; byte < sizeof(size); ++byte)
+    mix(static_cast<uint8_t>(size >> (byte * 8U)));
+  for (uint8_t value : mask)
+    mix(value);
+  return hash;
+}
+
+void build_snapshot_mask(const HSSEngine &engine, HSSSnapshot *snapshot) {
+  const uint64_t triangle_count = snapshot->data->triangles.size() / 3U;
+  snapshot->triangle_inclusion.assign(static_cast<size_t>(triangle_count),
+                                      uint8_t{1});
+  auto &summary = snapshot->dynamic_summary;
+  std::memset(&summary, 0, sizeof(summary));
+  summary.abi_version = HSS_ABI_VERSION;
+  summary.struct_size = sizeof(summary);
+  summary.scene_revision = snapshot->data->revision;
+  summary.triangle_count = triangle_count;
+  const auto raw = captured_mesh(engine);
+  if (raw.triangles.size() != triangle_count) {
+    summary.stale_exclusion_count = engine.verified_exclusions.size();
+    summary.included_triangle_count = triangle_count;
+    return;
+  }
+  for (const auto &[command_id, record] : engine.verified_exclusions) {
+    (void)command_id;
+    const auto result = hss::dynamic_provenance::apply_exclusion(
+        raw, record.exclusion, record.evidence);
+    if (result.status != hss::dynamic_provenance::Status::kOk ||
+        !result.layer || result.layer->triangle_mask.size() != triangle_count ||
+        triangle_mask_fingerprint(result.layer->triangle_mask) !=
+            record.triangle_mask_fingerprint) {
+      ++summary.stale_exclusion_count;
+      continue;
+    }
+    ++summary.applied_exclusion_count;
+    for (size_t triangle = 0U; triangle < result.layer->triangle_mask.size();
+         ++triangle) {
+      if (result.layer->triangle_mask[triangle] != 0U)
+        snapshot->triangle_inclusion[triangle] = uint8_t{0};
+    }
+  }
+  summary.excluded_triangle_count = static_cast<uint64_t>(std::count(
+      snapshot->triangle_inclusion.begin(), snapshot->triangle_inclusion.end(),
+      uint8_t{0}));
+  summary.included_triangle_count =
+      triangle_count - summary.excluded_triangle_count;
 }
 
 } // namespace
@@ -499,6 +780,11 @@ extern "C" HSSStatus hss_engine_apply_command_json(HSSEngine *engine,
       return remembered(engine, HSS_RESOURCE_LIMIT);
     engine->command_result = processed.exact_result_json;
     engine->has_command_result = true;
+    if (processed.pending_dynamic_exclusion) {
+      engine->pending_exclusions[processed.pending_dynamic_exclusion->command_id] =
+          {*processed.pending_dynamic_exclusion,
+           engine->live.snapshot()->revision};
+    }
     if (processed.scene_changed) {
       const auto counts =
           hss::scene_editing::scene_counts(processed.candidate_scene_json);
@@ -539,6 +825,89 @@ extern "C" HSSStatus hss_engine_apply_command_json(HSSEngine *engine,
   }
 }
 
+extern "C" HSSStatus hss_engine_apply_dynamic_evidence(
+    HSSEngine *engine, const HSSDynamicEvidenceBatch *batch,
+    HSSDynamicExclusionAudit *audit) {
+  if (audit != nullptr)
+    std::memset(audit, 0, sizeof(*audit));
+  try {
+    if (engine == nullptr || audit == nullptr)
+      return engine == nullptr ? HSS_INVALID_ARGUMENT
+                               : remembered(engine, HSS_INVALID_ARGUMENT);
+    HSSStatus status = validate_message(batch);
+    if (status != HSS_OK)
+      return remembered(engine, status);
+    if (batch->flags != 0U || batch->reserved != 0U ||
+        zero_id(batch->exclusion_command_id) ||
+        engine->live.busy() || engine->ingress.pending_events() != 0U)
+      return remembered(engine, engine->live.busy() ||
+                                    engine->ingress.pending_events() != 0U
+                                ? HSS_NOT_READY
+                                : HSS_INVALID_ARGUMENT);
+    const std::string command_id = uuid(batch->exclusion_command_id);
+    const auto pending = engine->pending_exclusions.find(command_id);
+    if (pending == engine->pending_exclusions.end())
+      return remembered(engine, HSS_INVALID_ARGUMENT);
+    if (batch->expected_scene_revision != engine->live.snapshot()->revision ||
+        batch->expected_scene_revision != pending->second.second)
+      return remembered(engine, HSS_STALE_REVISION);
+
+    std::vector<hss::dynamic_provenance::VerifiedDynamicEvidence> evidence;
+    status = convert_evidence(*batch, &evidence);
+    if (status != HSS_OK)
+      return remembered(engine, status);
+    if (!std::all_of(evidence.begin(), evidence.end(), [&](const auto &item) {
+          return item.project_id == uuid(engine->config.project_id);
+        })) {
+      return remembered(engine, HSS_INVALID_ARGUMENT);
+    }
+
+    const auto existing = engine->verified_exclusions.find(command_id);
+    if (existing != engine->verified_exclusions.end()) {
+      if (existing->second.accepted_scene_revision !=
+              batch->expected_scene_revision ||
+          existing->second.evidence != evidence)
+        return remembered(engine, HSS_DUPLICATE_MISMATCH);
+      fill_dynamic_audit(batch->exclusion_command_id,
+                         existing->second.accepted_scene_revision,
+                         existing->second.audit,
+                         existing->second.triangle_mask_fingerprint, audit);
+      return remembered(engine, HSS_OK);
+    }
+
+    const auto result = hss::dynamic_provenance::apply_exclusion(
+        captured_mesh(*engine), pending->second.first, evidence);
+    status = dynamic_status(result.status);
+    if (status != HSS_OK || !result.layer)
+      return remembered(engine,
+                        status == HSS_OK ? HSS_INTERNAL_ERROR : status);
+    runtime_provenance::VerifiedExclusion record;
+    const uint64_t evidence_charge =
+        4096U + static_cast<uint64_t>(evidence.size()) * 1024U;
+    record.lease = hss::live::reserve(engine->live.budget(), evidence_charge);
+    if (!record.lease)
+      return remembered(engine, HSS_RESOURCE_LIMIT);
+    record.exclusion = pending->second.first;
+    record.evidence = std::move(evidence);
+    record.audit = result.layer->audit;
+    record.triangle_mask_fingerprint =
+        triangle_mask_fingerprint(result.layer->triangle_mask);
+    record.accepted_scene_revision = batch->expected_scene_revision;
+    const uint64_t fingerprint = record.triangle_mask_fingerprint;
+    engine->verified_exclusions.emplace(command_id, std::move(record));
+    fill_dynamic_audit(batch->exclusion_command_id,
+                       batch->expected_scene_revision, result.layer->audit,
+                       fingerprint, audit);
+    return remembered(engine, HSS_OK);
+  } catch (const std::bad_alloc &) {
+    return engine == nullptr ? HSS_RESOURCE_LIMIT
+                             : remembered(engine, HSS_RESOURCE_LIMIT);
+  } catch (...) {
+    return engine == nullptr ? HSS_INTERNAL_ERROR
+                             : remembered(engine, HSS_INTERNAL_ERROR);
+  }
+}
+
 extern "C" HSSStatus
 hss_engine_copy_command_result_json(const HSSEngine *engine,
                                     uint8_t *destination, uint64_t capacity,
@@ -575,8 +944,16 @@ extern "C" HSSStatus hss_engine_step(HSSEngine *engine,
     do {
       if (engine->live.busy()) {
         engine->live.advance();
-        if (engine->live.status() != HSS_OK)
+        if (!engine->live.busy() && engine->live.status() == HSS_OK &&
+            engine->provenance_inflight) {
+          accept_provenance_event(&engine->provenance,
+                                  std::move(*engine->provenance_inflight));
+          engine->provenance_inflight.reset();
+        }
+        if (engine->live.status() != HSS_OK) {
+          engine->provenance_inflight.reset();
           return remembered(engine, engine->live.status());
+        }
       } else {
         // Allocate before popping: allocation failure must not desynchronize
         // the event queue and its parallel reservation leases.
@@ -587,9 +964,25 @@ extern "C" HSSStatus hss_engine_step(HSSEngine *engine,
         owned->lease = std::move(engine->queued_leases.front());
         engine->queued_leases.pop_front();
         owned->event = std::move(event);
+        std::optional<runtime_provenance::Inflight> provenance_event;
+        const bool tracks_provenance =
+            owned->event.kind == hss::ingress::EventKind::epoch ||
+            owned->event.kind == hss::ingress::EventKind::mesh_add ||
+            owned->event.kind == hss::ingress::EventKind::mesh_replace ||
+            owned->event.kind == hss::ingress::EventKind::mesh_remove;
+        if (tracks_provenance) {
+          auto lease = hss::live::reserve(
+              engine->live.budget(),
+              hss::live::event_reservation(owned->event));
+          if (!lease)
+            return remembered(engine, HSS_RESOURCE_LIMIT);
+          provenance_event =
+              runtime_provenance::Inflight{owned->event, std::move(lease)};
+        }
         auto status = engine->live.begin(std::move(owned));
         if (status != HSS_OK)
           return remembered(engine, status);
+        engine->provenance_inflight = std::move(provenance_event);
       }
     } while (std::chrono::steady_clock::now() < deadline);
     return remembered(engine, HSS_OK);
@@ -639,6 +1032,7 @@ extern "C" HSSStatus hss_engine_acquire_snapshot(const HSSEngine *engine,
     }
     auto *snapshot = new HSSSnapshot();
     snapshot->data = engine->live.snapshot();
+    build_snapshot_mask(*engine, snapshot);
     *out_snapshot = snapshot;
     return HSS_OK;
   } catch (const std::bad_alloc &) {
@@ -711,6 +1105,36 @@ extern "C" HSSStatus hss_snapshot_copy_triangles(const HSSSnapshot *snapshot,
     return copy_out(snapshot->data->triangles.data(),
                     snapshot->data->triangles.size(), destination, capacity,
                     required);
+  } catch (...) {
+    return HSS_INTERNAL_ERROR;
+  }
+}
+
+extern "C" HSSStatus hss_snapshot_copy_triangle_inclusion(
+    const HSSSnapshot *snapshot, uint8_t *destination, uint64_t capacity,
+    uint64_t *required) {
+  if (required != nullptr)
+    *required = 0U;
+  try {
+    if (snapshot == nullptr)
+      return HSS_INVALID_ARGUMENT;
+    return copy_out(snapshot->triangle_inclusion.data(),
+                    snapshot->triangle_inclusion.size(), destination, capacity,
+                    required);
+  } catch (...) {
+    return HSS_INTERNAL_ERROR;
+  }
+}
+
+extern "C" HSSStatus hss_snapshot_get_dynamic_mask_summary(
+    const HSSSnapshot *snapshot, HSSDynamicMaskSummary *summary) {
+  if (summary != nullptr)
+    std::memset(summary, 0, sizeof(*summary));
+  try {
+    if (snapshot == nullptr || summary == nullptr)
+      return HSS_INVALID_ARGUMENT;
+    *summary = snapshot->dynamic_summary;
+    return HSS_OK;
   } catch (...) {
     return HSS_INTERNAL_ERROR;
   }

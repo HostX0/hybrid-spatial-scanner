@@ -15,13 +15,44 @@ namespace {
 constexpr std::array<uint8_t, 8> kMagic{'H', 'S', 'S', 'C', 'T', 'R', 'L', '1'};
 constexpr uint16_t kCommand = 1;
 constexpr uint16_t kPlanReference = 2;
+constexpr uint16_t kDynamicExclusion = 3;
 constexpr uint64_t kFixedHeaderBytes = 72;
+constexpr uint64_t kDynamicEvidenceBytes = 152U;
 
 bool zero_id(const HSSId &id) {
   for (uint8_t byte : id.bytes)
     if (byte != 0U)
       return false;
   return true;
+}
+
+bool same_id(const HSSId &left, const HSSId &right) {
+  return std::memcmp(left.bytes, right.bytes, sizeof(left.bytes)) == 0;
+}
+
+bool finite_bounds(const HSSDynamicEvidence &evidence) {
+  const HSSVec3d values[] = {evidence.bounds_min_m, evidence.bounds_max_m};
+  for (const HSSVec3d &value : values) {
+    if (!std::isfinite(value.x) || !std::isfinite(value.y) ||
+        !std::isfinite(value.z))
+      return false;
+  }
+  return evidence.bounds_min_m.x <= evidence.bounds_max_m.x &&
+         evidence.bounds_min_m.y <= evidence.bounds_max_m.y &&
+         evidence.bounds_min_m.z <= evidence.bounds_max_m.z;
+}
+
+bool valid_dynamic_evidence(const HSSDynamicEvidence &evidence,
+                            const HSSId &command_id) {
+  return evidence.abi_version == HSS_ABI_VERSION &&
+         evidence.struct_size == sizeof(HSSDynamicEvidence) &&
+         !zero_id(evidence.evidence_id) &&
+         same_id(evidence.exclusion_command_id, command_id) &&
+         !zero_id(evidence.project_id) && !zero_id(evidence.source_id) &&
+         !zero_id(evidence.capture_id) && evidence.session_epoch != 0U &&
+         evidence.event_sequence != 0U && evidence.source_kind <= 1U &&
+         evidence.evidence_kind <= 1U && evidence.reserved[0] == 0U &&
+         evidence.reserved[1] == 0U && finite_bounds(evidence);
 }
 
 class Writer {
@@ -131,7 +162,7 @@ bool read_common(Reader &reader, uint16_t *minor, uint16_t *type, Context *conte
          reader.u64(&context->event_sequence) &&
          reader.u64(&context->accepted_scene_revision) &&
          reader.u32(&context->session_epoch) && reader.u32(&reserved32) &&
-         reader.f64(&context->monotonic_time_s) && major == 1U && stored_minor <= 1U &&
+         reader.f64(&context->monotonic_time_s) && major == 1U && stored_minor <= 2U &&
          reserved16 == 0U && reserved32 == 0U && valid_context(*context);
   if (valid)
     *minor = stored_minor;
@@ -213,22 +244,72 @@ ControlStatus encode_control(const Control &control, uint64_t max_record_bytes,
     writer.u64(command->result_json.size());
     writer.raw(command->command_json.data(), command->command_json.size());
     writer.raw(command->result_json.data(), command->result_json.size());
-  } else {
-    const auto &plan = std::get<PlanReferenceControl>(control);
+  } else if (const auto *plan = std::get_if<PlanReferenceControl>(&control)) {
     constexpr uint64_t payload = 19U * 8U;
-    if (!valid_context(plan.context) ||
-        !hss::coordinate::is_rigid_transform(plan.project_from_floor) ||
-        !std::isfinite(plan.cut_height_m) || plan.cut_height_m <= 0.0 ||
-        plan.after_scene_revision < plan.before_scene_revision)
+    if (!valid_context(plan->context) ||
+        !hss::coordinate::is_rigid_transform(plan->project_from_floor) ||
+        !std::isfinite(plan->cut_height_m) || plan->cut_height_m <= 0.0 ||
+        plan->after_scene_revision < plan->before_scene_revision)
       return ControlStatus::kInvalidArgument;
     if (payload > max_record_bytes - kFixedHeaderBytes)
       return ControlStatus::kResourceLimit;
-    write_common(writer, 0U, kPlanReference, plan.context, payload);
-    writer.u64(plan.before_scene_revision);
-    writer.u64(plan.after_scene_revision);
-    for (double value : plan.project_from_floor.column_major)
+    write_common(writer, 0U, kPlanReference, plan->context, payload);
+    writer.u64(plan->before_scene_revision);
+    writer.u64(plan->after_scene_revision);
+    for (double value : plan->project_from_floor.column_major)
       writer.f64(value);
-    writer.f64(plan.cut_height_m);
+    writer.f64(plan->cut_height_m);
+  } else {
+    const auto &dynamic = std::get<DynamicExclusionControl>(control);
+    if (!valid_context(dynamic.context) ||
+        dynamic.before_scene_revision == 0U ||
+        dynamic.after_scene_revision != dynamic.before_scene_revision ||
+        zero_id(dynamic.exclusion_command_id) || dynamic.evidence.empty() ||
+        dynamic.evidence.size() > 8'192U ||
+        dynamic.linked_evidence_count > dynamic.evidence.size() ||
+        dynamic.disposition > HSS_DYNAMIC_VERIFIED_MASK ||
+        (dynamic.disposition == HSS_DYNAMIC_NO_VERIFIED_EFFECT &&
+         dynamic.masked_triangle_count != 0U)) {
+      return ControlStatus::kInvalidArgument;
+    }
+    for (const auto &evidence : dynamic.evidence)
+      if (!valid_dynamic_evidence(evidence, dynamic.exclusion_command_id))
+        return ControlStatus::kInvalidArgument;
+    if (dynamic.evidence.size() >
+        (std::numeric_limits<uint64_t>::max() - 72U) /
+            kDynamicEvidenceBytes)
+      return ControlStatus::kResourceLimit;
+    const uint64_t payload =
+        72U + dynamic.evidence.size() * kDynamicEvidenceBytes;
+    if (payload > max_record_bytes - kFixedHeaderBytes)
+      return ControlStatus::kResourceLimit;
+    write_common(writer, 2U, kDynamicExclusion, dynamic.context, payload);
+    writer.u64(dynamic.before_scene_revision);
+    writer.u64(dynamic.after_scene_revision);
+    writer.raw(dynamic.exclusion_command_id.bytes, 16U);
+    writer.u64(dynamic.evidence.size());
+    writer.u64(dynamic.linked_evidence_count);
+    writer.u64(dynamic.masked_triangle_count);
+    writer.u64(dynamic.triangle_mask_fingerprint);
+    writer.u32(dynamic.disposition);
+    writer.u32(0U);
+    for (const auto &evidence : dynamic.evidence) {
+      writer.raw(evidence.evidence_id.bytes, 16U);
+      writer.raw(evidence.exclusion_command_id.bytes, 16U);
+      writer.raw(evidence.project_id.bytes, 16U);
+      writer.raw(evidence.source_id.bytes, 16U);
+      writer.raw(evidence.capture_id.bytes, 16U);
+      writer.u64(evidence.session_epoch);
+      writer.u64(evidence.event_sequence);
+      writer.f64(evidence.bounds_min_m.x);
+      writer.f64(evidence.bounds_min_m.y);
+      writer.f64(evidence.bounds_min_m.z);
+      writer.f64(evidence.bounds_max_m.x);
+      writer.f64(evidence.bounds_max_m.y);
+      writer.f64(evidence.bounds_max_m.z);
+      writer.u32(evidence.source_kind);
+      writer.u32(evidence.evidence_kind);
+    }
   }
   *bytes = std::move(writer.bytes);
   return ControlStatus::kOk;
@@ -298,6 +379,60 @@ DecodedControl decode_control(const std::vector<uint8_t> &bytes,
         !hss::coordinate::is_rigid_transform(plan.project_from_floor))
       return result;
     result.control = plan;
+  } else if (type == kDynamicExclusion) {
+    DynamicExclusionControl dynamic;
+    dynamic.context = context;
+    uint64_t evidence_count = 0U;
+    uint32_t reserved = 0U;
+    if (minor != 2U || !reader.u64(&dynamic.before_scene_revision) ||
+        !reader.u64(&dynamic.after_scene_revision) ||
+        !reader.raw(dynamic.exclusion_command_id.bytes, 16U) ||
+        !reader.u64(&evidence_count) ||
+        !reader.u64(&dynamic.linked_evidence_count) ||
+        !reader.u64(&dynamic.masked_triangle_count) ||
+        !reader.u64(&dynamic.triangle_mask_fingerprint) ||
+        !reader.u32(&dynamic.disposition) || !reader.u32(&reserved) ||
+        reserved != 0U || evidence_count == 0U || evidence_count > 8'192U ||
+        evidence_count > std::numeric_limits<size_t>::max() ||
+        evidence_count > reader.remaining() / kDynamicEvidenceBytes ||
+        evidence_count * kDynamicEvidenceBytes != reader.remaining()) {
+      return result;
+    }
+    dynamic.evidence.resize(static_cast<size_t>(evidence_count));
+    for (auto &evidence : dynamic.evidence) {
+      evidence.abi_version = HSS_ABI_VERSION;
+      evidence.struct_size = sizeof(evidence);
+      if (!reader.raw(evidence.evidence_id.bytes, 16U) ||
+          !reader.raw(evidence.exclusion_command_id.bytes, 16U) ||
+          !reader.raw(evidence.project_id.bytes, 16U) ||
+          !reader.raw(evidence.source_id.bytes, 16U) ||
+          !reader.raw(evidence.capture_id.bytes, 16U) ||
+          !reader.u64(&evidence.session_epoch) ||
+          !reader.u64(&evidence.event_sequence) ||
+          !reader.f64(&evidence.bounds_min_m.x) ||
+          !reader.f64(&evidence.bounds_min_m.y) ||
+          !reader.f64(&evidence.bounds_min_m.z) ||
+          !reader.f64(&evidence.bounds_max_m.x) ||
+          !reader.f64(&evidence.bounds_max_m.y) ||
+          !reader.f64(&evidence.bounds_max_m.z) ||
+          !reader.u32(&evidence.source_kind) ||
+          !reader.u32(&evidence.evidence_kind)) {
+        return result;
+      }
+    }
+    if (!reader.done() || dynamic.after_scene_revision !=
+                              dynamic.before_scene_revision ||
+        zero_id(dynamic.exclusion_command_id) ||
+        dynamic.linked_evidence_count > dynamic.evidence.size() ||
+        dynamic.disposition > HSS_DYNAMIC_VERIFIED_MASK ||
+        (dynamic.disposition == HSS_DYNAMIC_NO_VERIFIED_EFFECT &&
+         dynamic.masked_triangle_count != 0U)) {
+      return result;
+    }
+    for (const auto &evidence : dynamic.evidence)
+      if (!valid_dynamic_evidence(evidence, dynamic.exclusion_command_id))
+        return result;
+    result.control = std::move(dynamic);
   } else
     return result;
   result.status = ControlStatus::kOk;
