@@ -76,6 +76,7 @@ enum CaptureSessionEvent: Equatable, Sendable {
     case failed
     case interrupted
     case interruptionEnded
+    case stoppedAfterFlush
 }
 
 private enum CaptureDriverDelivery: Sendable {
@@ -83,6 +84,7 @@ private enum CaptureDriverDelivery: Sendable {
     case sceneDepth(SceneDepthIngestionResult)
     case mesh(EpochStampedMeshLifecycleResult)
     case ingressOverflow
+    case stopBarrier
 
     var isExpendableFrame: Bool {
         if case .sceneDepth = self { true } else { false }
@@ -195,6 +197,7 @@ protocol CaptureFeatureSupportProviding {
 @MainActor
 protocol CaptureSessionRunning: AnyObject {
     var captureSession: ARSession? { get }
+    var deliversStopAfterFlush: Bool { get }
     var eventHandler: ((CaptureSessionEvent) -> Void)? { get set }
     var sceneDepthIngestionHandler: ((SceneDepthIngestionResult) -> Void)? { get set }
     var meshAnchorLifecycleHandler: ((MeshAnchorLifecycleResult) -> Void)? { get set }
@@ -206,6 +209,7 @@ protocol CaptureSessionRunning: AnyObject {
 
 extension CaptureSessionRunning {
     var captureSession: ARSession? { nil }
+    var deliversStopAfterFlush: Bool { false }
 
     var epochStampedMeshLifecycleHandler: ((EpochStampedMeshLifecycleResult) -> Void)? {
         get { nil }
@@ -271,6 +275,7 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
     var epochStampedMeshLifecycleHandler: ((EpochStampedMeshLifecycleResult) -> Void)?
 
     var captureSession: ARSession? { session }
+    var deliversStopAfterFlush: Bool { true }
 
     init(
         session: ARSession = ARSession(),
@@ -321,11 +326,7 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
     func stop() {
         session.pause()
         session.delegate = nil
-        deliveryMailbox.reset()
-        eventHandler = nil
-        sceneDepthIngestionHandler = nil
-        meshAnchorLifecycleHandler = nil
-        epochStampedMeshLifecycleHandler = nil
+        enqueue(.stopBarrier)
     }
 
     deinit {
@@ -456,6 +457,12 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
             }
         case .ingressOverflow:
             eventHandler?(.failed)
+        case .stopBarrier:
+            eventHandler?(.stoppedAfterFlush)
+            eventHandler = nil
+            sceneDepthIngestionHandler = nil
+            meshAnchorLifecycleHandler = nil
+            epochStampedMeshLifecycleHandler = nil
         }
     }
 }
@@ -609,8 +616,15 @@ final class ARSessionCoordinator: ObservableObject {
     }
 
     func stopSession() {
-        advanceEpochPolicy(.sessionStopped)
         sessionDriver.stop()
+        guard sessionDriver.deliversStopAfterFlush else {
+            finishStoppedSession()
+            return
+        }
+    }
+
+    private func finishStoppedSession() {
+        advanceEpochPolicy(.sessionStopped)
         activeConfiguration = nil
         trackingState = .notEstablished
         refreshReadiness()
@@ -676,6 +690,8 @@ final class ARSessionCoordinator: ObservableObject {
             trackingState = .notEstablished
             refreshReadiness()
             phase = .awaitingNormalTracking
+        case .stoppedAfterFlush:
+            finishStoppedSession()
         }
     }
 
@@ -702,7 +718,7 @@ final class ARSessionCoordinator: ObservableObject {
 
     private func handle(_ result: MeshAnchorLifecycleResult) {
         switch result {
-        case .accepted(let revision, let counters):
+        case .accepted(_, let counters):
             meshAnchorLifecycleCounters = counters
             lastMeshAnchorRejection = nil
             lastEpochObservationDisposition = epochPolicy.noteMissingObservationIdentity()

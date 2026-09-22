@@ -73,6 +73,18 @@ struct ScannerWorkspaceIssue: Identifiable, Equatable, Sendable {
     let recoveryAction: ScannerWorkspaceRecoveryAction?
 }
 
+struct ScannerCaptureAccounting: Equatable, Sendable {
+    let retainedDepthKeyframes: UInt64
+    let discardedCorrelatedDepthFrames: UInt64
+    let discardedCapacityDepthFrames: UInt64
+
+    static let zero = ScannerCaptureAccounting(
+        retainedDepthKeyframes: 0,
+        discardedCorrelatedDepthFrames: 0,
+        discardedCapacityDepthFrames: 0
+    )
+}
+
 /// Shared UI/native seam. `ScannerWorkspaceModel` is the production concrete
 /// implementation and publishes each property below from the main actor.
 /// `captureSession` is the same single ARSession owned by the coordinator.
@@ -85,6 +97,7 @@ protocol ScannerWorkspaceModeling: ObservableObject {
     var selectedProjectName: String { get set }
     var currentIssue: ScannerWorkspaceIssue? { get }
     var saveState: ScannerWorkspaceSaveState { get }
+    var captureAccounting: ScannerCaptureAccounting { get }
     var captureSession: ARSession? { get }
     var canConfirmPlanReference: Bool { get }
     var canShowLibrary: Bool { get }

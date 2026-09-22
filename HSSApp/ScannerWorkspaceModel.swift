@@ -20,6 +20,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
     @Published private(set) var currentIssue: ScannerWorkspaceIssue?
     @Published private(set) var saveState: ScannerWorkspaceSaveState = .noProject
+    @Published private(set) var captureAccounting: ScannerCaptureAccounting = .zero
 
     var captureSession: ARSession? { captureCoordinator.captureSession }
     var canConfirmPlanReference: Bool {
@@ -90,6 +91,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     private var saveAfterFreeze = false
     private var isAssigningSelectedName = false
     private var observedProvenance: Set<ScannerSceneProvenance> = []
+    private var didReportDepthKeyframeCapacity = false
     private var cancellables: Set<AnyCancellable> = []
     private let keyframeSelector = SceneDepthKeyframeSelector()
     private let maximumPendingEvents = 512
@@ -182,6 +184,8 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 observedProvenance = sourceIsSynthetic ? [.syntheticTest] : []
                 nextEventSequence = 1
                 keyframeSelector.reset()
+                captureAccounting = .zero
+                didReportDepthKeyframeCapacity = false
                 saveState = .saved(entry.updatedAt)
                 reloadProjects()
                 phase = .ready
@@ -196,6 +200,8 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         currentIssue = nil
         phase = .startingCapture
         keyframeSelector.reset()
+        captureAccounting = .zero
+        didReportDepthKeyframeCapacity = false
         if captureCoordinator.canRequestCameraPermission {
             Task { [weak self] in
                 guard let self else { return }
@@ -223,7 +229,6 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         phase = .stoppingCapture
         freezeRequested = true
         captureCoordinator.stopSession()
-        if !drainScheduled { scheduleFreeze() }
     }
 
     func saveSelectedProject() {
@@ -376,7 +381,9 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             )
         case .awaitingNormalTracking, .starting, .requestingPermission:
             phase = .startingCapture
-        case .idle, .stopped:
+        case .stopped:
+            if phase == .stoppingCapture, !drainScheduled { scheduleFreeze() }
+        case .idle:
             break
         }
     }
@@ -386,7 +393,20 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     private func receive(_ frame: NormalizedSceneDepthFrame) {
-        guard keyframeSelector.shouldRetain(frame) else { return }
+        let retained = keyframeSelector.shouldRetain(frame)
+        captureAccounting = keyframeSelector.accounting
+        guard retained else {
+            if keyframeSelector.hasReachedCapacity, !didReportDepthKeyframeCapacity {
+                didReportDepthKeyframeCapacity = true
+                currentIssue = ScannerWorkspaceIssue(
+                    id: UUID(),
+                    title: "Depth keyframe limit reached",
+                    message: "Calibrated keyframes already retained remain available. ARKit mesh capture can continue, but additional depth frames are not counted as independent evidence in this project.",
+                    recoveryAction: .stopCaptureAndSaveDraft
+                )
+            }
+            return
+        }
         enqueue(.frame(frame))
     }
 
@@ -455,7 +475,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             }
             latestSnapshot = try await runtime.snapshot(provenance: observedProvenance, frozen: false)
             drainScheduled = false
-            if freezeRequested {
+            if freezeRequested && !captureCoordinator.isSessionRunning {
                 scheduleFreeze()
             } else if saveRequested {
                 saveRequested = false
@@ -590,19 +610,55 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
 /// later frames only after useful camera translation, rotation, or newly
 /// visible coarse depth support. Repeated stationary frames are not counted as
 /// independent measurement evidence.
-private final class SceneDepthKeyframeSelector {
-    private let minimumTranslationMetres: Float = 0.15
-    private let minimumRotationRadians: Float = 10 * .pi / 180
-    private let minimumNewSupportFraction: Float = 0.10
+final class SceneDepthKeyframeSelector {
+    private let minimumTranslationMetres: Float
+    private let minimumRotationRadians: Float
+    private let minimumNewSupportFraction: Float
+    private let maximumRetainedFrames: Int
     private var lastPose: [Float]?
     private var lastSupport: [Bool]?
+    private(set) var retainedFrameCount = 0
+    private(set) var discardedCorrelatedFrameCount = 0
+    private(set) var discardedCapacityFrameCount = 0
+
+    var hasReachedCapacity: Bool { retainedFrameCount >= maximumRetainedFrames }
+    var accounting: ScannerCaptureAccounting {
+        ScannerCaptureAccounting(
+            retainedDepthKeyframes: UInt64(retainedFrameCount),
+            discardedCorrelatedDepthFrames: UInt64(discardedCorrelatedFrameCount),
+            discardedCapacityDepthFrames: UInt64(discardedCapacityFrameCount)
+        )
+    }
+
+    init(
+        minimumTranslationMetres: Float = 0.15,
+        minimumRotationRadians: Float = 10 * .pi / 180,
+        minimumNewSupportFraction: Float = 0.10,
+        maximumRetainedFrames: Int = 256
+    ) {
+        precondition(minimumTranslationMetres > 0)
+        precondition(minimumRotationRadians > 0)
+        precondition(minimumNewSupportFraction > 0 && minimumNewSupportFraction <= 1)
+        precondition(maximumRetainedFrames > 0)
+        self.minimumTranslationMetres = minimumTranslationMetres
+        self.minimumRotationRadians = minimumRotationRadians
+        self.minimumNewSupportFraction = minimumNewSupportFraction
+        self.maximumRetainedFrames = maximumRetainedFrames
+    }
 
     func reset() {
         lastPose = nil
         lastSupport = nil
+        retainedFrameCount = 0
+        discardedCorrelatedFrameCount = 0
+        discardedCapacityFrameCount = 0
     }
 
     func shouldRetain(_ frame: NormalizedSceneDepthFrame) -> Bool {
+        guard !hasReachedCapacity else {
+            discardedCapacityFrameCount += 1
+            return false
+        }
         let support = coarseSupport(frame)
         guard let previousPose = lastPose, let previousSupport = lastSupport else {
             accept(frame, support: support)
@@ -614,7 +670,10 @@ private final class SceneDepthKeyframeSelector {
             if !pair.0 && pair.1 { count += 1 }
         }
         let supportFraction = Float(newSupportCount) / Float(max(1, support.count))
-        guard translated || rotated || supportFraction >= minimumNewSupportFraction else { return false }
+        guard translated || rotated || supportFraction >= minimumNewSupportFraction else {
+            discardedCorrelatedFrameCount += 1
+            return false
+        }
         accept(frame, support: support)
         return true
     }
@@ -622,6 +681,7 @@ private final class SceneDepthKeyframeSelector {
     private func accept(_ frame: NormalizedSceneDepthFrame, support: [Bool]) {
         lastPose = frame.worldFromCamera
         lastSupport = support
+        retainedFrameCount += 1
     }
 
     private func coarseSupport(_ frame: NormalizedSceneDepthFrame) -> [Bool] {

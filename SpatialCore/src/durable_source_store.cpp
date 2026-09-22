@@ -8,7 +8,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <limits>
+#include <locale>
 #include <new>
 #include <optional>
 #include <sstream>
@@ -326,21 +328,28 @@ template <typename T> bool parse_unsigned(std::string_view text, T *value) {
 }
 
 bool parse_double(std::string_view text, double *value) {
-  const auto [end, error] =
-      std::from_chars(text.data(), text.data() + text.size(), *value);
-  return error == std::errc{} && end == text.data() + text.size() &&
+  if (value == nullptr || text.empty() || text.size() > 64U)
+    return false;
+  std::istringstream stream{std::string(text)};
+  stream.imbue(std::locale::classic());
+  stream >> std::noskipws >> *value;
+  return stream && stream.peek() == std::char_traits<char>::eof() &&
          std::isfinite(*value);
 }
 
 bool append_double(std::string *destination, double value) {
-  std::array<char, 64> characters{};
-  const auto [end, error] = std::to_chars(
-      characters.data(), characters.data() + characters.size(), value,
-      std::chars_format::general, std::numeric_limits<double>::max_digits10);
-  if (error != std::errc{})
+  if (destination == nullptr || !std::isfinite(value))
     return false;
-  destination->append(characters.data(),
-                      static_cast<size_t>(end - characters.data()));
+  std::ostringstream stream;
+  stream.imbue(std::locale::classic());
+  stream << std::setprecision(std::numeric_limits<double>::max_digits10)
+         << value;
+  if (!stream)
+    return false;
+  const std::string encoded = stream.str();
+  if (encoded.empty() || encoded.size() > 64U)
+    return false;
+  destination->append(encoded);
   return true;
 }
 

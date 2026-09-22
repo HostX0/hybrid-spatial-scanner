@@ -214,10 +214,13 @@ actor HSSProjectRuntime {
             ? UInt32(HSS_PROJECT_STORE_CREATE_NEW)
             : UInt32(HSS_PROJECT_STORE_OPEN_EXISTING)
         storeConfig.source_is_synthetic = sourceIsSynthetic ? 1 : 0
-        storeConfig.max_epoch_records = 4_096
-        storeConfig.max_depth_records = 250_000
-        storeConfig.max_mesh_records = 250_000
-        storeConfig.max_command_records = 10_000
+        // The native store enforces a 20,000-record project-wide ceiling.
+        // Keep each stream explicitly bounded while leaving headroom for all
+        // accepted source and control records in one durable manifest.
+        storeConfig.max_epoch_records = 1_024
+        storeConfig.max_depth_records = 8_192
+        storeConfig.max_mesh_records = 8_192
+        storeConfig.max_command_records = 1_024
         storeConfig.max_retained_bytes = 8 * 1024 * 1024 * 1024
         storeConfig.max_record_bytes = 256 * 1024 * 1024
         storeConfig.max_pending_bytes = 512 * 1024 * 1024
@@ -427,7 +430,7 @@ actor HSSProjectRuntime {
             afterRevision = try stats().scene_revision
         }
         guard afterRevision == beforeRevision + 1 else {
-            throw HSSBridgeError.native(HSS_INTERNAL_ERROR)
+            throw HSSBridgeError.native(HSSStatus(HSS_INTERNAL_ERROR))
         }
 
         var context = Self.eventContext(
@@ -460,7 +463,7 @@ actor HSSProjectRuntime {
             if before.pending_frames == 0 && before.lifecycle_state == 1 { return }
             try step(workBudgetUs: workBudgetUs)
         }
-        throw HSSBridgeError.native(HSS_RESOURCE_LIMIT)
+        throw HSSBridgeError.native(HSSStatus(HSS_RESOURCE_LIMIT))
     }
 
     func stats() throws -> HSSEngineStats {
@@ -488,7 +491,7 @@ actor HSSProjectRuntime {
         var result = HSSProjectCheckpointResult()
         let status = hss_project_store_checkpoint(store, &result)
         guard status == HSS_OK, result.durability_state == 1 else {
-            throw HSSBridgeError.native(status == HSS_OK ? HSS_INTERNAL_ERROR : status)
+            throw HSSBridgeError.native(status == HSS_OK ? HSSStatus(HSS_INTERNAL_ERROR) : status)
         }
         return HSSProjectCheckpoint(
             durableRevision: result.durable_revision,
@@ -561,10 +564,10 @@ actor HSSProjectRuntime {
                 return current.scene_revision
             }
             if current.scene_revision > beforeRevision + 1 {
-                throw HSSBridgeError.native(HSS_INTERNAL_ERROR)
+                throw HSSBridgeError.native(HSSStatus(HSS_INTERNAL_ERROR))
             }
             try step()
         }
-        throw HSSBridgeError.native(HSS_RESOURCE_LIMIT)
+        throw HSSBridgeError.native(HSSStatus(HSS_RESOURCE_LIMIT))
     }
 }
