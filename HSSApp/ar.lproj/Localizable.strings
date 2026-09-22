@@ -60,6 +60,7 @@
 "Move slowly and keep textured surfaces in view until tracking recovers." = "تحرك ببطء وأبقِ الأسطح ذات التفاصيل ضمن العرض حتى تتعافى التتبّع.";
 "Tracking is unavailable. Start again in a well-lit space." = "التتبّع غير متاح. ابدأ مجددًا في مساحة مضاءة جيدًا.";
 "Start the camera to establish tracking." = "ابدأ الكاميرا لتثبيت التتبّع.";
+"The camera was interrupted. Finish this scan or resume when capture returns." = "توقفت الكاميرا. أنهِ هذا المسح أو استأنفه عند عودة الالتقاط.";
 "Unknown" = "غير معروف";
 "Observed" = "مرصود";
 "Fitted" = "ملائم";

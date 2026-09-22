@@ -48,6 +48,21 @@ struct CaptureEpochRecord: Equatable, Sendable {
     let policyEventSequence: UInt64
 }
 
+enum CaptureEpochRelationshipState: UInt32, Equatable, Sendable {
+    case unresolved = 0
+    case accepted = 1
+}
+
+struct CaptureEpochControl: Equatable, Sendable {
+    let sessionEpoch: UInt64
+    let relationshipState: CaptureEpochRelationshipState
+    /// Column-major T_project_world. It is identity only for the explicitly
+    /// accepted first capture epoch; unresolved epochs cannot contribute
+    /// project geometry until a validated relationship is supplied.
+    let projectFromWorld: [Double]
+    let transformRevision: UInt64
+}
+
 enum EpochObservationSource: String, Equatable, Sendable {
     case sceneDepth
     case meshAnchor
@@ -169,6 +184,7 @@ struct EpochStampedMeshLifecycleResult: Sendable {
     let identity: EpochObservationIdentity
     let eventKind: MeshAnchorEventKind
     let anchorID: UUID
+    let acceptedEvent: OwnedMeshAnchorEvent?
     let lifecycleResult: MeshAnchorLifecycleResult
 }
 

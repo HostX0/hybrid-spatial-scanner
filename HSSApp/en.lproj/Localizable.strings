@@ -60,6 +60,7 @@
 "Move slowly and keep textured surfaces in view until tracking recovers." = "Move slowly and keep textured surfaces in view until tracking recovers.";
 "Tracking is unavailable. Start again in a well-lit space." = "Tracking is unavailable. Start again in a well-lit space.";
 "Start the camera to establish tracking." = "Start the camera to establish tracking.";
+"The camera was interrupted. Finish this scan or resume when capture returns." = "The camera was interrupted. Finish this scan or resume when capture returns.";
 "Unknown" = "Unknown";
 "Observed" = "Observed";
 "Fitted" = "Fitted";

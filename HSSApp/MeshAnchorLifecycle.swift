@@ -82,6 +82,21 @@ struct OwnedMeshAnchorRevision: Equatable, Sendable {
     let payload: MeshAnchorPayload
 }
 
+/// Complete accepted lifecycle event passed to persistence and the native
+/// engine. Removals retain the last live revision and generation even though
+/// they intentionally carry no geometry payload.
+struct OwnedMeshAnchorEvent: Equatable, Sendable {
+    let kind: MeshAnchorEventKind
+    let anchorID: UUID
+    let anchorRevision: UInt64
+    let generation: UInt64
+    let sessionEpoch: UInt64
+    let sequence: UInt64
+    let monotonicTimestamp: TimeInterval
+    let worldFromAnchor: [Float]
+    let payload: MeshAnchorPayload?
+}
+
 enum MeshAnchorLifecycleResult: Sendable {
     case accepted(OwnedMeshAnchorRevision?, MeshAnchorLifecycleCounters)
     case rejected(MeshAnchorLifecycleRejection, MeshAnchorLifecycleCounters)
