@@ -123,6 +123,7 @@ target_compile_options(hss_topology_protection PRIVATE -Wall -Wextra -Werror -Wp
 if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_compile_options(hss_topology_protection PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
  target_link_options(hss_topology_protection INTERFACE -fsanitize=address,undefined)
+endif()
 add_library(hss_ceiling_overhead STATIC
   SpatialCore/src/ceiling_overhead.cpp
 )
@@ -135,6 +136,19 @@ target_compile_options(hss_ceiling_overhead PRIVATE -Wall -Wextra -Werror -Wpeda
 if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_compile_options(hss_ceiling_overhead PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
   target_link_options(hss_ceiling_overhead INTERFACE -fsanitize=address,undefined)
+endif()
+add_library(hss_revisioned_command STATIC
+  SpatialCore/src/revisioned_command.cpp
+)
+target_include_directories(hss_revisioned_command
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/SpatialCore/include>
+)
+target_compile_features(hss_revisioned_command PUBLIC cxx_std_20)
+target_compile_options(hss_revisioned_command PRIVATE -Wall -Wextra -Werror -Wpedantic)
+if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+ target_compile_options(hss_revisioned_command PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+  target_link_options(hss_revisioned_command INTERFACE -fsanitize=address,undefined)
 endif()
 
 if(HSS_BUILD_TESTS)
@@ -186,6 +200,10 @@ add_executable(hss_topology_protection_test tests/hss_topology_protection_test.c
 target_link_libraries(hss_topology_protection_test PRIVATE hss_topology_protection)
 target_compile_definitions(hss_topology_protection_test PRIVATE HSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(hss_topology_protection_test PRIVATE -Wall -Wextra -Werror -Wpedantic)
+add_executable(hss_revisioned_command_test tests/hss_revisioned_command_test.cpp)
+target_link_libraries(hss_revisioned_command_test PRIVATE hss_revisioned_command)
+target_compile_definitions(hss_revisioned_command_test PRIVATE HSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_options(hss_revisioned_command_test PRIVATE -Wall -Wextra -Werror -Wpedantic)
 if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_compile_options(hss_robust_plane_fit_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
  target_link_options(hss_robust_plane_fit_test PRIVATE -fsanitize=address,undefined)
@@ -209,6 +227,9 @@ target_compile_options(hss_ceiling_overhead_test PRIVATE -Wall -Wextra -Werror -
 if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_compile_options(hss_ceiling_overhead_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
  target_link_options(hss_ceiling_overhead_test PRIVATE -fsanitize=address,undefined)
+endif()
+ target_compile_options(hss_revisioned_command_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+ target_link_options(hss_revisioned_command_test PRIVATE -fsanitize=address,undefined)
 endif()
 foreach(target abi_smoke cpp_math_test hss_engine_contract_test hss_bounded_ingress_test hss_coordinate_basis_test hss_durable_source_store_test hss_normalized_replay_test hss_provisional_plan_test hss_interruption_recovery_test)
  target_compile_options(${target} PRIVATE -Wall -Wextra -Werror -Wpedantic)
@@ -239,4 +260,5 @@ add_test(NAME hss_protected_rib COMMAND hss_protected_rib_test)
 add_test(NAME hss_ring_net_area COMMAND hss_ring_net_area_test)
 add_test(NAME hss_topology_protection COMMAND hss_topology_protection_test)
 add_test(NAME hss_ceiling_overhead COMMAND hss_ceiling_overhead_test)
+add_test(NAME hss_revisioned_command COMMAND hss_revisioned_command_test)
 endif()

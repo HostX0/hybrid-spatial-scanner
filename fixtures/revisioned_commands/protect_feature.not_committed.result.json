@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.1",
+  "command_id": "b1a1e1ae-ec03-5401-af12-faa045864665",
+  "state": "applied",
+  "scene_revision": "4",
+  "issue_ids": [],
+  "conflict_constraint_ids": [],
+  "diagnostic": "Accepted in volatile contract state; no durable save claimed.",
+  "durability": "not_committed",
+  "journal_commit_id": null
+}
