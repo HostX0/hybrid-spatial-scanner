@@ -1,0 +1,18 @@
+# Synthetic mathematical fixture; no sensor or physical-measurement claim.
+# RING,id,role,hole_kind,attachment,explicitly_fixed,topology,geometry_origin,quality,source_revision,support_ids
+# POINT,x_m,y_m
+RING,rib-room,outer,other,uncertain,0,accepted,observed,ready,scene-42,outer-observation;protected-rib
+POINT,0,0
+POINT,1,0
+POINT,2,0
+POINT,2,0.5
+POINT,2.15,0.5
+POINT,2.15,0
+POINT,6,0
+POINT,6,5
+POINT,0,5
+RING,detached-column,hole,fixed_obstruction,detached,1,accepted,user_measured,ready,scene-42,column-footprint;user-confirmation
+POINT,3,2
+POINT,3,2.5
+POINT,3.3,2.5
+POINT,3.3,2
