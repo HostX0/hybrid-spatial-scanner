@@ -1,4 +1,5 @@
 #include "hss/hss_api.h"
+#include "hss/bounded_ingress.hpp"
 #include "hss/coordinate_basis.hpp"
 
 #include <algorithm>
@@ -7,18 +8,22 @@
 #include <limits>
 #include <new>
 #include <string>
+#include <utility>
 #include <vector>
 
 // This facade intentionally owns only lifecycle, validation, synchronous input
 // copies, and immutable empty-scene snapshots. It is not a capture or
 // reconstruction implementation.
 struct HSSEngine {
+  explicit HSSEngine(const HSSConfig& input_config)
+      : config(input_config), ingress(input_config.max_working_bytes,
+                                      input_config.max_pending_frames) {}
+
   HSSConfig config{};
-  std::vector<uint8_t> staged_input;
+  hss::ingress::BoundedIngress ingress;
   std::string scene_json;
   uint64_t scene_revision{0};
   uint64_t accepted_frames{0};
-  uint64_t dropped_frames{0};
   uint64_t accepted_commands{0};
   HSSStatus last_status{HSS_OK};
 };
@@ -89,37 +94,54 @@ HSSStatus validate_config(const HSSConfig* config) {
   return HSS_OK;
 }
 
-HSSStatus copy_into_stage(HSSEngine* engine, const uint8_t* data, uint64_t length) {
-  if ((data == nullptr && length != 0U) || engine == nullptr) {
-    return HSS_INVALID_ARGUMENT;
+bool add_fits(uint64_t first, uint64_t second, uint64_t* result) {
+  if (result == nullptr || second > std::numeric_limits<uint64_t>::max() - first) {
+    return false;
   }
-  if (length > engine->config.max_working_bytes ||
-      length > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
-    return HSS_RESOURCE_LIMIT;
-  }
-  if (length == 0U) {
-    engine->staged_input.clear();
-    return HSS_OK;
-  }
-  engine->staged_input.assign(data, data + static_cast<size_t>(length));
-  return HSS_OK;
+  *result = first + second;
+  return true;
 }
 
-HSSStatus append_into_stage(HSSEngine* engine, const uint8_t* data, uint64_t length) {
-  if ((data == nullptr && length != 0U) || engine == nullptr) {
-    return HSS_INVALID_ARGUMENT;
+HSSStatus admission_status(hss::ingress::Admission admission) {
+  switch (admission) {
+    case hss::ingress::Admission::accepted:
+    case hss::ingress::Admission::dropped_frame:
+      return HSS_OK;
+    case hss::ingress::Admission::resource_limit:
+      return HSS_RESOURCE_LIMIT;
+    case hss::ingress::Admission::closed:
+      return HSS_NOT_READY;
   }
-  if (length > engine->config.max_working_bytes ||
-      engine->staged_input.size() > engine->config.max_working_bytes - length ||
-      length > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
-    return HSS_RESOURCE_LIMIT;
-  }
+  return HSS_INTERNAL_ERROR;
+}
+
+std::vector<uint8_t> copy_payload(const uint8_t* source, uint64_t length) {
   if (length == 0U) {
-    return HSS_OK;
+    return {};
   }
-  engine->staged_input.insert(engine->staged_input.end(), data,
-                              data + static_cast<size_t>(length));
-  return HSS_OK;
+  return {source, source + static_cast<size_t>(length)};
+}
+
+std::vector<uint8_t> copy_payloads(const uint8_t* first, uint64_t first_length,
+                                   const uint8_t* second, uint64_t second_length) {
+  uint64_t total = 0;
+  if (!add_fits(first_length, second_length, &total) ||
+      total > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+    throw std::bad_alloc();
+  }
+  std::vector<uint8_t> result;
+  result.reserve(static_cast<size_t>(total));
+  if (first_length != 0U) {
+    result.insert(result.end(), first, first + static_cast<size_t>(first_length));
+  }
+  if (second_length != 0U) {
+    result.insert(result.end(), second, second + static_cast<size_t>(second_length));
+  }
+  return result;
+}
+
+HSSStatus enqueue_owned_event(HSSEngine* engine, hss::ingress::Event&& event) {
+  return admission_status(engine->ingress.enqueue(std::move(event)));
 }
 
 std::string uuid_string(const HSSId& id) {
@@ -200,8 +222,7 @@ extern "C" HSSStatus hss_engine_create(const HSSConfig* config, HSSEngine** out_
     if (status != HSS_OK) {
       return status;
     }
-    auto* engine = new HSSEngine();
-    engine->config = *config;
+    auto* engine = new HSSEngine(*config);
     engine->scene_json = empty_scene_json(config->project_id);
     *out_engine = engine;
     return HSS_OK;
@@ -235,7 +256,17 @@ extern "C" HSSStatus hss_engine_set_epoch(HSSEngine* engine, const HSSEpoch* epo
     if (!hss::coordinate::is_rigid_transform(epoch->T_project_world)) {
       return remembered(engine, HSS_INVALID_COORDINATE_FRAME);
     }
-    return remembered(engine, HSS_OK);
+    hss::ingress::Event event{};
+    event.kind = hss::ingress::EventKind::epoch;
+    event.epoch = *epoch;
+    event.capture_id = epoch->capture_id;
+    event.event_sequence = epoch->event_sequence;
+    event.session_epoch = epoch->session_epoch;
+    const hss::ingress::Admission admission = engine->ingress.admission(event.kind, 0U);
+    if (admission != hss::ingress::Admission::accepted) {
+      return remembered(engine, admission_status(admission));
+    }
+    return remembered(engine, enqueue_owned_event(engine, std::move(event)));
   } catch (const std::bad_alloc&) {
     return remembered(engine, HSS_RESOURCE_LIMIT);
   } catch (...) {
@@ -289,14 +320,42 @@ extern "C" HSSStatus hss_engine_submit_frame(HSSEngine* engine, const HSSFrame* 
         return remembered(engine, HSS_INVALID_ARGUMENT);
       }
     }
-    HSSStatus status = copy_into_stage(engine, frame->depth_bytes, frame->depth_byte_length);
-    if (status == HSS_OK && frame->confidence_bytes != nullptr) {
-      status = append_into_stage(engine, frame->confidence_bytes, frame->confidence_byte_length);
+    uint64_t payload_bytes = required_depth;
+    if (frame->confidence_bytes != nullptr) {
+      uint64_t required_confidence = 0;
+      if (!multiply_add_fits(frame->confidence_row_stride_bytes, frame->depth_height,
+                             frame->depth_width, &required_confidence) ||
+          !add_fits(payload_bytes, required_confidence, &payload_bytes)) {
+        return remembered(engine, HSS_RESOURCE_LIMIT);
+      }
     }
-    if (status != HSS_OK) {
-      return remembered(engine, status);
+    const hss::ingress::Admission admission =
+        engine->ingress.admission(hss::ingress::EventKind::frame, payload_bytes);
+    if (admission == hss::ingress::Admission::dropped_frame) {
+      engine->ingress.record_dropped_frame();
+      return remembered(engine, HSS_OK);
     }
-    return remembered(engine, HSS_UNSUPPORTED_CAPABILITY);
+    if (admission != hss::ingress::Admission::accepted) {
+      return remembered(engine, admission_status(admission));
+    }
+    hss::ingress::Event event{};
+    event.kind = hss::ingress::EventKind::frame;
+    event.frame = *frame;
+    event.frame.depth_bytes = nullptr;
+    event.frame.depth_byte_length = required_depth;
+    event.frame.confidence_bytes = nullptr;
+    event.frame.confidence_byte_length = payload_bytes - required_depth;
+    event.capture_id = frame->capture_id;
+    event.event_sequence = frame->event_sequence;
+    event.session_epoch = frame->session_epoch;
+    event.payload_bytes = payload_bytes;
+    event.payload = copy_payloads(frame->depth_bytes, required_depth, frame->confidence_bytes,
+                                  payload_bytes - required_depth);
+    const HSSStatus enqueue_status = enqueue_owned_event(engine, std::move(event));
+    if (enqueue_status == HSS_OK) {
+      ++engine->accepted_frames;
+    }
+    return remembered(engine, enqueue_status);
   } catch (const std::bad_alloc&) {
     return remembered(engine, HSS_RESOURCE_LIMIT);
   } catch (...) {
@@ -332,15 +391,34 @@ extern "C" HSSStatus hss_engine_submit_mesh_event(HSSEngine* engine, const HSSMe
     }
     const uint64_t vertex_bytes = event->vertex_count * 3U * sizeof(float);
     const uint64_t triangle_bytes = event->triangle_count * 3U * sizeof(uint32_t);
-    HSSStatus status = copy_into_stage(engine,
-                                       reinterpret_cast<const uint8_t*>(event->vertices_xyz), vertex_bytes);
-    if (status == HSS_OK) {
-      status = append_into_stage(engine, reinterpret_cast<const uint8_t*>(event->triangle_indices), triangle_bytes);
+    uint64_t payload_bytes = 0;
+    if (!add_fits(vertex_bytes, triangle_bytes, &payload_bytes)) {
+      return remembered(engine, HSS_RESOURCE_LIMIT);
     }
-    if (status != HSS_OK) {
-      return remembered(engine, status);
+    const hss::ingress::EventKind kind = event->kind == 0U
+        ? hss::ingress::EventKind::mesh_add
+        : (event->kind == 1U ? hss::ingress::EventKind::mesh_replace
+                             : hss::ingress::EventKind::mesh_remove);
+    const hss::ingress::Admission admission = engine->ingress.admission(kind, payload_bytes);
+    if (admission != hss::ingress::Admission::accepted) {
+      // Mesh removals/replacements are structural control events.  They must
+      // surface retry/backpressure instead of becoming a best-effort drop.
+      return remembered(engine, admission_status(admission));
     }
-    return remembered(engine, HSS_UNSUPPORTED_CAPABILITY);
+    hss::ingress::Event queued{};
+    queued.kind = kind;
+    queued.mesh = *event;
+    queued.mesh.vertices_xyz = nullptr;
+    queued.mesh.triangle_indices = nullptr;
+    queued.capture_id = event->capture_id;
+    queued.anchor_id = event->anchor_id;
+    queued.event_sequence = event->event_sequence;
+    queued.anchor_revision = event->anchor_revision;
+    queued.session_epoch = event->session_epoch;
+    queued.payload_bytes = payload_bytes;
+    queued.payload = copy_payloads(reinterpret_cast<const uint8_t*>(event->vertices_xyz), vertex_bytes,
+                                   reinterpret_cast<const uint8_t*>(event->triangle_indices), triangle_bytes);
+    return remembered(engine, enqueue_owned_event(engine, std::move(queued)));
   } catch (const std::bad_alloc&) {
     return remembered(engine, HSS_RESOURCE_LIMIT);
   } catch (...) {
@@ -357,8 +435,16 @@ extern "C" HSSStatus hss_engine_submit_room_proposal_json(HSSEngine* engine, HSS
     if (bytes_status != HSS_OK) {
       return remembered(engine, bytes_status);
     }
-    const HSSStatus status = copy_into_stage(engine, proposal.data, proposal.length);
-    return remembered(engine, status == HSS_OK ? HSS_UNSUPPORTED_CAPABILITY : status);
+    const hss::ingress::Admission admission =
+        engine->ingress.admission(hss::ingress::EventKind::room_proposal, proposal.length);
+    if (admission != hss::ingress::Admission::accepted) {
+      return remembered(engine, admission_status(admission));
+    }
+    hss::ingress::Event event{};
+    event.kind = hss::ingress::EventKind::room_proposal;
+    event.payload_bytes = proposal.length;
+    event.payload = copy_payload(proposal.data, proposal.length);
+    return remembered(engine, enqueue_owned_event(engine, std::move(event)));
   } catch (const std::bad_alloc&) {
     return remembered(engine, HSS_RESOURCE_LIMIT);
   } catch (...) {
@@ -375,8 +461,22 @@ extern "C" HSSStatus hss_engine_apply_command_json(HSSEngine* engine, HSSBytes c
     if (bytes_status != HSS_OK) {
       return remembered(engine, bytes_status);
     }
-    const HSSStatus status = copy_into_stage(engine, command.data, command.length);
-    return remembered(engine, status == HSS_OK ? HSS_UNSUPPORTED_CAPABILITY : status);
+    const hss::ingress::Admission admission =
+        engine->ingress.admission(hss::ingress::EventKind::command, command.length);
+    if (admission != hss::ingress::Admission::accepted) {
+      // Commands are durable control intent.  A caller must receive an
+      // explicit failure and retry rather than losing a tap or edit silently.
+      return remembered(engine, admission_status(admission));
+    }
+    hss::ingress::Event event{};
+    event.kind = hss::ingress::EventKind::command;
+    event.payload_bytes = command.length;
+    event.payload = copy_payload(command.data, command.length);
+    const HSSStatus enqueue_status = enqueue_owned_event(engine, std::move(event));
+    if (enqueue_status == HSS_OK) {
+      ++engine->accepted_commands;
+    }
+    return remembered(engine, enqueue_status);
   } catch (const std::bad_alloc&) {
     return remembered(engine, HSS_RESOURCE_LIMIT);
   } catch (...) {
@@ -404,6 +504,14 @@ extern "C" HSSStatus hss_engine_step(HSSEngine* engine, uint32_t work_budget_us)
     if (engine == nullptr || work_budget_us == 0U) {
       return engine == nullptr ? HSS_INVALID_ARGUMENT : remembered(engine, HSS_INVALID_ARGUMENT);
     }
+    uint32_t remaining_events = work_budget_us;
+    hss::ingress::Event event{};
+    while (remaining_events != 0U && engine->ingress.pop(&event)) {
+      --remaining_events;
+      // Fusion, mesh application and command execution are intentionally not
+      // part of this facade.  Draining here establishes a bounded handoff
+      // point without retaining borrowed input beyond the submit call.
+    }
     return remembered(engine, HSS_OK);
   } catch (...) {
     return remembered(engine, HSS_INTERNAL_ERROR);
@@ -421,10 +529,10 @@ extern "C" HSSStatus hss_engine_get_stats(const HSSEngine* engine, HSSEngineStat
     stats->abi_version = HSS_ABI_VERSION;
     stats->struct_size = sizeof(*stats);
     stats->accepted_frames = engine->accepted_frames;
-    stats->dropped_frames = engine->dropped_frames;
+    stats->dropped_frames = engine->ingress.dropped_frames();
     stats->accepted_commands = engine->accepted_commands;
-    stats->working_bytes = engine->staged_input.size();
-    stats->pending_frames = 0;
+    stats->working_bytes = engine->ingress.working_bytes();
+    stats->pending_frames = engine->ingress.pending_frames();
     stats->scene_revision = engine->scene_revision;
     stats->lifecycle_state = 1;
     stats->last_status = static_cast<uint32_t>(engine->last_status);

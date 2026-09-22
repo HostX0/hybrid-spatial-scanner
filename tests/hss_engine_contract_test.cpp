@@ -100,8 +100,13 @@ int main() {
 
   const uint8_t depth[] = {0U, 0U, 0U, 0U};
   HSSFrame frame = valid_frame(depth);
-  check(hss_engine_submit_frame(engine, &frame) == HSS_UNSUPPORTED_CAPABILITY,
-        "well-formed frame reaches unavailable backend");
+  check(hss_engine_submit_frame(engine, &frame) == HSS_OK,
+        "well-formed frame is copied into bounded ingress");
+  HSSEngineStats ingress_stats{};
+  check(hss_engine_get_stats(engine, &ingress_stats) == HSS_OK &&
+            ingress_stats.accepted_frames == 1U && ingress_stats.pending_frames == 1U &&
+            ingress_stats.working_bytes == 4U,
+        "ingress exposes accepted frame, pending frame, and owned byte accounting");
   frame.abi_version = HSS_ABI_VERSION + 1U;
   check(hss_engine_submit_frame(engine, &frame) == HSS_UNSUPPORTED_VERSION,
         "frame ABI version mismatch rejected");
@@ -139,7 +144,7 @@ int main() {
   ExtendedMessage<HSSFrame, 8> extended_frame{};
   extended_frame.value = valid_frame(depth);
   extended_frame.value.struct_size = sizeof(extended_frame);
-  check(hss_engine_submit_frame(engine, &extended_frame.value) == HSS_UNSUPPORTED_CAPABILITY,
+  check(hss_engine_submit_frame(engine, &extended_frame.value) == HSS_OK,
         "zero frame extension accepted when allocated");
   extended_frame.extension[0] = 1U;
   check(hss_engine_submit_frame(engine, &extended_frame.value) == HSS_INVALID_ARGUMENT,
@@ -164,6 +169,45 @@ int main() {
         "null JSON pointer with length rejected");
   check(hss_engine_apply_command_json(engine, {&byte, 16U * 1024U * 1024U + 1U}) == HSS_RESOURCE_LIMIT,
         "oversized JSON rejected before dereference");
+  check(hss_engine_apply_command_json(engine, {&byte, 1U}) == HSS_OK,
+        "command is synchronously copied into bounded ingress");
+  check(hss_engine_get_stats(engine, &ingress_stats) == HSS_OK &&
+            ingress_stats.accepted_commands == 1U && ingress_stats.pending_frames == 2U,
+        "command acceptance and frame queue accounting are visible in stats");
+  check(hss_engine_step(engine, 1U) == HSS_OK, "bounded step drains at most one FIFO event");
+  check(hss_engine_get_stats(engine, &ingress_stats) == HSS_OK && ingress_stats.pending_frames == 1U,
+        "step releases the first queued frame without retaining its input buffer");
+
+  HSSConfig constrained_config = valid_config();
+  constrained_config.max_working_bytes = 4U;
+  constrained_config.max_pending_frames = 1U;
+  HSSEngine* constrained_engine = nullptr;
+  check(hss_engine_create(&constrained_config, &constrained_engine) == HSS_OK,
+        "create bounded overload engine");
+  HSSFrame constrained_frame = valid_frame(depth);
+  check(hss_engine_submit_frame(constrained_engine, &constrained_frame) == HSS_OK,
+        "first constrained frame accepted");
+  check(hss_engine_submit_frame(constrained_engine, &constrained_frame) == HSS_OK,
+        "second constrained frame is an observable drop, not an error");
+  check(hss_engine_get_stats(constrained_engine, &ingress_stats) == HSS_OK &&
+            ingress_stats.accepted_frames == 1U && ingress_stats.dropped_frames == 1U &&
+            ingress_stats.pending_frames == 1U,
+        "frame overload increments an explicit drop counter");
+  HSSMeshEvent removal{};
+  removal.abi_version = HSS_ABI_VERSION;
+  removal.struct_size = sizeof(removal);
+  removal.kind = 2U;
+  removal.T_world_anchor = identity_transform();
+  check(hss_engine_submit_mesh_event(constrained_engine, &removal) == HSS_OK,
+        "zero-byte mesh removal is retained while frames are full");
+  check(hss_engine_apply_command_json(constrained_engine, {&byte, 1U}) == HSS_RESOURCE_LIMIT,
+        "stalled consumer gets explicit command backpressure");
+  check(hss_engine_step(constrained_engine, 1U) == HSS_OK,
+        "constrained consumer drains one event");
+  check(hss_engine_apply_command_json(constrained_engine, {&byte, 1U}) == HSS_OK,
+        "caller can retry command after capacity returns");
+  hss_engine_destroy(constrained_engine);
+
   uint64_t command_required = 99U;
   check(hss_engine_copy_command_result_json(engine, nullptr, 0U, &command_required) == HSS_NOT_READY &&
             command_required == 0U,

@@ -10,6 +10,7 @@ option(HSS_BUILD_TESTS "Build portable host tests" ON)
 # This portable facade implements ABI ownership, status, synchronous-copy, and
 # immutable-empty-snapshot contracts only. It does not implement a scanner.
 add_library(SpatialCore STATIC
+  SpatialCore/src/bounded_ingress.cpp
   SpatialCore/src/hss_engine.cpp
   SpatialCore/src/coordinate_basis.cpp
   SpatialCore/src/durable_source_store.cpp
@@ -31,11 +32,13 @@ add_executable(cpp_math_test tests/cpp_math_test.cpp)
 target_include_directories(cpp_math_test PRIVATE include reference/cpp)
 add_executable(hss_engine_contract_test tests/hss_engine_contract_test.cpp)
 target_link_libraries(hss_engine_contract_test PRIVATE SpatialCore)
+add_executable(hss_bounded_ingress_test tests/hss_bounded_ingress_test.cpp)
+target_link_libraries(hss_bounded_ingress_test PRIVATE SpatialCore)
 add_executable(hss_coordinate_basis_test tests/hss_coordinate_basis_test.cpp)
 target_link_libraries(hss_coordinate_basis_test PRIVATE SpatialCore)
 add_executable(hss_durable_source_store_test tests/hss_durable_source_store_test.cpp)
 target_link_libraries(hss_durable_source_store_test PRIVATE SpatialCore)
-foreach(target abi_smoke cpp_math_test hss_engine_contract_test hss_coordinate_basis_test hss_durable_source_store_test)
+foreach(target abi_smoke cpp_math_test hss_engine_contract_test hss_bounded_ingress_test hss_coordinate_basis_test hss_durable_source_store_test)
  target_compile_options(${target} PRIVATE -Wall -Wextra -Werror -Wpedantic)
  if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -50,6 +53,7 @@ enable_testing()
 add_test(NAME abi_smoke COMMAND abi_smoke)
 add_test(NAME cpp_math COMMAND cpp_math_test)
 add_test(NAME hss_engine_contract COMMAND hss_engine_contract_test)
+add_test(NAME hss_bounded_ingress COMMAND hss_bounded_ingress_test)
 add_test(NAME hss_coordinate_basis COMMAND hss_coordinate_basis_test)
 add_test(NAME hss_durable_source_store COMMAND hss_durable_source_store_test)
 endif()
