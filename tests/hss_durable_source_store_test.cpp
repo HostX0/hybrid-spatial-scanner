@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "hss/durable_source_store.hpp"
 
 #include <cstdlib>
@@ -83,6 +84,10 @@ class FailOnceFileSystem final : public FileSystem {
   bool read_file(const std::string& path, std::vector<uint8_t>* bytes) const override {
     return inner_.read_file(path, bytes);
   }
+  bool read_file_bounded(const std::string& path, uint64_t maximum_bytes,
+                         std::vector<uint8_t>* bytes) const override {
+    return inner_.read_file_bounded(path, maximum_bytes, bytes);
+  }
   bool exists(const std::string& path) const override { return inner_.exists(path); }
   bool list_files(const std::string& directory, std::vector<std::string>* paths) const override {
     return inner_.list_files(directory, paths);
@@ -116,7 +121,7 @@ void test_owned_source_and_deterministic_replay() {
   check(store.checkpoint({depth, mesh}) == StoreStatus::kOk, "checkpoint selected depth and mesh");
   depth.payload[0] = 99U;
   mesh.payload[0] = 88U;
-  const RecoveryResult recovered = store.recover();
+  RecoveryResult recovered = store.recover();
   check(recovered.status == StoreStatus::kOk && recovered.revision == 1U &&
             recovered.records.size() == 2U,
         "recover committed manifest");
@@ -130,6 +135,25 @@ void test_owned_source_and_deterministic_replay() {
   check(store.read_payload(recovered.records[0], &restored) == StoreStatus::kOk &&
             restored == std::vector<uint8_t>({1U, 2U, 3U}),
         "chunk owns copied source bytes rather than caller storage");
+  check(store.checkpoint({record(SourceKind::kMesh, 12U, {})}) == StoreStatus::kOk,
+        "zero-payload mesh removal with stable anchor identity is retained");
+  recovered = store.recover();
+  check(recovered.status == StoreStatus::kOk && recovered.records.size() == 3U &&
+            recovered.records.back().source.event_sequence == 12U &&
+            recovered.records.back().source.payload.empty() &&
+            recovered.records.back().source.anchor_id[0] == 0x84U,
+        "valid mesh removal round trips its nonzero anchor identity");
+  restored = {1U};
+  check(store.read_payload(recovered.records.back(), &restored) == StoreStatus::kOk && restored.empty(),
+        "valid mesh removal reads an empty owned payload");
+  SourceRecord anonymous_removal = record(SourceKind::kMesh, 13U, {});
+  anonymous_removal.anchor_id.fill(0U);
+  check(store.checkpoint({anonymous_removal}) == StoreStatus::kInvalidArgument,
+        "write rejects zero-identity mesh removal");
+  auto invalid_stored_removal = recovered.records.back();
+  invalid_stored_removal.source.anchor_id.fill(0U);
+  check(store.read_payload(invalid_stored_removal, &restored) == StoreStatus::kCorrupt,
+        "stored/recovery validation rejects zero-identity mesh removal");
 }
 
 void test_partial_manifest_never_publishes() {
@@ -158,8 +182,24 @@ void test_corruption_falls_back_to_previous_manifest() {
         "checkpoint revision with prior manifest");
   RecoveryResult active = store.recover();
   check(active.revision == 2U && active.records.size() == 2U, "active revision before corruption");
-  write_bytes((std::filesystem::path(directory.path()) / active.records.back().relative_path).string(), {0U, 1U});
+  std::filesystem::resize_file(std::filesystem::path(directory.path()) / "active.manifest",
+                               16U * 1024U * 1024U + 1U);
   RecoveryResult fallback = store.recover();
+  check(fallback.status == StoreStatus::kOk && fallback.used_previous_manifest && fallback.revision == 1U,
+        "oversized active manifest falls back before allocation");
+  check(store.checkpoint({record(SourceKind::kMesh, 2U, {2U, 2U})}) == StoreStatus::kOk,
+        "checkpoint repairs oversized manifest from previous revision");
+  active = store.recover();
+  std::filesystem::resize_file(std::filesystem::path(directory.path()) / active.records.back().relative_path,
+                               300U * 1024U * 1024U);
+  fallback = store.recover();
+  check(fallback.status == StoreStatus::kOk && fallback.used_previous_manifest && fallback.revision == 1U,
+        "oversized chunk is rejected against declared length before allocation");
+  check(store.checkpoint({record(SourceKind::kMesh, 2U, {2U, 2U})}) == StoreStatus::kOk,
+        "checkpoint repairs oversized chunk from previous revision");
+  active = store.recover();
+  write_bytes((std::filesystem::path(directory.path()) / active.records.back().relative_path).string(), {0U, 1U});
+  fallback = store.recover();
   check(fallback.status == StoreStatus::kOk && fallback.used_previous_manifest && fallback.revision == 1U &&
             fallback.records.size() == 1U,
         "bad chunk checksum falls back to prior validated revision");
@@ -173,7 +213,7 @@ void test_corruption_falls_back_to_previous_manifest() {
         "corrupt active manifest falls back to previous manifest");
 }
 
-void test_manifest_absence_and_bounded_retention() {
+void test_manifest_absence_and_non_evicting_retention() {
   TemporaryDirectory absent_directory;
   NativeFileSystem absent_filesystem(absent_directory.path());
   check(absent_filesystem.create_directories("chunks"), "create orphan chunk directory");
@@ -197,23 +237,18 @@ void test_manifest_absence_and_bounded_retention() {
         "second bounded source record");
   check(retained_store.checkpoint({record(SourceKind::kMesh, 3U, {3U, 3U})}) == StoreStatus::kOk,
         "retained mesh source record");
-  check(retained_store.checkpoint({record(SourceKind::kDepth, 4U, {4U, 4U})}) == StoreStatus::kOk,
-        "retention evicts oldest depth under record and byte limits");
+  check(retained_store.checkpoint({record(SourceKind::kDepth, 4U, {4U, 4U})}) == StoreStatus::kResourceLimit,
+        "retention limit rejects instead of evicting selected source evidence");
   const RecoveryResult retained = retained_store.recover();
   check(retained.status == StoreStatus::kOk && retained.records.size() == 3U &&
-            retained.records[0].source.event_sequence == 2U &&
-            retained.records[1].source.event_sequence == 3U &&
-            retained.records[2].source.event_sequence == 4U,
-        "bounded manifest retains deterministic selected replay window");
-  check(retained_store.checkpoint({record(SourceKind::kMesh, 5U, {5U, 5U})}) == StoreStatus::kOk,
-        "bounded mesh retention advances checkpoint");
+            retained.records[0].source.event_sequence == 1U &&
+            retained.records[1].source.event_sequence == 2U &&
+            retained.records[2].source.event_sequence == 3U,
+        "rejected checkpoint leaves selected replay evidence unchanged");
   std::vector<std::string> on_disk_chunks;
-  check(retained_filesystem.list_files("chunks", &on_disk_chunks) && on_disk_chunks.size() <= 4U &&
-            std::none_of(on_disk_chunks.begin(), on_disk_chunks.end(), [](const std::string& path) {
-              return path.find("-s1-") != std::string::npos;
-            }),
-        "garbage collection keeps only chunks reachable from current or previous retained manifests");
-  SourceRecord unknown = record(SourceKind::kDepth, 5U, {5U});
+  check(retained_filesystem.list_files("chunks", &on_disk_chunks) && on_disk_chunks.size() == 3U,
+        "limit rejection creates no orphaned replacement chunk");
+  SourceRecord unknown = record(SourceKind::kDepth, 4U, {5U});
   unknown.provenance = static_cast<SourceProvenance>(99U);
   check(retained_store.checkpoint({unknown}) == StoreStatus::kInvalidArgument,
         "storage refuses unknown/generated provenance as captured source");
@@ -225,7 +260,7 @@ int main() {
   test_owned_source_and_deterministic_replay();
   test_partial_manifest_never_publishes();
   test_corruption_falls_back_to_previous_manifest();
-  test_manifest_absence_and_bounded_retention();
+  test_manifest_absence_and_non_evicting_retention();
   std::cout << "durable source manifest-last storage checks passed\n";
   return EXIT_SUCCESS;
 }

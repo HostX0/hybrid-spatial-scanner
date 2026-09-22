@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <new>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -29,6 +30,7 @@ constexpr uint32_t kManifestFormatVersion = 1;
 constexpr uint64_t kMaximumProjectBytes = 8ULL * 1024U * 1024U * 1024U;
 constexpr uint64_t kMaximumChunkBytes = 256U * 1024U * 1024U;
 constexpr uint64_t kMaximumFileCount = 20'000U;
+constexpr uint64_t kMaximumManifestBytes = 16U * 1024U * 1024U;
 
 using Digest = std::array<uint8_t, 32>;
 
@@ -221,7 +223,7 @@ bool valid_record(const SourceRecord& record, const RetentionLimits& limits) {
   if (record.kind == SourceKind::kDepth && record.payload.empty()) {
     return false;
   }
-  return record.kind != SourceKind::kMesh || !is_zero(record.anchor_id) || record.payload.empty();
+  return record.kind != SourceKind::kMesh || !is_zero(record.anchor_id);
 }
 
 bool canonical_chunk_path(std::string_view path) {
@@ -287,8 +289,7 @@ bool is_manifest_record_valid(const StoredRecord& record, const RetentionLimits&
       !std::isfinite(record.source.monotonic_time_s) || record.source.payload_version == 0U ||
       record.payload_length > limits.max_chunk_bytes ||
       (record.source.kind == SourceKind::kDepth && record.payload_length == 0U) ||
-      (record.source.kind == SourceKind::kMesh && is_zero(record.source.anchor_id) &&
-       record.payload_length != 0U) ||
+      (record.source.kind == SourceKind::kMesh && is_zero(record.source.anchor_id)) ||
       !canonical_chunk_path(record.relative_path) || record.relative_path != chunk_path(record)) {
     return false;
   }
@@ -405,7 +406,8 @@ bool manifest_assets_are_valid(const ParsedManifest& manifest, const FileSystem&
     depth_count += record.source.kind == SourceKind::kDepth ? 1U : 0U;
     mesh_count += record.source.kind == SourceKind::kMesh ? 1U : 0U;
     std::vector<uint8_t> payload;
-    if (!file_system.read_file(record.relative_path, &payload) || payload.size() != record.payload_length ||
+    if (!file_system.read_file_bounded(record.relative_path, record.payload_length, &payload) ||
+        payload.size() != record.payload_length ||
         sha256(payload) != record.sha256) {
       return false;
     }
@@ -416,7 +418,7 @@ bool manifest_assets_are_valid(const ParsedManifest& manifest, const FileSystem&
 std::optional<ParsedManifest> validated_manifest(const FileSystem& file_system, const std::string& path,
                                                  const RetentionLimits& limits) {
   std::vector<uint8_t> bytes;
-  if (!file_system.read_file(path, &bytes)) return std::nullopt;
+  if (!file_system.read_file_bounded(path, kMaximumManifestBytes, &bytes)) return std::nullopt;
   const auto manifest = parse_manifest(bytes, limits);
   if (!manifest || !manifest_assets_are_valid(*manifest, file_system, limits)) return std::nullopt;
   return manifest;
@@ -429,7 +431,8 @@ std::vector<uint8_t> as_bytes(const std::string& text) {
 bool write_immutable_chunk(FileSystem& file_system, const StoredRecord& record) {
   std::vector<uint8_t> existing;
   if (file_system.exists(record.relative_path)) {
-    if (file_system.read_file(record.relative_path, &existing) && existing == record.source.payload) {
+    if (file_system.read_file_bounded(record.relative_path, record.payload_length, &existing) &&
+        existing == record.source.payload) {
       return true;
     }
     // A name includes the expected digest, so a different existing value is a
@@ -441,29 +444,36 @@ bool write_immutable_chunk(FileSystem& file_system, const StoredRecord& record) 
       !file_system.replace_atomically(temporary, record.relative_path) || !file_system.sync_directory("chunks")) {
     return false;
   }
-  return file_system.read_file(record.relative_path, &existing) && existing == record.source.payload;
+  return file_system.read_file_bounded(record.relative_path, record.payload_length, &existing) &&
+         existing == record.source.payload;
 }
 
-void enforce_retention(std::vector<StoredRecord>* records, const RetentionLimits& limits) {
-  const auto remove_oldest = [&records](SourceKind kind) {
-    const auto found = std::find_if(records->begin(), records->end(), [kind](const StoredRecord& record) {
-      return record.source.kind == kind;
-    });
-    if (found != records->end()) records->erase(found);
-  };
-  const auto count_kind = [&records](SourceKind kind) {
-    return static_cast<uint64_t>(std::count_if(records->begin(), records->end(), [kind](const StoredRecord& record) {
-      return record.source.kind == kind;
-    }));
-  };
-  while (count_kind(SourceKind::kDepth) > limits.max_depth_records) remove_oldest(SourceKind::kDepth);
-  while (count_kind(SourceKind::kMesh) > limits.max_mesh_records) remove_oldest(SourceKind::kMesh);
+bool fits_retention(const std::vector<StoredRecord>& existing,
+                    const std::vector<SourceRecord>& incoming,
+                    const RetentionLimits& limits) {
   uint64_t total_bytes = 0;
-  for (const StoredRecord& record : *records) total_bytes += record.payload_length;
-  while (total_bytes > limits.max_retained_bytes && !records->empty()) {
-    total_bytes -= records->front().payload_length;
-    records->erase(records->begin());
+  uint64_t depth_count = 0;
+  uint64_t mesh_count = 0;
+  const auto include = [&total_bytes, &depth_count, &mesh_count, &limits](SourceKind kind,
+                                                                            uint64_t payload_length) {
+    if (payload_length > limits.max_retained_bytes - total_bytes) return false;
+    total_bytes += payload_length;
+    if (kind == SourceKind::kDepth) {
+      if (depth_count == limits.max_depth_records) return false;
+      ++depth_count;
+    } else {
+      if (mesh_count == limits.max_mesh_records) return false;
+      ++mesh_count;
+    }
+    return true;
+  };
+  for (const StoredRecord& record : existing) {
+    if (!include(record.source.kind, record.payload_length)) return false;
   }
+  for (const SourceRecord& record : incoming) {
+    if (!include(record.kind, static_cast<uint64_t>(record.payload.size()))) return false;
+  }
+  return true;
 }
 
 void garbage_collect(FileSystem& file_system, const RetentionLimits& limits) {
@@ -497,6 +507,16 @@ void garbage_collect(FileSystem& file_system, const RetentionLimits& limits) {
 
 NativeFileSystem::NativeFileSystem(std::string root_path) : root_path_(std::move(root_path)) {}
 
+bool FileSystem::read_file_bounded(const std::string& relative_path, uint64_t maximum_bytes,
+                                   std::vector<uint8_t>* bytes) const {
+  if (bytes == nullptr || !read_file(relative_path, bytes)) return false;
+  if (bytes->size() > maximum_bytes) {
+    bytes->clear();
+    return false;
+  }
+  return true;
+}
+
 std::string NativeFileSystem::absolute_path(const std::string& relative_path) const {
   return (std::filesystem::path(root_path_) / std::filesystem::path(relative_path)).string();
 }
@@ -525,17 +545,30 @@ bool NativeFileSystem::write_file(const std::string& relative_path, const std::v
 }
 
 bool NativeFileSystem::read_file(const std::string& relative_path, std::vector<uint8_t>* bytes) const {
+  return read_file_bounded(relative_path, kMaximumManifestBytes, bytes);
+}
+
+bool NativeFileSystem::read_file_bounded(const std::string& relative_path, uint64_t maximum_bytes,
+                                         std::vector<uint8_t>* bytes) const {
   if (bytes == nullptr) return false;
   std::error_code error;
   const auto path = absolute_path(relative_path);
   if (!std::filesystem::is_regular_file(path, error) || error) return false;
   const uintmax_t size = std::filesystem::file_size(path, error);
-  if (error || size > static_cast<uintmax_t>(std::numeric_limits<size_t>::max())) return false;
+  if (error || size > maximum_bytes || size > static_cast<uintmax_t>(std::numeric_limits<size_t>::max())) {
+    return false;
+  }
   std::ifstream stream(path, std::ios::binary);
   if (!stream) return false;
-  bytes->assign(static_cast<size_t>(size), 0U);
-  if (size != 0U) stream.read(reinterpret_cast<char*>(bytes->data()), static_cast<std::streamsize>(size));
-  return stream.good() || stream.eof();
+  try {
+    bytes->assign(static_cast<size_t>(size), 0U);
+    if (size != 0U) stream.read(reinterpret_cast<char*>(bytes->data()), static_cast<std::streamsize>(size));
+    if (stream.good() || stream.eof()) return true;
+  } catch (const std::bad_alloc&) {
+    // A failed allocation is equivalent to an unreadable candidate revision.
+  }
+  bytes->clear();
+  return false;
 }
 
 bool NativeFileSystem::exists(const std::string& relative_path) const {
@@ -612,6 +645,10 @@ StoreStatus DurableSourceStore::checkpoint(std::vector<SourceRecord> selected_re
       return StoreStatus::kInvalidArgument;
     }
   }
+  // Selected capture evidence is not silently evictable. Rebuild/refinement
+  // relies on every source referenced by the active retained checkpoint; a
+  // future pinning/eviction policy must make that authority explicit.
+  if (!fits_retention(before.records, selected_records, limits_)) return StoreStatus::kResourceLimit;
   if (!file_system_.create_directories("chunks") || !file_system_.create_directories("temporary")) {
     return StoreStatus::kIoError;
   }
@@ -627,7 +664,6 @@ StoreStatus DurableSourceStore::checkpoint(std::vector<SourceRecord> selected_re
     all_records.push_back(std::move(stored));
   }
   std::sort(all_records.begin(), all_records.end(), less_replay_order);
-  enforce_retention(&all_records, limits_);
   const uint64_t next_revision = before.revision + 1U;
   const std::string manifest = serialize_manifest(next_revision, all_records);
   if (manifest.empty()) return StoreStatus::kInvalidArgument;
@@ -640,8 +676,11 @@ StoreStatus DurableSourceStore::checkpoint(std::vector<SourceRecord> selected_re
   // Active remains intact until the next manifest is fully flushed and verified.
   if (file_system_.exists(kActiveManifest)) {
     std::vector<uint8_t> old_active;
-    if (const auto current = validated_manifest(file_system_, kActiveManifest, limits_)) {
-      if (!file_system_.read_file(kActiveManifest, &old_active)) return StoreStatus::kIoError;
+    if (!before.used_previous_manifest &&
+        validated_manifest(file_system_, kActiveManifest, limits_).has_value()) {
+      if (!file_system_.read_file_bounded(kActiveManifest, kMaximumManifestBytes, &old_active)) {
+        return StoreStatus::kIoError;
+      }
     } else {
       old_active = as_bytes(serialize_manifest(before.revision, before.records));
     }
@@ -662,7 +701,8 @@ StoreStatus DurableSourceStore::checkpoint(std::vector<SourceRecord> selected_re
 
 StoreStatus DurableSourceStore::read_payload(const StoredRecord& record, std::vector<uint8_t>* payload) const {
   if (payload == nullptr || !is_manifest_record_valid(record, limits_) ||
-      !file_system_.read_file(record.relative_path, payload) || payload->size() != record.payload_length ||
+      !file_system_.read_file_bounded(record.relative_path, record.payload_length, payload) ||
+      payload->size() != record.payload_length ||
       sha256(*payload) != record.sha256) {
     return StoreStatus::kCorrupt;
   }

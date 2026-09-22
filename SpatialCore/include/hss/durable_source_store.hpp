@@ -27,7 +27,8 @@ struct SourceRecord {
   SourceKind kind{SourceKind::kDepth};
   SourceProvenance provenance{SourceProvenance::kCaptured};
   std::array<uint8_t, 16> capture_id{};
-  // Zero for depth.  A mesh adapter supplies the B-006 UUID when present.
+  // Zero for depth. Every mesh event, including a zero-payload removal, carries
+  // its stable B-006 anchor UUID.
   std::array<uint8_t, 16> anchor_id{};
   uint32_t session_epoch{0};
   uint64_t event_sequence{0};
@@ -70,6 +71,11 @@ class FileSystem {
   // Returns only after the file's contents are flushed and the file is closed.
   virtual bool write_file(const std::string& relative_path, const std::vector<uint8_t>& bytes) = 0;
   virtual bool read_file(const std::string& relative_path, std::vector<uint8_t>* bytes) const = 0;
+  // Native implementations must reject a file larger than maximum_bytes before
+  // allocating. The compatibility default is for existing test adapters only;
+  // production adapters should override it with a size-first implementation.
+  virtual bool read_file_bounded(const std::string& relative_path, uint64_t maximum_bytes,
+                                 std::vector<uint8_t>* bytes) const;
   virtual bool exists(const std::string& relative_path) const = 0;
   virtual bool list_files(const std::string& relative_directory,
                           std::vector<std::string>* relative_paths) const = 0;
@@ -87,6 +93,8 @@ class NativeFileSystem final : public FileSystem {
   bool create_directories(const std::string& relative_path) override;
   bool write_file(const std::string& relative_path, const std::vector<uint8_t>& bytes) override;
   bool read_file(const std::string& relative_path, std::vector<uint8_t>* bytes) const override;
+  bool read_file_bounded(const std::string& relative_path, uint64_t maximum_bytes,
+                         std::vector<uint8_t>* bytes) const override;
   bool exists(const std::string& relative_path) const override;
   bool list_files(const std::string& relative_directory,
                   std::vector<std::string>* relative_paths) const override;
