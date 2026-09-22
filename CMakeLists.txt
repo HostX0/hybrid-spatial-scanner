@@ -27,6 +27,20 @@ target_include_directories(SpatialCore
 target_compile_features(SpatialCore PUBLIC cxx_std_20)
 target_compile_options(SpatialCore PRIVATE -Wall -Wextra -Werror -Wpedantic)
 
+add_library(hss_robust_plane_fit STATIC
+  SpatialCore/src/robust_plane_fit.cpp
+)
+target_include_directories(hss_robust_plane_fit
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/SpatialCore/include>
+)
+target_compile_features(hss_robust_plane_fit PUBLIC cxx_std_20)
+target_compile_options(hss_robust_plane_fit PRIVATE -Wall -Wextra -Werror -Wpedantic)
+if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+ target_compile_options(hss_robust_plane_fit PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+ target_link_options(hss_robust_plane_fit INTERFACE -fsanitize=address,undefined)
+endif()
+
 if(HSS_BUILD_TESTS)
 add_executable(abi_smoke tests/abi_smoke.c)
 target_include_directories(abi_smoke PRIVATE include)
@@ -49,6 +63,13 @@ target_link_libraries(hss_provisional_plan_test PRIVATE SpatialCore)
 target_compile_definitions(hss_provisional_plan_test PRIVATE HSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 add_executable(hss_interruption_recovery_test tests/hss_interruption_recovery_test.cpp)
 target_link_libraries(hss_interruption_recovery_test PRIVATE SpatialCore)
+add_executable(hss_robust_plane_fit_test tests/hss_robust_plane_fit_test.cpp)
+target_link_libraries(hss_robust_plane_fit_test PRIVATE hss_robust_plane_fit)
+target_compile_options(hss_robust_plane_fit_test PRIVATE -Wall -Wextra -Werror -Wpedantic)
+if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+ target_compile_options(hss_robust_plane_fit_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+ target_link_options(hss_robust_plane_fit_test PRIVATE -fsanitize=address,undefined)
+endif()
 foreach(target abi_smoke cpp_math_test hss_engine_contract_test hss_bounded_ingress_test hss_coordinate_basis_test hss_durable_source_store_test hss_normalized_replay_test hss_provisional_plan_test hss_interruption_recovery_test)
  target_compile_options(${target} PRIVATE -Wall -Wextra -Werror -Wpedantic)
  if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
@@ -70,4 +91,5 @@ add_test(NAME hss_durable_source_store COMMAND hss_durable_source_store_test)
 add_test(NAME hss_normalized_replay COMMAND hss_normalized_replay_test)
 add_test(NAME hss_provisional_plan COMMAND hss_provisional_plan_test)
 add_test(NAME hss_interruption_recovery COMMAND hss_interruption_recovery_test)
+add_test(NAME hss_robust_plane_fit COMMAND hss_robust_plane_fit_test)
 endif()
