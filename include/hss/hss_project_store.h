@@ -53,6 +53,8 @@ typedef struct HSSProjectEventContext {
   uint32_t abi_version, struct_size;
   HSSId capture_id;
   uint64_t event_sequence;
+  /* Scene revision observed after this accepted event/control fully drained. */
+  uint64_t accepted_scene_revision;
   uint32_t session_epoch;
   uint32_t reserved;
   double monotonic_time_s;

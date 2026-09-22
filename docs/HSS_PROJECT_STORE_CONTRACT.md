@@ -17,7 +17,9 @@ sequence. Accepted command records retain exact UTF-8 command/result bytes and
 before/after revisions; undo and redo append history rather than deleting it.
 Plan references retain the exact rigid project-floor matrix and positive metre
 cut height plus before/after scene revisions without changing captured
-coordinates. Append validates and
+coordinates. Every event context retains the scene revision observed after that
+event fully drained, so replay can reject a scheduling-dependent divergence.
+Append validates and
 copies into bounded pending memory. Its receipt is deliberately not a save
 acknowledgement. Only a successful checkpoint returns `durability_state=1`,
 after immutable records and the active manifest have been flushed and published.
