@@ -1,0 +1,905 @@
+{
+  "schema_version": 1,
+  "project": "Hybrid Spatial Scanner",
+  "coordinator_id": "01a0c60a-fef4-7de3-93bc-06e59c9a23f6",
+  "policy": {
+    "review_policy": "Focused tests once per change; brief integration check using actual evidence; one batch review/smoke per real runnable milestone. Additional review only for a documented concrete defect, uncovered critical risk, contract change or merge conflict; never automatically per task.",
+    "max_active_engineering_tasks": null,
+    "parallelism": "No owner-imposed count cap. Dispatch dependency-ready independent tasks within actual host/tool capacity, exclusive ownership and review throughput; avoid duplicate/speculative work.",
+    "environment": "Xcode27.0(27A266a), Swift6.4, isolated Python3.12.14/CMake3.31.6; owner final-tests iPhone15 Pro Max",
+    "states": {
+      "implemented_reviewed": "code + relevant host/native checks + coordinator review",
+      "done_accepted": "source acceptance evidence at its required layer; hardware evidence cannot be simulated"
+    },
+    "acceptance_dependency_rule": "acceptance_depends_on preserves the source B graph; a task is Done only after those predecessors are Done.",
+    "implementation_dependency_rule": "implementation_depends_on requires reviewed contracts/code, and permits hardware-independent work with assumptions recorded; it never upgrades a physical gate.",
+    "astra": "Use when specific core complexity or an unresolved defect genuinely warrants it; record the justification. A failed cheaper attempt is not required when complexity already establishes the need.",
+    "optional_cloud": "B-050 disabled; do not schedule or make it a dependency",
+    "model_ids": {
+      "luna": "gpt-5.6-luna",
+      "terra": "gpt-5.6-terra",
+      "sol": "gpt-5.6-sol",
+      "astra": "gpt-6-astra"
+    }
+  },
+  "tasks": [
+    {
+      "id": "B-001",
+      "wave": 0,
+      "model": "luna",
+      "effort": "low",
+      "acceptance_depends_on": [],
+      "implementation_depends_on": [],
+      "eng": [],
+      "evidence": "TC-001 fixture review"
+    },
+    {
+      "id": "B-002",
+      "wave": 1,
+      "model": "terra",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-001"
+      ],
+      "implementation_depends_on": [
+        "B-001"
+      ],
+      "eng": [
+        "ENG-01"
+      ],
+      "evidence": "TC-002 actual toolchain/native build"
+    },
+    {
+      "id": "B-003",
+      "wave": 2,
+      "model": "terra",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-002"
+      ],
+      "implementation_depends_on": [
+        "B-002"
+      ],
+      "eng": [
+        "ENG-02"
+      ],
+      "evidence": "TC-003 physical readiness gate"
+    },
+    {
+      "id": "B-004",
+      "wave": 3,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-003"
+      ],
+      "implementation_depends_on": [
+        "B-003"
+      ],
+      "eng": [
+        "ENG-02"
+      ],
+      "evidence": "TC-004 iPhone shared-session evidence"
+    },
+    {
+      "id": "B-005",
+      "wave": 4,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-004"
+      ],
+      "implementation_depends_on": [
+        "B-004"
+      ],
+      "eng": [
+        "ENG-02"
+      ],
+      "evidence": "TC-005 physical calibration/orientation"
+    },
+    {
+      "id": "B-006",
+      "wave": 4,
+      "model": "terra",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-004"
+      ],
+      "implementation_depends_on": [
+        "B-004"
+      ],
+      "eng": [
+        "ENG-02"
+      ],
+      "evidence": "TC-006 anchor replacement"
+    },
+    {
+      "id": "B-007",
+      "wave": 5,
+      "model": "terra",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-005",
+        "B-006"
+      ],
+      "implementation_depends_on": [
+        "B-005",
+        "B-006"
+      ],
+      "eng": [
+        "ENG-03"
+      ],
+      "evidence": "TC-007 manifest-last recovery"
+    },
+    {
+      "id": "B-008",
+      "wave": 6,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-007"
+      ],
+      "implementation_depends_on": [
+        "B-007"
+      ],
+      "eng": [
+        "ENG-03"
+      ],
+      "evidence": "TC-008 deterministic replay"
+    },
+    {
+      "id": "B-009",
+      "wave": 2,
+      "model": "terra",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-002"
+      ],
+      "implementation_depends_on": [
+        "B-002"
+      ],
+      "eng": [
+        "ENG-01"
+      ],
+      "evidence": "TC-009 ownership/lifetime"
+    },
+    {
+      "id": "B-010",
+      "wave": 7,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-008",
+        "B-009",
+        "B-011"
+      ],
+      "implementation_depends_on": [
+        "B-008",
+        "B-009",
+        "B-011"
+      ],
+      "eng": [
+        "ENG-03"
+      ],
+      "evidence": "TC-010 real offline capture-to-plan"
+    },
+    {
+      "id": "B-011",
+      "wave": 3,
+      "model": "terra",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-009"
+      ],
+      "implementation_depends_on": [
+        "B-009"
+      ],
+      "eng": [
+        "ENG-02"
+      ],
+      "evidence": "TC-011 coordinate fixtures"
+    },
+    {
+      "id": "B-012",
+      "wave": 5,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-004",
+        "B-011"
+      ],
+      "implementation_depends_on": [
+        "B-004",
+        "B-011"
+      ],
+      "eng": [
+        "ENG-02",
+        "ENG-06"
+      ],
+      "evidence": "TC-012 epoch transform gate"
+    },
+    {
+      "id": "B-013",
+      "wave": 5,
+      "model": "terra",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-005",
+        "B-009"
+      ],
+      "implementation_depends_on": [
+        "B-005",
+        "B-009"
+      ],
+      "eng": [
+        "ENG-04",
+        "ENG-05"
+      ],
+      "evidence": "TC-013 bounded queue counters"
+    },
+    {
+      "id": "B-014",
+      "wave": 4,
+      "model": "terra",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-009"
+      ],
+      "implementation_depends_on": [
+        "B-009"
+      ],
+      "eng": [
+        "ENG-01"
+      ],
+      "evidence": "TC-014 malformed ABI tests"
+    },
+    {
+      "id": "B-015",
+      "wave": 7,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-010",
+        "B-014"
+      ],
+      "implementation_depends_on": [
+        "B-010",
+        "B-014"
+      ],
+      "eng": [
+        "ENG-04",
+        "ENG-07"
+      ],
+      "evidence": "TC-015 fit/outlier evidence"
+    },
+    {
+      "id": "B-016",
+      "wave": 8,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-015"
+      ],
+      "implementation_depends_on": [
+        "B-015"
+      ],
+      "eng": [
+        "ENG-08"
+      ],
+      "evidence": "TC-016 loops/intersections"
+    },
+    {
+      "id": "B-017",
+      "wave": 9,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-016"
+      ],
+      "implementation_depends_on": [
+        "B-016"
+      ],
+      "eng": [
+        "ENG-07"
+      ],
+      "evidence": "TC-017 oblique fixtures"
+    },
+    {
+      "id": "B-018",
+      "wave": 9,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-016"
+      ],
+      "implementation_depends_on": [
+        "B-016"
+      ],
+      "eng": [
+        "ENG-07"
+      ],
+      "evidence": "TC-018 rib chain"
+    },
+    {
+      "id": "B-019",
+      "wave": 9,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-016"
+      ],
+      "implementation_depends_on": [
+        "B-016"
+      ],
+      "eng": [
+        "ENG-08"
+      ],
+      "evidence": "TC-019 hole/net area"
+    },
+    {
+      "id": "B-020",
+      "wave": 8,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-015",
+        "B-016"
+      ],
+      "implementation_depends_on": [
+        "B-015",
+        "B-016"
+      ],
+      "eng": [
+        "ENG-07"
+      ],
+      "evidence": "TC-020 shelf separation"
+    },
+    {
+      "id": "B-021",
+      "wave": 9,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-015"
+      ],
+      "implementation_depends_on": [
+        "B-015"
+      ],
+      "eng": [
+        "ENG-07"
+      ],
+      "evidence": "TC-021 ceiling unknowns"
+    },
+    {
+      "id": "B-022",
+      "wave": 10,
+      "model": "terra",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-018"
+      ],
+      "implementation_depends_on": [
+        "B-018"
+      ],
+      "eng": [
+        "ENG-08"
+      ],
+      "evidence": "TC-022 protected simplification"
+    },
+    {
+      "id": "B-023",
+      "wave": 10,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-009",
+        "B-016"
+      ],
+      "implementation_depends_on": [
+        "B-009",
+        "B-016"
+      ],
+      "eng": [
+        "ENG-09"
+      ],
+      "evidence": "TC-023 revisioned command"
+    },
+    {
+      "id": "B-024",
+      "wave": 11,
+      "model": "terra",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-023"
+      ],
+      "implementation_depends_on": [
+        "B-023"
+      ],
+      "eng": [
+        "ENG-09"
+      ],
+      "evidence": "TC-024 journal undo/redo"
+    },
+    {
+      "id": "B-025",
+      "wave": 11,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-023"
+      ],
+      "implementation_depends_on": [
+        "B-023"
+      ],
+      "eng": [
+        "ENG-09"
+      ],
+      "evidence": "TC-025 constraint conflict"
+    },
+    {
+      "id": "B-026",
+      "wave": 11,
+      "model": "terra",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-012",
+        "B-015"
+      ],
+      "implementation_depends_on": [
+        "B-012",
+        "B-015"
+      ],
+      "eng": [
+        "ENG-10"
+      ],
+      "evidence": "TC-026 target guidance"
+    },
+    {
+      "id": "B-027",
+      "wave": 12,
+      "model": "terra",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-023",
+        "B-026"
+      ],
+      "implementation_depends_on": [
+        "B-023",
+        "B-026"
+      ],
+      "eng": [
+        "ENG-10"
+      ],
+      "evidence": "TC-027 pending target"
+    },
+    {
+      "id": "B-028",
+      "wave": 13,
+      "model": "terra",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-027",
+        "B-011"
+      ],
+      "implementation_depends_on": [
+        "B-027",
+        "B-011"
+      ],
+      "eng": [
+        "ENG-10"
+      ],
+      "evidence": "TC-028 calibrated rotation overlays"
+    },
+    {
+      "id": "B-029",
+      "wave": 12,
+      "model": "terra",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-015",
+        "B-026"
+      ],
+      "implementation_depends_on": [
+        "B-015",
+        "B-026"
+      ],
+      "eng": [
+        "ENG-10"
+      ],
+      "evidence": "TC-029 provenance UI"
+    },
+    {
+      "id": "B-030",
+      "wave": 13,
+      "model": "terra",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-027",
+        "B-028"
+      ],
+      "implementation_depends_on": [
+        "B-027",
+        "B-028"
+      ],
+      "eng": [
+        "ENG-10"
+      ],
+      "evidence": "TC-030 English/Arabic UX"
+    },
+    {
+      "id": "B-031",
+      "wave": 14,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-017",
+        "B-019",
+        "B-021"
+      ],
+      "implementation_depends_on": [
+        "B-017",
+        "B-019",
+        "B-021"
+      ],
+      "eng": [
+        "ENG-11"
+      ],
+      "evidence": "TC-031 cut/area validity"
+    },
+    {
+      "id": "B-032",
+      "wave": 15,
+      "model": "terra",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-025",
+        "B-031"
+      ],
+      "implementation_depends_on": [
+        "B-025",
+        "B-031"
+      ],
+      "eng": [
+        "ENG-11"
+      ],
+      "evidence": "TC-032 annotation geometry"
+    },
+    {
+      "id": "B-033",
+      "wave": 16,
+      "model": "terra",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-032"
+      ],
+      "implementation_depends_on": [
+        "B-032"
+      ],
+      "eng": [
+        "ENG-11"
+      ],
+      "evidence": "TC-033 PDF/SVG artifacts"
+    },
+    {
+      "id": "B-034",
+      "wave": 16,
+      "model": "terra",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-032"
+      ],
+      "implementation_depends_on": [
+        "B-032"
+      ],
+      "eng": [
+        "ENG-11"
+      ],
+      "evidence": "TC-034 DXF consumers"
+    },
+    {
+      "id": "B-035",
+      "wave": 14,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-006",
+        "B-021"
+      ],
+      "implementation_depends_on": [
+        "B-006",
+        "B-021"
+      ],
+      "eng": [
+        "ENG-04",
+        "ENG-05",
+        "ENG-06"
+      ],
+      "evidence": "TC-035 captured/dynamic provenance"
+    },
+    {
+      "id": "B-036",
+      "wave": 15,
+      "model": "terra",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-005",
+        "B-035"
+      ],
+      "implementation_depends_on": [
+        "B-005",
+        "B-035"
+      ],
+      "eng": [
+        "ENG-11"
+      ],
+      "evidence": "TC-036 appearance isolation"
+    },
+    {
+      "id": "B-037",
+      "wave": 16,
+      "model": "terra",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-035",
+        "B-036"
+      ],
+      "implementation_depends_on": [
+        "B-035",
+        "B-036"
+      ],
+      "eng": [
+        "ENG-11"
+      ],
+      "evidence": "TC-037 OBJ/MTL revision bundle"
+    },
+    {
+      "id": "B-038",
+      "wave": 6,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-007",
+        "B-012"
+      ],
+      "implementation_depends_on": [
+        "B-007",
+        "B-012"
+      ],
+      "eng": [
+        "ENG-03",
+        "ENG-06",
+        "ENG-12"
+      ],
+      "evidence": "TC-038 interruption recovery"
+    },
+    {
+      "id": "B-039",
+      "wave": 17,
+      "model": "terra",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-014",
+        "B-038"
+      ],
+      "implementation_depends_on": [
+        "B-014",
+        "B-038"
+      ],
+      "eng": [
+        "ENG-12"
+      ],
+      "evidence": "TC-039 hostile archive/migration"
+    },
+    {
+      "id": "B-040",
+      "wave": 18,
+      "model": "luna",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-037",
+        "B-039"
+      ],
+      "implementation_depends_on": [
+        "B-037",
+        "B-039"
+      ],
+      "eng": [
+        "ENG-12"
+      ],
+      "evidence": "TC-040 no automatic upload"
+    },
+    {
+      "id": "B-041",
+      "wave": 17,
+      "model": "sol",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-013",
+        "B-038"
+      ],
+      "implementation_depends_on": [
+        "B-013",
+        "B-038"
+      ],
+      "eng": [
+        "ENG-05",
+        "ENG-12"
+      ],
+      "evidence": "TC-041 thermal/storage device evidence"
+    },
+    {
+      "id": "B-042",
+      "wave": 19,
+      "model": "luna",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-033",
+        "B-034",
+        "B-037",
+        "B-041"
+      ],
+      "implementation_depends_on": [
+        "B-033",
+        "B-034",
+        "B-037",
+        "B-041"
+      ],
+      "eng": [
+        "ENG-12"
+      ],
+      "evidence": "TC-042 airplane-mode hardware workflow"
+    },
+    {
+      "id": "B-043",
+      "wave": 18,
+      "model": "terra",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-033",
+        "B-034",
+        "B-037"
+      ],
+      "implementation_depends_on": [
+        "B-033",
+        "B-034",
+        "B-037"
+      ],
+      "eng": [
+        "ENG-11"
+      ],
+      "evidence": "TC-043 export round trips"
+    },
+    {
+      "id": "B-044",
+      "wave": 19,
+      "model": "terra",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-022",
+        "B-024",
+        "B-031"
+      ],
+      "implementation_depends_on": [
+        "B-022",
+        "B-024",
+        "B-031"
+      ],
+      "eng": [
+        "ENG-13"
+      ],
+      "evidence": "TC-044 reproducible golden suite"
+    },
+    {
+      "id": "B-045",
+      "wave": 19,
+      "model": "luna",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-001"
+      ],
+      "implementation_depends_on": [
+        "B-001"
+      ],
+      "eng": [
+        "ENG-13"
+      ],
+      "evidence": "TC-045 metrology protocol"
+    },
+    {
+      "id": "B-046",
+      "wave": 20,
+      "model": "luna",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-042",
+        "B-044",
+        "B-045"
+      ],
+      "implementation_depends_on": [
+        "B-042",
+        "B-044",
+        "B-045"
+      ],
+      "eng": [
+        "ENG-13"
+      ],
+      "evidence": "TC-046 held-out physical benchmark"
+    },
+    {
+      "id": "B-047",
+      "wave": 19,
+      "model": "terra",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-041",
+        "B-045"
+      ],
+      "implementation_depends_on": [
+        "B-041",
+        "B-045"
+      ],
+      "eng": [
+        "ENG-05",
+        "ENG-13"
+      ],
+      "evidence": "TC-047 p95/thermal profile"
+    },
+    {
+      "id": "B-048",
+      "wave": 19,
+      "model": "luna",
+      "effort": "medium",
+      "acceptance_depends_on": [
+        "B-030",
+        "B-033"
+      ],
+      "implementation_depends_on": [
+        "B-030",
+        "B-033"
+      ],
+      "eng": [
+        "ENG-13"
+      ],
+      "evidence": "TC-048 accessibility/Arabic device evidence"
+    },
+    {
+      "id": "B-049",
+      "wave": 20,
+      "model": "terra",
+      "effort": "high",
+      "acceptance_depends_on": [
+        "B-043",
+        "B-046",
+        "B-047",
+        "B-048"
+      ],
+      "implementation_depends_on": [
+        "B-043",
+        "B-046",
+        "B-047",
+        "B-048"
+      ],
+      "eng": [
+        "ENG-14"
+      ],
+      "evidence": "TC-049 release claim audit"
+    },
+    {
+      "id": "B-050",
+      "wave": null,
+      "model": "luna",
+      "effort": "low",
+      "acceptance_depends_on": [
+        "B-037",
+        "B-040"
+      ],
+      "implementation_depends_on": [
+        "B-037",
+        "B-040"
+      ],
+      "eng": [],
+      "status": "optional_disabled",
+      "evidence": "TC-050 only if explicitly authorized"
+    }
+  ]
+}

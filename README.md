@@ -1,63 +1,43 @@
-# Hybrid Spatial Scanner — Engineering Reference v1.1
+# Hybrid Spatial Scanner
 
-An English-language engineering handoff for an offline iPhone application combining captured 3D, dimensioned 2D plans and live human-assisted scanning.
+An offline native iPhone scanner under active development: captured 3D, measured room plans, source-preserving editing, and a separate detailed-object capture workflow.
 
-## What is delivered
+## Current state
 
-This is a **specification and executable reference pack**, not an installable iPhone app or a complete production engine. It includes four extended engineering documents plus text snapshots of all five original phase documents; a C-compatible interface header; seven JSON schemas; valid and invalid examples for all fifteen live commands; twelve polygon cases; calibrated synthetic metadata/data; original Python/C++ mathematical and storage references; a Metal fusion reference kernel; eight screen wireframes and four diagrams; selected synthetic exports; and actual host verification logs.
+The repository contains a SwiftUI/Xcode application target, ARKit depth and mesh adapters, a C ownership facade, portable geometry/storage/replay components, tests, and the original engineering reference pack. Native capture-to-engine-to-save/reopen integration and the product interface are in progress. The current integrated engine still has placeholder snapshots; the existing provisional-plan example is synthetic only. This is not yet a complete installable product or a validated measurement tool.
 
-The native Google Docs remain the navigable project baseline. This pack carries implementation-level examples and longer derivations. Existing v1.0 short ABI examples are superseded by `include/hss/hss_api.h` and `docs/D16_Contracts.md`.
+`coordination/HSS_STATUS.json` records the latest backed-up implementation state. `docs/evidence/` distinguishes host, simulator and physical evidence. Physical iPhone 15 Pro Max testing is planned after software readiness. No accuracy, large-hall capacity, thermal endurance, or competitor-superiority claim has been established.
 
-## Read first
+## Development
 
-Read `docs/D14_Research.md`, `docs/D15_Engine.md`, `docs/D16_Contracts.md` and `docs/D17_UX_Delivery.md`. Then inspect the exact header, relevant schema, fixture and test before implementing a work packet. Read `AGENTS.md` and `VERIFICATION.md` before reporting completion.
+Read `AGENTS.md`, then the relevant sections of `docs/D14_Research.md`, `docs/D15_Engine.md`, `docs/D16_Contracts.md` and `docs/D17_UX_Delivery.md`. The original acceptance dependencies remain in `coordination/backlog-source.json`.
 
-## Quick verification
-
-Run from this directory in a Python 3.11+ virtual environment (tested on 3.13.5) with CMake and a C/C++ compiler available:
+Portable C++20 checks require CMake and a C/C++ compiler:
 
 ```sh
-python -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements.txt
-python -m pytest -q
 cmake -S . -B build -DHSS_ENABLE_SANITIZERS=ON
-cmake --build build
+cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
 ```
 
-With Swift installed, separately run:
+Run only relevant tests while editing. A combined native smoke test belongs at a connected workflow milestone. Python reference tests use `requirements.txt`; reference contracts do not establish native product readiness.
 
-```sh
-swiftc -typecheck -I include reference/swift/ContractSmoke.swift
-```
+Open `HSSApp/HybridSpatialScanner.xcodeproj` and use its shared `HybridSpatialScanner` scheme. The recorded toolchain is Xcode 27.0 / Swift 6.4. The next integrated native build is pending; signing and installation instructions will be consolidated when ready. Simulator support provides no LiDAR capture evidence.
 
-`tools/run_verification.sh` executes the available checks and stores fresh logs outside the delivered evidence directory. It fails on test errors and explicitly records a missing Swift compiler rather than claiming success. No Apple developer key is required for the host references. Initial package installation may need internet; this development setup is not the application's offline capture path.
+## Architecture and source map
 
-## Architecture
+- `HSSApp/`: SwiftUI, one owned ARSession, native adapters and orchestration.
+- `SpatialCore/`: portable C++ geometry, source retention, replay and engine.
+- `include/` and `schemas/`: C interfaces and strict scene/event contracts.
+- `docs/`: implementation specifications and factual test evidence.
+- `coordination/`: original backlog/workpacks and current coordination snapshots.
+- `fixtures/`, `expected/`, `tests/`: synthetic data and host verification.
+- `reference/`, `design/`, `research/`, `verification/`: reference material, wireframes and source decisions.
 
-Swift owns capture/lifecycle, local persistence, UI and export orchestration. One tested ARSession supplies estimated depth, poses and mesh updates; RoomPlan proposals are optional. A C facade isolates ownership and exceptions from the C++ metric feature/constraint core. A replaceable Metal backend handles eligible dense operations only after CPU parity and device tests. The same accepted scene revision drives 2D and 3D. No cloud AI is a trusted measurement authority.
+Captured geometry, the metric scene and appearance remain separate. Canonical coordinates use metres and a right-handed project frame. Only accepted epoch relationships connect scans. Unknown space is not completed into measured geometry; display simplification cannot remove protected measurement topology. Saved means a durable commit, not engine receipt.
 
-## File map
+The first captured geometry path uses ARKit mesh. D15 permits custom dense fusion to remain gated until implemented and validated. Detailed object photogrammetry stays separate from authoritative room measurements. See `docs/HSS_ENGINE_SOURCE_DECISIONS.md` for researched dependencies and limits.
 
-- `docs/baseline/`: English text snapshots of D01–D13 from the updated native Google Docs; Drive remains the live task/status authority.
-- `include/`: normative ABI declarations and Swift import module.
-- `schemas/`: strict Draft 2020-12 data contracts, with semantic checks additionally required.
-- `reference/`: selected original C++, Python, Swift and Metal references, each with bounded scope.
-- `fixtures/` and `expected/`: explicit synthetic examples, not physical captures.
-- `tests/`: executed host contract and numerical tests.
-- `design/`: eight schematic screens, four diagrams, SVG/PNG assets and diagram sources.
-- `research/`: primary sources, inspected file identities and candidate dependency decisions.
-- `verification/`: actual results and original failure/repair record.
+## Backup and data
 
-## Important boundaries
-
-There is no Xcode application target, fully implemented `HSSEngine`, production mesh extractor, complete optimizer, texture pipeline, trained model or cloud service in this pack. The Metal kernel has not been compiled on an Apple SDK. Swift host import is not an iOS build. The numerical solver covers selected small distance/lock constraints, not every production residual. The POSIX storage oracle is not an iOS APFS durability certification. No physical LiDAR accuracy, large-hall limit, battery/thermal outcome or competitor superiority is established.
-
-## First production milestone
-
-Adopt the contracts; create a real iOS target; prove shared-session configuration and calibration on a supported physical device; record a consented difficult-room capture; save/reopen offline; replay the normalized inputs; and output a minimal nonrectangular plan. Review the 0.50 m by 0.15 m protrusion before adding cloud accounts or generative appearance features.
-
-## Data and licences
-
-All sample geometry is authored synthetic data. No private room captures, third-party repositories, papers, datasets, weights, credentials or fonts are redistributed. External component inclusion requires a pinned artifact and licence/dependency review. Merely listing a component in research does not approve shipping it. No public GitHub repository or access permissions were created by this handoff.
+The owner authorized the private GitHub backup at `HostX0/hybrid-spatial-scanner`. No public release has been made. Keep signing keys, credentials, local build products and private physical captures out of Git. Sample geometry is synthetic; listing an external library or paper does not mean its code ships in the app.
