@@ -97,16 +97,19 @@ protocol ScannerWorkspaceModeling: ObservableObject {
     var selectedProjectName: String { get set }
     var currentIssue: ScannerWorkspaceIssue? { get }
     var saveState: ScannerWorkspaceSaveState { get }
+    var exportState: ScannerExportState { get }
     var captureAccounting: ScannerCaptureAccounting { get }
     var captureSession: ARSession? { get }
     var canConfirmPlanReference: Bool { get }
     var canShowLibrary: Bool { get }
+    var canExport: Bool { get }
 
     func reloadProjects()
     func createProject(named name: String)
     func startCapture()
     func stopCapture()
     func saveSelectedProject()
+    func exportSelectedProject()
     func openProject(id: UUID)
     func showLibrary()
     /// Applies only a caller-confirmed observed floor reference. It never uses

@@ -103,11 +103,14 @@ struct ScannerWorkspacePresentation: Equatable {
     let hasCapturedScene: Bool
     let isReferenceScene: Bool
     let objectDetailDescription: String?
+    let exportStatus: String?
     let canStartCapture: Bool
     let canFinishCapture: Bool
     let canAssist: Bool
     let canUndo: Bool
     let canSave: Bool
+    let canExport: Bool
+    let isExporting: Bool
     let canOpenLibrary: Bool
     let canCaptureObject: Bool
 }
@@ -118,6 +121,7 @@ struct ScannerWorkspaceActions {
     let assist: () -> Void
     let undo: () -> Void
     let save: () -> Void
+    let export: () -> Void
     let openLibrary: () -> Void
     let openProject: (UUID) -> Void
     let captureObject: () -> Void
@@ -362,6 +366,20 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
                 if presentation.canSave {
                     Button("Save draft", action: actions.save)
                         .buttonStyle(ScannerPrimaryButtonStyle())
+                }
+                Button(action: actions.export) {
+                    Label(
+                        presentation.isExporting ? "Exporting offline files…" : "Export offline files",
+                        systemImage: "square.and.arrow.up"
+                    )
+                }
+                .buttonStyle(ScannerSecondaryButtonStyle())
+                .disabled(!presentation.canExport || presentation.isExporting)
+                if let exportStatus = presentation.exportStatus {
+                    Label(exportStatus, systemImage: presentation.isExporting ? "hourglass" : "externaldrive.fill")
+                        .font(.subheadline)
+                        .foregroundStyle(ScannerProductTheme.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if presentation.canCaptureObject {
                     Button("Capture a detailed object", action: actions.captureObject)

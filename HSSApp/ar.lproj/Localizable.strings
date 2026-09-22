@@ -17,6 +17,14 @@
 "Measurements" = "القياسات";
 "Save draft" = "حفظ كمسودة";
 "Export" = "تصدير";
+"Export offline files" = "تصدير الملفات دون اتصال";
+"Exporting offline files…" = "يجري تصدير الملفات محليًا…";
+"Creating PDF, SVG, DXF, OBJ, MTL, and provenance files locally." = "يجري إنشاء ملفات PDF وSVG وDXF وOBJ وMTL وملفات المصدر محليًا.";
+"Offline export saved inside this local project." = "تم حفظ التصدير داخل هذا المشروع المحلي.";
+"Offline export failed: %@" = "فشل التصدير المحلي: %@";
+"Only a saved, frozen accepted revision with measured plan and mesh geometry can be exported." = "لا يمكن التصدير إلا من مراجعة مقبولة ومحفوظة ومجمّدة تحتوي على مخطط وشبكة بهندسة مقاسة.";
+"The native exporters did not produce a complete offline bundle." = "لم تُنتج أدوات التصدير الأصلية حزمة محلية مكتملة.";
+"The selected local project directory is unavailable." = "مجلد المشروع المحلي المحدد غير متاح.";
 "Projects" = "المشاريع";
 "No saved projects" = "لا توجد مشاريع محفوظة";
 "Projects appear here after a local save." = "تظهر المشاريع هنا بعد الحفظ محليًا.";

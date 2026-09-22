@@ -69,11 +69,14 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             objectDetailDescription: completedObjectArtifact.map { _ in
                 String(localized: "A detailed object model was saved separately on this device.")
             },
+            exportStatus: exportStatus,
             canStartCapture: workspace.phase == .ready || workspace.phase == .browsing,
             canFinishCapture: isCaptureActive,
             canAssist: false,
             canUndo: false,
             canSave: workspace.saveState == .hasUnsavedChanges,
+            canExport: workspace.canExport,
+            isExporting: workspace.exportState == .exporting,
             canOpenLibrary: workspace.canShowLibrary,
             canCaptureObject: canCaptureObject
         )
@@ -92,11 +95,25 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             assist: {},
             undo: {},
             save: workspace.saveSelectedProject,
+            export: workspace.exportSelectedProject,
             openLibrary: workspace.showLibrary,
             openProject: workspace.openProject,
             captureObject: { isObjectCapturePresented = true },
             recover: { _ in workspace.recoverFromCurrentIssue() }
         )
+    }
+
+    private var exportStatus: String? {
+        switch workspace.exportState {
+        case .idle:
+            nil
+        case .exporting:
+            String(localized: "Creating PDF, SVG, DXF, OBJ, MTL, and provenance files locally.")
+        case .exported:
+            String(localized: "Offline export saved inside this local project.")
+        case .failed(let message):
+            String(localized: "Offline export failed: \(message)")
+        }
     }
 
     private var mode: ScannerWorkspacePresentation.Mode {

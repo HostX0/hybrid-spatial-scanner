@@ -17,6 +17,14 @@
 "Measurements" = "Measurements";
 "Save draft" = "Save draft";
 "Export" = "Export";
+"Export offline files" = "Export offline files";
+"Exporting offline files…" = "Exporting offline files…";
+"Creating PDF, SVG, DXF, OBJ, MTL, and provenance files locally." = "Creating PDF, SVG, DXF, OBJ, MTL, and provenance files locally.";
+"Offline export saved inside this local project." = "Offline export saved inside this local project.";
+"Offline export failed: %@" = "Offline export failed: %@";
+"Only a saved, frozen accepted revision with measured plan and mesh geometry can be exported." = "Only a saved, frozen accepted revision with measured plan and mesh geometry can be exported.";
+"The native exporters did not produce a complete offline bundle." = "The native exporters did not produce a complete offline bundle.";
+"The selected local project directory is unavailable." = "The selected local project directory is unavailable.";
 "Projects" = "Projects";
 "No saved projects" = "No saved projects";
 "Projects appear here after a local save." = "Projects appear here after a local save.";

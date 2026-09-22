@@ -116,6 +116,98 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
         ))
     }
 
+    func testOfflineExportEligibilityRequiresFrozenPersistedMeasuredRevision() throws {
+        let projectID = UUID()
+        let snapshot = exportSnapshot(projectID: projectID)
+        let project = ScannerProjectSummary(
+            id: projectID,
+            name: "Export fixture",
+            updatedAt: Date(timeIntervalSince1970: 1),
+            sceneRevision: snapshot.revision,
+            state: .frozen
+        )
+
+        XCTAssertTrue(ScannerExportEligibility.isEligible(
+            snapshot: snapshot,
+            project: project,
+            saveState: .saved(Date(timeIntervalSince1970: 1)),
+            phase: .frozen
+        ))
+        XCTAssertFalse(ScannerExportEligibility.isEligible(
+            snapshot: snapshot,
+            project: project,
+            saveState: .hasUnsavedChanges,
+            phase: .frozen
+        ))
+
+        let unknownJSON = String(decoding: snapshot.sceneJSON, as: UTF8.self)
+            .replacingOccurrences(of: "\"geometry_origin\":\"fitted\"", with: "\"geometry_origin\":\"unknown\"")
+        let unknownOnly = ScannerSceneSnapshot(
+            revision: snapshot.revision,
+            verticesMetres: snapshot.verticesMetres,
+            triangleIndices: snapshot.triangleIndices,
+            sceneJSON: Data(unknownJSON.utf8),
+            provenance: snapshot.provenance,
+            isFrozen: true
+        )
+        XCTAssertFalse(ScannerExportEligibility.isEligible(
+            snapshot: unknownOnly,
+            project: project,
+            saveState: .clean,
+            phase: .frozen
+        ), "Unknown plan evidence must not qualify as measured export geometry.")
+    }
+
+    func testOfflineExportPublishesCompleteLocalBundleAtomically() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hss-export-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID()
+        let projectDirectory = root.appendingPathComponent(
+            ScannerOfflineExportStore.projectDirectoryName(projectID),
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: projectDirectory.appendingPathComponent("project.json"))
+
+        let destination = try ScannerOfflineExporter.export(
+            snapshot: exportSnapshot(projectID: projectID),
+            projectID: projectID,
+            trustedRoot: root
+        )
+        let names = try Set(FileManager.default.contentsOfDirectory(atPath: destination.path))
+        XCTAssertEqual(names, ScannerOfflineArtifactSet.requiredNames.union(["export-manifest.json"]))
+        XCTAssertTrue(try String(contentsOf: destination.appendingPathComponent("plan.pdf"), encoding: .utf8)
+            .hasPrefix("%PDF-1.4"))
+        let svg = try String(contentsOf: destination.appendingPathComponent("plan.svg"), encoding: .utf8)
+        XCTAssertTrue(svg.contains("fragment-measured-edge"))
+        XCTAssertFalse(svg.contains("fragment-unknown-edge"), "Unknown geometry stays in provenance and is not drawn.")
+        let planManifest = try String(
+            contentsOf: destination.appendingPathComponent("plan.provenance.json"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(planManifest.contains("unknown-edge"))
+        XCTAssertTrue(planManifest.contains("\"has_explicit_segment\":false"))
+        let dxfManifest = try String(
+            contentsOf: destination.appendingPathComponent("dxf.provenance.json"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(dxfManifest.contains("\"id\":\"unknown-edge\""))
+        XCTAssertTrue(dxfManifest.contains("\"has_explicit_segment\":false"))
+        let dxfJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(dxfManifest.utf8)) as? [String: Any]
+        )
+        let primitiveIDs = try XCTUnwrap(dxfJSON["primitives"] as? [[String: Any]])
+            .compactMap { $0["id"] as? String }
+        XCTAssertEqual(primitiveIDs, ["measured-edge"])
+        let obj = try String(contentsOf: destination.appendingPathComponent("scene.obj"), encoding: .utf8)
+        XCTAssertTrue(obj.contains("f 1 2 3"))
+
+        let exports = projectDirectory.appendingPathComponent("exports", isDirectory: true)
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: exports.path)
+            .contains(where: { $0.hasPrefix(".pending-") }))
+    }
+
     private func frame(
         width: Int = 8,
         height: Int = 6,
@@ -206,6 +298,20 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
         let checkpoint = try await runtime.checkpoint()
         XCTAssertEqual(checkpoint.durableEventCount, 3)
         return try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+    }
+
+    private func exportSnapshot(projectID: UUID) -> ScannerSceneSnapshot {
+        let json = """
+        {"schema_version":"1.1","project_id":"\(projectID.uuidString.lowercased())","scene_revision":"7","source_is_synthetic":true,"units":"m","basis":{"handedness":"right","up":"+Y","floor_origin_m":[0,0,0],"floor_u":[1,0,0],"floor_v":[0,0,-1],"floor_n":[0,1,0]},"epochs":[],"nodes":[{"id":"node-a","position_m":[0,0,0],"provenance":{"geometry_origin":"fitted","support_ids":["mesh-1"]}},{"id":"node-b","position_m":[1,0,0],"provenance":{"geometry_origin":"fitted","support_ids":["mesh-1"]}},{"id":"node-c","position_m":[2,0,0],"provenance":{"geometry_origin":"unknown","support_ids":["gap-1"]}}],"edges":[{"id":"measured-edge","start_node_id":"node-a","end_node_id":"node-b","provenance":{"geometry_origin":"fitted","support_ids":["mesh-1"]}},{"id":"unknown-edge","start_node_id":"node-b","end_node_id":"node-c","provenance":{"geometry_origin":"unknown","support_ids":["gap-1"]}}],"surfaces":[],"features":[],"regions":[],"objects":[],"constraints":[],"issues":[],"quality_state":"provisional"}
+        """
+        return ScannerSceneSnapshot(
+            revision: 7,
+            verticesMetres: [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 1, 0)],
+            triangleIndices: [0, 1, 2],
+            sceneJSON: Data(json.utf8),
+            provenance: [.syntheticTest],
+            isFrozen: true
+        )
     }
 
     private func matrix() -> [Float] {

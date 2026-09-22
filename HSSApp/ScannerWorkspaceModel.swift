@@ -20,6 +20,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
     @Published private(set) var currentIssue: ScannerWorkspaceIssue?
     @Published private(set) var saveState: ScannerWorkspaceSaveState = .noProject
+    @Published private(set) var exportState: ScannerExportState = .idle
     @Published private(set) var captureAccounting: ScannerCaptureAccounting = .zero
 
     var captureSession: ARSession? { captureCoordinator.captureSession }
@@ -39,6 +40,14 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             && (saveState == .clean || isSavedState)
             && phase != .saving
             && phase != .openingProject
+    }
+    var canExport: Bool {
+        ScannerExportEligibility.isEligible(
+            snapshot: latestSnapshot,
+            project: selectedCatalogEntry?.summary,
+            saveState: saveState,
+            phase: phase
+        ) && exportState != .exporting
     }
 
     private enum PendingNativeEvent: Sendable {
@@ -187,6 +196,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 captureAccounting = .zero
                 didReportDepthKeyframeCapacity = false
                 saveState = .saved(entry.updatedAt)
+                exportState = .idle
                 reloadProjects()
                 phase = .ready
             } catch {
@@ -198,6 +208,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     func startCapture() {
         guard runtime != nil, selectedProjectID != nil, !captureCoordinator.isSessionRunning else { return }
         currentIssue = nil
+        exportState = .idle
         phase = .startingCapture
         keyframeSelector.reset()
         captureAccounting = .zero
@@ -245,6 +256,37 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         performSave()
     }
 
+    func exportSelectedProject() {
+        guard canExport,
+              let snapshot = latestSnapshot,
+              let projectID = selectedProjectID else {
+            exportState = .failed(
+                String(localized: "Only a saved, frozen accepted revision with measured plan and mesh geometry can be exported.")
+            )
+            return
+        }
+        exportState = .exporting
+        let root = trustedRoot
+        Task { [weak self] in
+            do {
+                let directory = try await Task.detached(priority: .userInitiated) {
+                    try ScannerOfflineExporter.export(
+                        snapshot: snapshot,
+                        projectID: projectID,
+                        trustedRoot: root
+                    )
+                }.value
+                guard let self,
+                      selectedProjectID == projectID,
+                      latestSnapshot?.revision == snapshot.revision else { return }
+                exportState = .exported(directory: directory, at: Date())
+            } catch {
+                guard let self else { return }
+                exportState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
     func openProject(id: UUID) {
         guard !captureCoordinator.isSessionRunning, !drainScheduled else { return }
         guard let entry = (try? loadCatalog().projects.first(where: { $0.id == id })) ?? nil else {
@@ -278,6 +320,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 observedProvenance = provenance
                 nextEventSequence = max(1, snapshot.revision + 1)
                 saveState = .clean
+                exportState = .idle
                 phase = .frozen
             } catch {
                 fail(title: "Project could not be reopened", message: describe(error), recovery: .reopenProject)
@@ -294,6 +337,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         latestSnapshot = nil
         observedProvenance = []
         saveState = .noProject
+        exportState = .idle
         currentIssue = nil
         phase = .browsing
         reloadProjects()
@@ -531,6 +575,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 assignSelectedName(entry.name)
                 latestSnapshot = snapshot
                 saveState = .saved(entry.updatedAt)
+                exportState = .idle
                 currentIssue = checkpoint.durableRevision == 0 && checkpoint.durableEventCount > 0
                     ? ScannerWorkspaceIssue(
                         id: UUID(), title: "Save verification failed",
