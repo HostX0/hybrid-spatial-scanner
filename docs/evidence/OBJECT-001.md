@@ -1,7 +1,7 @@
 # OBJECT-001 — offline RealityKit detailed-object workflow
 
-Date: 2026-09-22  
-Branch: `hss/object-capture`  
+Date: 2026-09-22
+Branch: `hss/object-capture`
 Starting revision: `ae9b61e`
 
 ## Result
