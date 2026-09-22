@@ -8,6 +8,7 @@ import simd
 @MainActor
 struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
     @ObservedObject var workspace: Model
+    @Environment(\.locale) private var locale
     @State private var isCreatingProject = false
     @State private var isObjectCapturePresented = false
     @State private var completedObjectArtifact: ObjectCaptureArtifact?
@@ -63,6 +64,9 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             projects: workspace.localProjects.map(projectPresentation),
             issues: issues,
             measurements: reviewData?.measurements ?? [],
+            provenanceFields: reviewData?.provenanceFields ?? [],
+            provenanceLanguage: locale.language.languageCode?.identifier == "ar" ? .arabic : .english,
+            targetGuidance: targetGuidance,
             plan: reviewData?.plan,
             hasCapturedScene: reviewData != nil && !isReferenceScene,
             isReferenceScene: isReferenceScene,
@@ -100,6 +104,20 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             openProject: workspace.openProject,
             captureObject: { isObjectCapturePresented = true },
             recover: { _ in workspace.recoverFromCurrentIssue() }
+        )
+    }
+
+    private var targetGuidance: ScannerWorkspacePresentation.TargetGuidance? {
+        guard isCaptureActive else { return nil }
+        // B-027's target contract is compiled into the native target, but this
+        // workspace has not yet received a target-selection bridge. Showing an
+        // explicit unsupported state keeps an arbitrary camera tap from being
+        // represented as observed project geometry.
+        return ScannerWorkspacePresentation.TargetGuidance(
+            state: .unavailable(String(localized: "Target selection is not available in this capture runtime.")),
+            title: String(localized: "Target assistance"),
+            detail: String(localized: "A supported depth target is required before protrusion guidance or an overlay can be shown."),
+            overlay: nil
         )
     }
 
@@ -426,6 +444,7 @@ private enum ScannerAcceptedPlanDecoder {
     struct ReviewData {
         let plan: ScannerWorkspacePresentation.Plan
         let measurements: [ScannerWorkspacePresentation.Measurement]
+        let provenanceFields: [ProvenanceFieldPresentation]
         let isSynthetic: Bool
     }
 
@@ -490,6 +509,7 @@ private enum ScannerAcceptedPlanDecoder {
                 detail: regionDetail(region)
             )
         }
+        let measurements = dimensions + areaMeasurements
         return ReviewData(
             plan: ScannerWorkspacePresentation.Plan(
                 polylinesMetres: observed,
@@ -497,7 +517,8 @@ private enum ScannerAcceptedPlanDecoder {
                 dimensionAnnotations: annotations,
                 boundsMetres: bounds.insetBy(dx: -0.05, dy: -0.05)
             ),
-            measurements: dimensions + areaMeasurements,
+            measurements: measurements,
+            provenanceFields: measurements.map(provenanceField),
             isSynthetic: scene.sourceIsSynthetic
         )
     }
@@ -518,6 +539,29 @@ private enum ScannerAcceptedPlanDecoder {
         case "user_measured": .userMeasured
         case "inferred": .inferred
         default: .unknown
+        }
+    }
+
+    private static func provenanceField(
+        _ measurement: ScannerWorkspacePresentation.Measurement
+    ) -> ProvenanceFieldPresentation {
+        ProvenanceFieldPresentation(
+            id: measurement.id,
+            label: ProvenanceCopy(english: "Accepted plan field", arabic: "حقل مخطط مقبول"),
+            formattedValue: measurement.value.map { ProvenanceCopy(english: $0, arabic: $0) },
+            kind: provenanceKind(for: measurement.evidence)
+        )
+    }
+
+    private static func provenanceKind(
+        for evidence: ScannerWorkspacePresentation.Measurement.Evidence
+    ) -> ProvenanceKind {
+        switch evidence {
+        case .observed: .observed
+        case .fitted: .fitted
+        case .userMeasured: .userMeasured
+        case .inferred: .inferred
+        case .unknown: .unknown
         }
     }
 

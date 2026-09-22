@@ -86,3 +86,12 @@
 "Reference geometry — not a captured room" = "هندسة مرجعية وليست غرفة ملتقطة";
 "Reference plan view" = "عرض مخطط مرجعي";
 "Accepted plan view" = "عرض مخطط مقبول";
+"Evidence and provenance" = "الدليل والمصدر";
+"Unavailable" = "غير متاح";
+"Select a target" = "اختر هدفًا";
+"Pending evidence" = "الدليل قيد الانتظار";
+"Target changed" = "تغير الهدف";
+"User measured" = "مقاس بواسطة المستخدم";
+"Target assistance" = "مساعدة الهدف";
+"Target selection is not available in this capture runtime." = "اختيار الهدف غير متاح في بيئة الالتقاط هذه.";
+"A supported depth target is required before protrusion guidance or an overlay can be shown." = "يلزم هدف عمق مدعوم قبل عرض إرشاد البروز أو طبقة التراكب.";

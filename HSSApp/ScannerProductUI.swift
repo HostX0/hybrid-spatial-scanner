@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Render-only UI state. The workspace owner supplies this from accepted
 /// capture/project state; this layer never estimates geometry or completion.
@@ -92,6 +93,33 @@ struct ScannerWorkspacePresentation: Equatable {
         let evidence: Measurement.Evidence
     }
 
+    /// Guidance derived from the target-tools contract. It describes selection
+    /// state only; the UI never promotes a tap, overlay, or semantic label into
+    /// a measured coordinate.
+    struct TargetGuidance: Equatable {
+        enum State: Equatable {
+            case unavailable(String)
+            case awaitingSelection
+            case pendingNoDepth
+            case staleSelection
+            case confirmed(ProvenanceKind)
+        }
+
+        struct CalibratedOverlay: Equatable {
+            let observedDepthPixel: SIMD2<Float>
+            let calibration: OverlayDepthCalibration
+            let frame: OverlayFrameIdentity
+            let displayTransform: OverlayDisplayTransform
+            let currentEpoch: UInt64
+            let maximumFrameAge: TimeInterval
+        }
+
+        let state: State
+        let title: String
+        let detail: String
+        let overlay: CalibratedOverlay?
+    }
+
     let mode: Mode
     let captureState: CaptureState
     let statusDetail: String?
@@ -99,6 +127,9 @@ struct ScannerWorkspacePresentation: Equatable {
     let projects: [Project]
     let issues: [Issue]
     let measurements: [Measurement]
+    let provenanceFields: [ProvenanceFieldPresentation]
+    let provenanceLanguage: ProvenancePresentationLanguage
+    let targetGuidance: TargetGuidance?
     let plan: Plan?
     let hasCapturedScene: Bool
     let isReferenceScene: Bool
@@ -232,6 +263,11 @@ private struct ScannerLiveScanScreen<CameraContent: View>: View {
             cameraContent()
                 .accessibilityHidden(true)
 
+            if let guidance = presentation.targetGuidance {
+                ScannerCalibratedTargetOverlay(guidance: guidance)
+                    .allowsHitTesting(false)
+            }
+
             LinearGradient(
                 colors: [.black.opacity(0.46), .clear, .black.opacity(0.78)],
                 startPoint: .top,
@@ -263,6 +299,10 @@ private struct ScannerLiveScanScreen<CameraContent: View>: View {
                 }
 
                 Spacer()
+
+                if let guidance = presentation.targetGuidance {
+                    ScannerTargetGuidanceCard(guidance: guidance)
+                }
 
                 if let issue = presentation.issues.first {
                     ScannerIssueCard(issue: issue, action: { actions.recover(issue) })
@@ -359,6 +399,20 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
                             .font(.headline)
                         ForEach(presentation.measurements) { measurement in
                             ScannerMeasurementRow(measurement: measurement)
+                        }
+                    }
+                }
+
+                if !presentation.provenanceFields.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Evidence and provenance")
+                            .font(.headline)
+                        ForEach(presentation.provenanceFields) { field in
+                            ProvenanceDisclosureView(
+                                field: field,
+                                language: presentation.provenanceLanguage
+                            )
+                            .background(ScannerProductTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                         }
                     }
                 }
@@ -476,6 +530,134 @@ private struct ScannerCapturePill: View {
             .frame(minHeight: 46)
             .background(.black.opacity(0.48), in: Capsule())
             .accessibilityLabel(captureState.title)
+    }
+}
+
+private struct ScannerTargetGuidanceCard: View {
+    let guidance: ScannerWorkspacePresentation.TargetGuidance
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Label(guidance.title, systemImage: symbol)
+                    .font(.headline)
+                Spacer()
+                Text(status)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tint)
+            }
+            Text(guidance.detail)
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.82))
+        }
+        .padding(16)
+        .background(.black.opacity(0.58), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(guidance.title). \(status). \(guidance.detail)")
+    }
+
+    private var status: LocalizedStringKey {
+        switch guidance.state {
+        case .unavailable: "Unavailable"
+        case .awaitingSelection: "Select a target"
+        case .pendingNoDepth: "Pending evidence"
+        case .staleSelection: "Target changed"
+        case .confirmed(let provenance):
+            switch provenance {
+            case .observed: "Observed"
+            case .fitted: "Fitted"
+            case .userMeasured: "User measured"
+            case .inferred: "Inferred"
+            case .unknown: "Unknown"
+            }
+        }
+    }
+
+    private var symbol: String {
+        switch guidance.state {
+        case .unavailable: "nosign"
+        case .awaitingSelection: "scope"
+        case .pendingNoDepth: "eye.slash"
+        case .staleSelection: "arrow.triangle.2.circlepath"
+        case .confirmed(let provenance):
+            switch provenance {
+            case .observed: "eye"
+            case .fitted: "function"
+            case .userMeasured: "ruler"
+            case .inferred: "lightbulb"
+            case .unknown: "questionmark.circle"
+            }
+        }
+    }
+
+    private var tint: Color {
+        switch guidance.state {
+        case .confirmed(.observed): ScannerProductTheme.accent
+        case .confirmed(.fitted): .blue
+        case .confirmed(.userMeasured): .purple
+        case .confirmed(.inferred), .pendingNoDepth: ScannerProductTheme.warning
+        case .unavailable, .staleSelection, .awaitingSelection, .confirmed(.unknown): ScannerProductTheme.muted
+        }
+    }
+}
+
+/// Draws a target only when the latest source calibration, epoch, viewport and
+/// orientation agree. A rejected mapping intentionally produces no marker.
+private struct ScannerCalibratedTargetOverlay: View {
+    let guidance: ScannerWorkspacePresentation.TargetGuidance
+    @State private var orientation: OverlayPresentationOrientation?
+
+    var body: some View {
+        GeometryReader { proxy in
+            if let point = displayedPoint(in: proxy.size) {
+                Image(systemName: "scope")
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(ScannerProductTheme.accent)
+                    .shadow(color: .black.opacity(0.7), radius: 3)
+                    .position(x: CGFloat(point.x), y: CGFloat(point.y))
+                    .accessibilityHidden(true)
+            }
+        }
+        .onAppear { orientation = currentOrientation() }
+        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
+            let updated = currentOrientation()
+            if updated != orientation {
+                orientation = updated
+            }
+        }
+    }
+
+    private func displayedPoint(in size: CGSize) -> SIMD2<Float>? {
+        guard let source = guidance.overlay,
+              let orientation,
+              size.width > 0, size.height > 0 else { return nil }
+        let viewport = OverlayViewport(
+            width: Float(size.width), height: Float(size.height),
+            orientation: orientation, generation: source.displayTransform.viewport.generation
+        )
+        let projection = CalibratedOverlayMapper.project(
+            observedDepthPixel: source.observedDepthPixel,
+            calibration: source.calibration,
+            frame: source.frame,
+            displayTransform: source.displayTransform,
+            currentViewport: viewport,
+            currentEpoch: source.currentEpoch,
+            now: ProcessInfo.processInfo.systemUptime,
+            maximumFrameAge: source.maximumFrameAge
+        )
+        if case let .displayed(point) = projection { return point.point }
+        return nil
+    }
+
+    private func currentOrientation() -> OverlayPresentationOrientation? {
+        switch UIDevice.current.orientation {
+        case .portrait: .portrait
+        case .portraitUpsideDown: .portraitUpsideDown
+        // UIDevice and UI interface landscape names are opposite.
+        case .landscapeLeft: .landscapeRight
+        case .landscapeRight: .landscapeLeft
+        default: nil
+        }
     }
 }
 

@@ -86,3 +86,12 @@
 "Reference geometry — not a captured room" = "Reference geometry — not a captured room";
 "Reference plan view" = "Reference plan view";
 "Accepted plan view" = "Accepted plan view";
+"Evidence and provenance" = "Evidence and provenance";
+"Unavailable" = "Unavailable";
+"Select a target" = "Select a target";
+"Pending evidence" = "Pending evidence";
+"Target changed" = "Target changed";
+"User measured" = "User measured";
+"Target assistance" = "Target assistance";
+"Target selection is not available in this capture runtime." = "Target selection is not available in this capture runtime.";
+"A supported depth target is required before protrusion guidance or an overlay can be shown." = "A supported depth target is required before protrusion guidance or an overlay can be shown.";
