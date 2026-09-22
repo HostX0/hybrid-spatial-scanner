@@ -65,3 +65,15 @@
 "Fitted" = "ملائم";
 "Inferred" = "مستنتج";
 "Unknown evidence" = "دليل غير معروف";
+"Reference measurement" = "قياس مرجعي";
+"Boundary" = "حد";
+"Floor footprint area" = "مساحة بصمة الأرضية";
+"Architectural cut area" = "مساحة المقطع المعماري";
+"Net fixed obstructions" = "صافي العوائق الثابتة";
+"Finished internal face" = "الوجه الداخلي النهائي";
+"Cut" = "مقطع";
+"Capture a detailed object" = "التقاط عنصر مفصل";
+"A detailed object model was saved separately on this device." = "تم حفظ نموذج عنصر مفصل بصورة منفصلة على هذا الجهاز.";
+"Reference geometry — not a captured room" = "هندسة مرجعية وليست غرفة ملتقطة";
+"Reference plan view" = "عرض مخطط مرجعي";
+"Accepted plan view" = "عرض مخطط مقبول";

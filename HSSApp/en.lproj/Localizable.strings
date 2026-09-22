@@ -65,3 +65,15 @@
 "Fitted" = "Fitted";
 "Inferred" = "Inferred";
 "Unknown evidence" = "Unknown evidence";
+"Reference measurement" = "Reference measurement";
+"Boundary" = "Boundary";
+"Floor footprint area" = "Floor footprint area";
+"Architectural cut area" = "Architectural cut area";
+"Net fixed obstructions" = "Net fixed obstructions";
+"Finished internal face" = "Finished internal face";
+"Cut" = "Cut";
+"Capture a detailed object" = "Capture a detailed object";
+"A detailed object model was saved separately on this device." = "A detailed object model was saved separately on this device.";
+"Reference geometry — not a captured room" = "Reference geometry — not a captured room";
+"Reference plan view" = "Reference plan view";
+"Accepted plan view" = "Accepted plan view";

@@ -63,6 +63,7 @@ struct ScannerWorkspacePresentation: Equatable {
         enum Evidence: Equatable {
             case observed
             case fitted
+            case userMeasured
             case inferred
             case unknown
         }
@@ -71,6 +72,7 @@ struct ScannerWorkspacePresentation: Equatable {
         let label: String
         let value: String?
         let evidence: Evidence
+        let detail: String?
     }
 
     struct Plan: Equatable {
@@ -78,7 +80,16 @@ struct ScannerWorkspacePresentation: Equatable {
         /// display payload; no screen-space edit is ever written back.
         let polylinesMetres: [[CGPoint]]
         let unknownPolylinesMetres: [[CGPoint]]
+        let dimensionAnnotations: [DimensionAnnotation]
         let boundsMetres: CGRect?
+    }
+
+    struct DimensionAnnotation: Equatable, Identifiable {
+        let id: UUID
+        let startMetres: CGPoint
+        let endMetres: CGPoint
+        let label: String
+        let evidence: Measurement.Evidence
     }
 
     let mode: Mode
@@ -90,12 +101,15 @@ struct ScannerWorkspacePresentation: Equatable {
     let measurements: [Measurement]
     let plan: Plan?
     let hasCapturedScene: Bool
+    let isReferenceScene: Bool
+    let objectDetailDescription: String?
     let canStartCapture: Bool
     let canFinishCapture: Bool
     let canAssist: Bool
     let canUndo: Bool
     let canSave: Bool
     let canOpenLibrary: Bool
+    let canCaptureObject: Bool
 }
 
 struct ScannerWorkspaceActions {
@@ -106,6 +120,7 @@ struct ScannerWorkspaceActions {
     let save: () -> Void
     let openLibrary: () -> Void
     let openProject: (UUID) -> Void
+    let captureObject: () -> Void
     let recover: (ScannerWorkspacePresentation.Issue) -> Void
 }
 
@@ -295,9 +310,14 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
                 if let project = presentation.project { ScannerProjectIdentity(project: project) }
 
                 if let plan = presentation.plan {
+                    if presentation.isReferenceScene {
+                        Label("Reference geometry — not a captured room", systemImage: "testtube.2")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(ScannerProductTheme.warning)
+                    }
                     ScannerPlanCanvas(plan: plan)
                         .frame(height: 270)
-                        .accessibilityLabel("Accepted plan view")
+                        .accessibilityLabel(presentation.isReferenceScene ? "Reference plan view" : "Accepted plan view")
                 }
 
                 if presentation.hasCapturedScene {
@@ -308,6 +328,15 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
                             .frame(height: 270)
                             .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                     }
+                }
+
+                if let objectDetailDescription = presentation.objectDetailDescription {
+                    Label(objectDetailDescription, systemImage: "cube.transparent")
+                        .font(.subheadline)
+                        .foregroundStyle(ScannerProductTheme.muted)
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(ScannerProductTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
 
                 if !presentation.issues.isEmpty {
@@ -333,6 +362,10 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
                 if presentation.canSave {
                     Button("Save draft", action: actions.save)
                         .buttonStyle(ScannerPrimaryButtonStyle())
+                }
+                if presentation.canCaptureObject {
+                    Button("Capture a detailed object", action: actions.captureObject)
+                        .buttonStyle(ScannerSecondaryButtonStyle())
                 }
             }
             .padding(20)
@@ -532,7 +565,9 @@ private struct ScannerMeasurementRow: View {
         HStack {
             VStack(alignment: .leading, spacing: 3) {
                 Text(measurement.label).font(.body.weight(.medium))
-                Text(evidenceLabel).font(.caption).foregroundStyle(ScannerProductTheme.muted)
+                Text([evidenceDescription, measurement.detail].compactMap { $0 }.joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(ScannerProductTheme.muted)
             }
             Spacer()
             Text(measurement.value ?? "Unknown")
@@ -549,6 +584,7 @@ private struct ScannerMeasurementRow: View {
         switch measurement.evidence {
         case .observed: "Observed"
         case .fitted: "Fitted"
+        case .userMeasured: "Reference measurement"
         case .inferred: "Inferred"
         case .unknown: "Unknown evidence"
         }
@@ -558,6 +594,7 @@ private struct ScannerMeasurementRow: View {
         switch measurement.evidence {
         case .observed: String(localized: "Observed")
         case .fitted: String(localized: "Fitted")
+        case .userMeasured: String(localized: "Reference measurement")
         case .inferred: String(localized: "Inferred")
         case .unknown: String(localized: "Unknown evidence")
         }
@@ -589,6 +626,31 @@ private struct ScannerPlanCanvas: View {
             }
             draw(plan.polylinesMetres, color: ScannerProductTheme.accent)
             draw(plan.unknownPolylinesMetres, color: ScannerProductTheme.warning, dash: [7, 5])
+            for annotation in plan.dimensionAnnotations {
+                let start = CGPoint(
+                    x: annotation.startMetres.x * scale + offset.x,
+                    y: offset.y - annotation.startMetres.y * scale
+                )
+                let end = CGPoint(
+                    x: annotation.endMetres.x * scale + offset.x,
+                    y: offset.y - annotation.endMetres.y * scale
+                )
+                let midpoint = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+                let vector = CGPoint(x: end.x - start.x, y: end.y - start.y)
+                let length = hypot(vector.x, vector.y)
+                guard length > 0 else { continue }
+                // Offset is presentation-only; source metre positions stay unchanged.
+                let labelPosition = CGPoint(
+                    x: midpoint.x - vector.y / length * 12,
+                    y: midpoint.y + vector.x / length * 12
+                )
+                context.draw(
+                    Text(annotation.label)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(annotation.evidence == .unknown ? ScannerProductTheme.warning : .white),
+                    at: labelPosition
+                )
+            }
         }
         .background(ScannerProductTheme.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
