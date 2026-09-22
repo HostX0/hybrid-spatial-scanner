@@ -16,7 +16,8 @@ and confirmed plan-reference controls share one strictly increasing event
 sequence. Accepted command records retain exact UTF-8 command/result bytes and
 before/after revisions; undo and redo append history rather than deleting it.
 Plan references retain the exact rigid project-floor matrix and positive metre
-cut height without changing captured coordinates. Append validates and
+cut height plus before/after scene revisions without changing captured
+coordinates. Append validates and
 copies into bounded pending memory. Its receipt is deliberately not a save
 acknowledgement. Only a successful checkpoint returns `durability_state=1`,
 after immutable records and the active manifest have been flushed and published.
@@ -28,7 +29,10 @@ On reopen, replay validates project metadata, the complete manifest, checksums,
 record bounds, event ordering, epoch declarations, and mesh lineage before its
 first engine call. It then calls the existing epoch, frame, mesh, and command
 entry points in stored order. Plan-reference replay drains preceding engine work
-before applying the control. An unresolved epoch is replayed as unresolved and
+before applying the control, drains its transactional rebuild, and checks the
+stored revision boundary. Each successful source/control event consumes exactly
+one deterministic scene revision, independent of replay step budget. An
+unresolved epoch is replayed as unresolved and
 does not acquire a fabricated transform. The result reports the durable revision,
 whether recovery used the previous manifest, the applied count, and the exact
 failing event sequence/status when the engine rejects an otherwise valid record.

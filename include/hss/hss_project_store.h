@@ -103,6 +103,8 @@ typedef struct HSSProjectPlanReference {
   uint32_t abi_version, struct_size;
   HSSMat4d T_project_floor;
   double cut_height_m;
+  uint64_t before_scene_revision;
+  uint64_t after_scene_revision;
 } HSSProjectPlanReference;
 
 /* Creation copies config and path bytes. It creates or validates immutable
@@ -127,13 +129,7 @@ HSSStatus hss_project_store_append_mesh_event(HSSProjectStore* store,
                                               const HSSProjectEventContext* context,
                                               const HSSMeshEvent* event,
                                               HSSProjectStoreReceipt* receipt);
-/* The exact validated UTF-8 bytes are retained. Replay submits them through
- * hss_engine_apply_command_json in original event order. */
-HSSStatus hss_project_store_append_command_json(HSSProjectStore* store,
-                                                const HSSProjectEventContext* context,
-                                                HSSBytes command_json,
-                                                HSSProjectStoreReceipt* receipt);
-/* Preferred accepted-command journal entry. It retains exact command/result
+/* Accepted-command journal entry. It retains exact command/result
  * bytes and before/after revision evidence; undo/redo remain ordinary appended
  * commands and never delete history. */
 HSSStatus hss_project_store_append_command_record(HSSProjectStore* store,
