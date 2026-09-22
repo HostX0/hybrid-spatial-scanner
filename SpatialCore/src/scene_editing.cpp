@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -252,11 +251,47 @@ private:
     }
     double result = 0.0;
     const std::string_view token = input_.substr(start, position_ - start);
-    const auto converted =
-        std::from_chars(token.data(), token.data() + token.size(), result,
-                        std::chars_format::general);
-    if (converted.ec != std::errc{} ||
-        converted.ptr != token.data() + token.size() || !std::isfinite(result))
+    bool negative = false;
+    size_t token_position = 0U;
+    if (token[token_position] == '-') {
+      negative = true;
+      ++token_position;
+    }
+    long double significand = 0.0L;
+    int fractional_digits = 0;
+    bool after_decimal = false;
+    int exponent = 0;
+    while (token_position < token.size()) {
+      const char c = token[token_position++];
+      if (c == '.') {
+        after_decimal = true;
+        continue;
+      }
+      if (c == 'e' || c == 'E')
+        break;
+      significand = significand * 10.0L + static_cast<long double>(c - '0');
+      if (after_decimal)
+        ++fractional_digits;
+    }
+    if (token_position < token.size()) {
+      bool exponent_negative = false;
+      if (token[token_position] == '+' || token[token_position] == '-') {
+        exponent_negative = token[token_position] == '-';
+        ++token_position;
+      }
+      while (token_position < token.size()) {
+        const int digit = token[token_position++] - '0';
+        if (exponent <= 10000)
+          exponent = std::min(10000, exponent * 10 + digit);
+      }
+      if (exponent_negative)
+        exponent = -exponent;
+    }
+    const long double scaled =
+        significand * std::pow(10.0L, static_cast<long double>(exponent -
+                                                                fractional_digits));
+    result = static_cast<double>(negative ? -scaled : scaled);
+    if (!std::isfinite(result))
       fail("nonfinite or invalid number");
     return result;
   }
