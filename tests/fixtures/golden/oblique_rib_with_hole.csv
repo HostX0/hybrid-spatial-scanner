@@ -1,0 +1,15 @@
+# Synthetic plan coordinates in metres.  The affine shear keeps the exact
+# authored areas while making the large surfaces oblique in plan.
+CASE,oblique_rib_with_detached_hole,29.775,29.925,0.150
+OUTER,0.00,0.00
+OUTER,2.00,0.00
+OUTER,2.10,0.50
+OUTER,2.25,0.50
+OUTER,2.15,0.00
+OUTER,6.00,0.00
+OUTER,7.00,5.00
+OUTER,1.00,5.00
+HOLE,3.40,2.00
+HOLE,3.50,2.50
+HOLE,3.80,2.50
+HOLE,3.70,2.00

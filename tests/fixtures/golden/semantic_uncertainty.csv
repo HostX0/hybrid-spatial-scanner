@@ -1,0 +1,4 @@
+# Synthetic semantic uncertainty must remain non-metric.
+UNKNOWN_BOUNDARY,unknown-behind-cabinet
+EXPECTED_ISSUE,unknown_boundary_evidence
+EXPECTED_AREA,none
