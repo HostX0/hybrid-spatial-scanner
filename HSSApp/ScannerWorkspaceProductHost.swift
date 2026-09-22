@@ -70,7 +70,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
                 String(localized: "A detailed object model was saved separately on this device.")
             },
             canStartCapture: workspace.phase == .ready || workspace.phase == .browsing,
-            canFinishCapture: workspace.phase == .capturing,
+            canFinishCapture: isCaptureActive,
             canAssist: false,
             canUndo: false,
             canSave: workspace.saveState == .hasUnsavedChanges,
@@ -102,7 +102,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
     private var mode: ScannerWorkspacePresentation.Mode {
         switch workspace.phase {
         case .browsing: .library
-        case .startingCapture, .capturing, .stoppingCapture: .scanning
+        case .startingCapture, .capturing, .captureLimited, .captureInterrupted, .stoppingCapture: .scanning
         case .frozen, .saving, .openingProject: .review
         case .preparingProject, .ready, .captureUnsupported, .failed: .readiness
         }
@@ -113,6 +113,8 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
         case .browsing, .preparingProject, .ready: .notStarted
         case .startingCapture: .starting
         case .capturing: .trackingNormal
+        case .captureLimited(let reason): .trackingLimited(reason)
+        case .captureInterrupted: .interrupted
         case .stoppingCapture, .frozen, .saving, .openingProject: .interrupted
         case .captureUnsupported(let reason), .failed(let reason): .unavailable(reason)
         }
@@ -121,6 +123,8 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
     private var statusDetail: String? {
         switch workspace.phase {
         case .captureUnsupported(let reason), .failed(let reason): reason
+        case .captureLimited(let reason): reason
+        case .captureInterrupted: String(localized: "The camera was interrupted. Finish this scan or resume when capture returns.")
         case .preparingProject: String(localized: "Creating this project locally before capture begins.")
         case .startingCapture: String(localized: "The camera will begin after the session is ready.")
         case .stoppingCapture: String(localized: "Finishing this capture without changing the accepted snapshot.")
@@ -195,7 +199,17 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
         case .frozen, .saving, .openingProject:
             true
         case .browsing, .preparingProject, .ready, .startingCapture, .capturing,
-             .stoppingCapture, .captureUnsupported, .failed:
+             .captureLimited, .captureInterrupted, .stoppingCapture, .captureUnsupported, .failed:
+            false
+        }
+    }
+
+    private var isCaptureActive: Bool {
+        switch workspace.phase {
+        case .capturing, .captureLimited, .captureInterrupted:
+            true
+        case .browsing, .preparingProject, .ready, .startingCapture, .stoppingCapture,
+             .frozen, .saving, .openingProject, .captureUnsupported, .failed:
             false
         }
     }

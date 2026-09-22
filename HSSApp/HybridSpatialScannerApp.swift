@@ -2,11 +2,11 @@ import SwiftUI
 
 @main
 struct HybridSpatialScannerApp: App {
+    @StateObject private var workspace = ScannerWorkspaceModel()
+
     var body: some Scene {
         WindowGroup {
-            NavigationStack {
-                ReadinessView()
-            }
+            ScannerWorkspaceProductHost(workspace: workspace)
         }
     }
 }
