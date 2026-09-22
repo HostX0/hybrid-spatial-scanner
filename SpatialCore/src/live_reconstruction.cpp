@@ -470,6 +470,40 @@ HSSStatus Reconstruction::set_plan_reference(const HSSMat4d &t, double cut) {
   x.floor_confirmed = true;
   return HSS_OK;
 }
+HSSStatus Reconstruction::publish_edited_scene(std::string candidate_scene_json,
+                                               uint64_t expected_revision,
+                                               uint64_t node_count,
+                                               uint64_t edge_count,
+                                               uint64_t issue_count) {
+  auto &x = *impl_;
+  if (x.build || expected_revision == 0U ||
+      expected_revision != x.accepted->revision + 1U ||
+      candidate_scene_json.empty() || candidate_scene_json.size() > 16U * 1024U * 1024U)
+    return HSS_STALE_REVISION;
+  // The editing processor has already parsed, schema-validated, and assigned
+  // this revision. Reserve a distinct immutable scene payload so readers of
+  // the prior snapshot remain valid until they release it.
+  const uint64_t charge = 4096U + candidate_scene_json.size();
+  auto lease = reserve(x.budget, charge);
+  if (!lease)
+    return HSS_RESOURCE_LIMIT;
+  try {
+    auto next = std::make_shared<Snapshot>();
+    next->lease = std::move(lease);
+    next->revision = expected_revision;
+    next->node_count = node_count;
+    next->edge_count = edge_count;
+    next->issue_count = issue_count;
+    next->vertices = x.accepted->vertices;
+    next->triangles = x.accepted->triangles;
+    next->json = std::move(candidate_scene_json);
+    x.accepted = std::move(next);
+    x.last = HSS_OK;
+    return HSS_OK;
+  } catch (const std::bad_alloc &) {
+    return HSS_RESOURCE_LIMIT;
+  }
+}
 void Reconstruction::cancel(HSSStatus s) {
   auto &x = *impl_;
   if (x.build && x.build->plan_change) {

@@ -327,9 +327,6 @@ int main(int argc, char **argv) {
           "revision and IDs independent of step scheduling");
   hss_snapshot_release(replay_snapshot);
   hss_engine_destroy(replay);
-  require(hss_engine_apply_command_json(e, {nullptr, 0}) ==
-              HSS_UNSUPPORTED_CAPABILITY,
-          "unwired commands explicit unsupported");
   hss_engine_destroy(e);
   require(json(full) == full_json &&
               vertices(full).size() == full_vertices.size(),

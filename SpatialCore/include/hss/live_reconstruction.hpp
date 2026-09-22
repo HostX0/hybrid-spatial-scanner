@@ -46,6 +46,13 @@ public:
   std::shared_ptr<Budget> budget() const;
   HSSStatus set_synthetic(uint32_t);
   HSSStatus set_plan_reference(const HSSMat4d &, double);
+  // Installs an already validated complete metric-scene candidate while
+  // retaining the captured mesh buffers and source provenance of the current
+  // immutable snapshot. The caller serializes this with source ingestion.
+  HSSStatus publish_edited_scene(std::string candidate_scene_json,
+                                 uint64_t expected_revision,
+                                 uint64_t node_count, uint64_t edge_count,
+                                 uint64_t issue_count);
   void seal_configuration();
   void cancel(HSSStatus);
 

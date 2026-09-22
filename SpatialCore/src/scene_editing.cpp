@@ -3093,6 +3093,26 @@ const char *status_name(Status status) {
   return "unknown";
 }
 
+std::optional<SceneCounts> scene_counts(std::string_view canonical_scene_json) {
+  try {
+    SceneView scene;
+    scene.root = JsonParser(canonical_scene_json).parse();
+    std::string diagnostic;
+    if (!validate_scene(&scene, Options{}, &diagnostic))
+      return std::nullopt;
+    Array *nodes = nullptr;
+    Array *edges = nullptr;
+    Array *issues = nullptr;
+    if (!scene_array(*scene.object, "nodes", &nodes) ||
+        !scene_array(*scene.object, "edges", &edges) ||
+        !scene_array(*scene.object, "issues", &issues))
+      return std::nullopt;
+    return SceneCounts{nodes->size(), edges->size(), issues->size()};
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
 bool distance_constraint_derivative(const std::array<double, 3U> &a,
                                     const std::array<double, 3U> &b,
                                     std::array<double, 6U> *analytic) {

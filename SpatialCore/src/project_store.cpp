@@ -981,8 +981,19 @@ HSSStatus apply_control(HSSEngine *engine,
       return status;
     status = hss_engine_apply_command_json(
         engine, {command->command_json.data(), command->command_json.size()});
-    if (status != HSS_OK)
-      return status;
+    if (status != HSS_OK) {
+      // Conflict, rejection, and a pending typed exclusion are durable audit
+      // controls. The engine returns their normal C status while retaining the
+      // exact result bytes and the existing revision; replay must verify those
+      // bytes instead of treating the recorded non-mutation as a crash.
+      const bool replayable_nonmutation =
+          nonmutating &&
+          (status == HSS_CONSTRAINT_CONFLICT || status == HSS_INVALID_ARGUMENT ||
+           status == HSS_STALE_REVISION || status == HSS_UNSUPPORTED_CAPABILITY ||
+           status == HSS_DUPLICATE_MISMATCH);
+      if (!replayable_nonmutation)
+        return status;
+    }
     status = drain_engine(engine, command->after_scene_revision);
     if (status != HSS_OK)
       return status;

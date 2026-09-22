@@ -91,6 +91,18 @@ struct ProcessResult {
   std::optional<DynamicExclusion> pending_dynamic_exclusion;
 };
 
+// Counts parsed from a schema-valid complete scene candidate. The engine uses
+// these when publishing an edit so its C snapshot counters stay coherent with
+// the immutable JSON while raw captured mesh counts remain separate.
+struct SceneCounts {
+  uint64_t node_count{0U};
+  uint64_t edge_count{0U};
+  uint64_t issue_count{0U};
+};
+
+[[nodiscard]] std::optional<SceneCounts>
+scene_counts(std::string_view canonical_scene_json);
+
 class Processor {
 public:
   explicit Processor(Options options = {});

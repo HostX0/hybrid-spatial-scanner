@@ -169,8 +169,8 @@ int main() {
         "null JSON pointer with length rejected");
   check(hss_engine_apply_command_json(engine, {&byte, 16U * 1024U * 1024U + 1U}) == HSS_RESOURCE_LIMIT,
         "oversized JSON rejected before dereference");
-  check(hss_engine_apply_command_json(engine, {&byte, 1U}) == HSS_UNSUPPORTED_CAPABILITY,
-        "unwired command execution is explicitly unsupported");
+  check(hss_engine_apply_command_json(engine, {&byte, 1U}) == HSS_NOT_READY,
+        "commands wait for a coherent idle snapshot");
   check(hss_engine_get_stats(engine, &ingress_stats) == HSS_OK &&
             ingress_stats.accepted_commands == 0U && ingress_stats.pending_frames == 2U,
         "command acceptance and frame queue accounting are visible in stats");
@@ -200,8 +200,8 @@ int main() {
   removal.T_world_anchor = identity_transform();
   check(hss_engine_submit_mesh_event(constrained_engine, &removal) == HSS_OK,
         "zero-byte mesh removal is retained while frames are full");
-  check(hss_engine_apply_command_json(constrained_engine, {&byte, 1U}) == HSS_UNSUPPORTED_CAPABILITY,
-        "commands remain explicitly unsupported");
+  check(hss_engine_apply_command_json(constrained_engine, {&byte, 1U}) == HSS_NOT_READY,
+        "commands wait behind retained source work");
   check(hss_engine_step(constrained_engine, 1U) == HSS_INVALID_COORDINATE_FRAME,
         "invalid epoch event releases queued reservation");
   check(hss_engine_submit_frame(constrained_engine, &constrained_frame) == HSS_OK,

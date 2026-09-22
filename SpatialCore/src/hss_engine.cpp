@@ -2,6 +2,7 @@
 #include "hss/coordinate_basis.hpp"
 #include "hss/hss_api.h"
 #include "hss/live_reconstruction.hpp"
+#include "hss/scene_editing.hpp"
 #include <chrono>
 #include <deque>
 #include <memory>
@@ -22,7 +23,10 @@ struct HSSEngine {
   HSSConfig config{};
   hss::ingress::BoundedIngress ingress;
   hss::live::Reconstruction live;
+  hss::scene_editing::Processor scene_editor;
   std::deque<std::shared_ptr<hss::live::Lease>> queued_leases;
+  std::string command_result;
+  bool has_command_result{false};
   uint64_t accepted_frames{}, accepted_commands{};
   HSSStatus last_status{HSS_OK};
 };
@@ -485,7 +489,49 @@ extern "C" HSSStatus hss_engine_apply_command_json(HSSEngine *engine,
     if (bytes_status != HSS_OK) {
       return remembered(engine, bytes_status);
     }
-    return remembered(engine, HSS_UNSUPPORTED_CAPABILITY);
+    if (engine->live.busy() || engine->ingress.pending_events() != 0U)
+      return remembered(engine, HSS_NOT_READY);
+    const std::string exact(reinterpret_cast<const char *>(command.data),
+                            static_cast<size_t>(command.length));
+    const auto processed = engine->scene_editor.process(
+        engine->live.snapshot()->json, exact);
+    if (processed.exact_result_json.size() > kMaxJsonRecordBytes)
+      return remembered(engine, HSS_RESOURCE_LIMIT);
+    engine->command_result = processed.exact_result_json;
+    engine->has_command_result = true;
+    if (processed.scene_changed) {
+      const auto counts =
+          hss::scene_editing::scene_counts(processed.candidate_scene_json);
+      if (!counts)
+        return remembered(engine, HSS_INTERNAL_ERROR);
+      const HSSStatus published = engine->live.publish_edited_scene(
+          processed.candidate_scene_json,
+          engine->live.snapshot()->revision + 1U, counts->node_count,
+          counts->edge_count, counts->issue_count);
+      if (published != HSS_OK)
+        return remembered(engine, published);
+      ++engine->accepted_commands;
+    }
+    switch (processed.status) {
+    case hss::scene_editing::Status::kApplied:
+    case hss::scene_editing::Status::kStoredRetry:
+      return remembered(engine, HSS_OK);
+    case hss::scene_editing::Status::kConflict:
+      return remembered(engine, HSS_CONSTRAINT_CONFLICT);
+    case hss::scene_editing::Status::kDuplicateMismatch:
+      return remembered(engine, HSS_DUPLICATE_MISMATCH);
+    case hss::scene_editing::Status::kStaleRevision:
+    case hss::scene_editing::Status::kFutureRevision:
+    case hss::scene_editing::Status::kTargetNotCurrent:
+    case hss::scene_editing::Status::kTargetLineageChanged:
+      return remembered(engine, HSS_STALE_REVISION);
+    case hss::scene_editing::Status::kPendingUnsupported:
+      return remembered(engine, HSS_UNSUPPORTED_CAPABILITY);
+    case hss::scene_editing::Status::kResourceLimitExceeded:
+      return remembered(engine, HSS_RESOURCE_LIMIT);
+    default:
+      return remembered(engine, HSS_INVALID_ARGUMENT);
+    }
   } catch (const std::bad_alloc &) {
     return remembered(engine, HSS_RESOURCE_LIMIT);
   } catch (...) {
@@ -505,7 +551,10 @@ hss_engine_copy_command_result_json(const HSSEngine *engine,
         (destination == nullptr && capacity != 0U)) {
       return HSS_INVALID_ARGUMENT;
     }
-    return HSS_NOT_READY;
+    if (!engine->has_command_result)
+      return HSS_NOT_READY;
+    return copy_out(reinterpret_cast<const uint8_t *>(engine->command_result.data()),
+                    engine->command_result.size(), destination, capacity, required);
   } catch (...) {
     return HSS_INTERNAL_ERROR;
   }
