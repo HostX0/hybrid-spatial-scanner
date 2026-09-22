@@ -283,6 +283,19 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_compile_options(hss_guidance_policy PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
   target_link_options(hss_guidance_policy INTERFACE -fsanitize=address,undefined)
 endif()
+add_library(hss_privacy_policy STATIC
+  SpatialCore/src/privacy_policy.cpp
+)
+target_include_directories(hss_privacy_policy
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/SpatialCore/include>
+)
+target_compile_features(hss_privacy_policy PUBLIC cxx_std_20)
+target_compile_options(hss_privacy_policy PRIVATE -Wall -Wextra -Werror -Wpedantic)
+if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+ target_compile_options(hss_privacy_policy PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+ target_link_options(hss_privacy_policy INTERFACE -fsanitize=address,undefined)
+endif()
 
 target_link_libraries(SpatialCore PUBLIC hss_robust_plane_fit hss_boundary_graph hss_topology_protection hss_ring_net_area hss_scene_editing)
 
@@ -379,6 +392,13 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_link_options(hss_ring_net_area_test PRIVATE -fsanitize=address,undefined)
  target_compile_options(hss_topology_protection_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
  target_link_options(hss_topology_protection_test PRIVATE -fsanitize=address,undefined)
+endif()
+add_executable(hss_privacy_policy_test tests/hss_privacy_policy_test.cpp)
+target_link_libraries(hss_privacy_policy_test PRIVATE hss_privacy_policy)
+target_compile_options(hss_privacy_policy_test PRIVATE -Wall -Wextra -Werror -Wpedantic)
+if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+ target_compile_options(hss_privacy_policy_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+ target_link_options(hss_privacy_policy_test PRIVATE -fsanitize=address,undefined)
 endif()
 add_executable(hss_ceiling_overhead_test tests/hss_ceiling_overhead_test.cpp)
 target_include_directories(hss_ceiling_overhead_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -478,6 +498,7 @@ add_test(NAME hss_obj_mtl_exporter COMMAND hss_obj_mtl_exporter_test)
 add_test(NAME hss_guidance_policy COMMAND hss_guidance_policy_test)
 add_test(NAME hss_project_import_validation COMMAND hss_project_import_validation_test)
 add_test(NAME hss_resource_policy COMMAND hss_resource_policy_test)
+add_test(NAME hss_privacy_policy COMMAND hss_privacy_policy_test)
 endif()
 
 if(HSS_BUILD_TESTS)
