@@ -141,6 +141,25 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_compile_options(hss_ceiling_overhead PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
   target_link_options(hss_ceiling_overhead INTERFACE -fsanitize=address,undefined)
 endif()
+add_library(hss_plan_semantics STATIC
+  SpatialCore/src/plan_semantics.cpp
+)
+target_include_directories(hss_plan_semantics
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/SpatialCore/include>
+)
+target_link_libraries(hss_plan_semantics
+  PUBLIC
+    hss_surface_proposal
+    hss_ring_net_area
+    hss_ceiling_overhead
+)
+target_compile_features(hss_plan_semantics PUBLIC cxx_std_20)
+target_compile_options(hss_plan_semantics PRIVATE -Wall -Wextra -Werror -Wpedantic)
+if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+ target_compile_options(hss_plan_semantics PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+ target_link_options(hss_plan_semantics INTERFACE -fsanitize=address,undefined)
+endif()
 add_library(hss_revisioned_command STATIC
   SpatialCore/src/revisioned_command.cpp
 )
@@ -294,6 +313,13 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_compile_options(hss_ceiling_overhead_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
  target_link_options(hss_ceiling_overhead_test PRIVATE -fsanitize=address,undefined)
 endif()
+add_executable(hss_plan_semantics_test tests/hss_plan_semantics_test.cpp)
+target_link_libraries(hss_plan_semantics_test PRIVATE hss_plan_semantics)
+target_compile_options(hss_plan_semantics_test PRIVATE -Wall -Wextra -Werror -Wpedantic)
+if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+ target_compile_options(hss_plan_semantics_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+ target_link_options(hss_plan_semantics_test PRIVATE -fsanitize=address,undefined)
+endif()
 if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_compile_options(hss_revisioned_command_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
  target_link_options(hss_revisioned_command_test PRIVATE -fsanitize=address,undefined)
@@ -340,6 +366,7 @@ add_test(NAME hss_protected_rib COMMAND hss_protected_rib_test)
 add_test(NAME hss_ring_net_area COMMAND hss_ring_net_area_test)
 add_test(NAME hss_topology_protection COMMAND hss_topology_protection_test)
 add_test(NAME hss_ceiling_overhead COMMAND hss_ceiling_overhead_test)
+add_test(NAME hss_plan_semantics COMMAND hss_plan_semantics_test)
 add_test(NAME hss_revisioned_command COMMAND hss_revisioned_command_test)
 add_test(NAME hss_scene_editing COMMAND hss_scene_editing_test)
 add_test(NAME hss_dynamic_provenance COMMAND hss_dynamic_provenance_test)
