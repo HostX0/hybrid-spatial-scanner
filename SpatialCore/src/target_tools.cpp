@@ -1,6 +1,7 @@
 #include "hss/target_tools.hpp"
 
 #include <cmath>
+#include <string_view>
 #include <unordered_set>
 
 namespace hss::target_tools {
