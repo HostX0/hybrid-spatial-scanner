@@ -7,3 +7,11 @@ __pycache__/
 .pytest_cache/
 *.pyc
 .DS_Store
+.env
+.env.*
+!.env.example
+*.p12
+*.mobileprovision
+*.xcarchive/
+*.ipa
+xcuserdata/
