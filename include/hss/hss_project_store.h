@@ -125,6 +125,7 @@ HSSStatus hss_project_store_append_epoch(HSSProjectStore* store,
                                          const HSSEpoch* epoch,
                                          HSSProjectStoreReceipt* receipt);
 HSSStatus hss_project_store_append_frame(HSSProjectStore* store,
+                                         const HSSProjectEventContext* context,
                                          const HSSFrame* frame,
                                          HSSProjectStoreReceipt* receipt);
 HSSStatus hss_project_store_append_mesh_event(HSSProjectStore* store,
