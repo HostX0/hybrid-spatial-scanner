@@ -4,7 +4,9 @@ An offline native iPhone scanner under active development: captured 3D, measured
 
 ## Current state
 
-The repository contains a SwiftUI/Xcode application target, ARKit depth and mesh adapters, a C ownership facade, portable geometry/storage/replay components, tests, and the original engineering reference pack. Native capture-to-engine-to-save/reopen integration and the product interface are in progress. The current integrated engine still has placeholder snapshots; the existing provisional-plan example is synthetic only. This is not yet a complete installable product or a validated measurement tool.
+The repository contains a connected SwiftUI/Xcode application target, ARKit depth and mesh adapters, captured-mesh reconstruction, revisioned editing, durable local save/reopen, and offline PDF/SVG, DXF, and OBJ/MTL export. Detailed-object capture is a separate workflow and never supplies authoritative room measurements.
+
+The full simulator suite passes, and an unsigned arm64 iPhoneOS build succeeds. Installation now requires selecting the owner's Apple development team and connected iPhone in Xcode. Physical LiDAR behavior and measurement accuracy remain unverified until the planned iPhone 15 Pro Max trial.
 
 `coordination/HSS_STATUS.json` records the latest backed-up implementation state. `docs/evidence/` distinguishes host, simulator and physical evidence. Physical iPhone 15 Pro Max testing is planned after software readiness. No accuracy, large-hall capacity, thermal endurance, or competitor-superiority claim has been established.
 
@@ -22,7 +24,7 @@ ctest --test-dir build --output-on-failure
 
 Run only relevant tests while editing. A combined native smoke test belongs at a connected workflow milestone. Python reference tests use `requirements.txt`; reference contracts do not establish native product readiness.
 
-Open `HSSApp/HybridSpatialScanner.xcodeproj` and use its shared `HybridSpatialScanner` scheme. The recorded toolchain is Xcode 27.0 / Swift 6.4. The next integrated native build is pending; signing and installation instructions will be consolidated when ready. Simulator support provides no LiDAR capture evidence.
+Open `HSSApp/HybridSpatialScanner.xcodeproj` and use its shared `HybridSpatialScanner` scheme. The recorded toolchain is Xcode 27.0 / Swift 6.4. See `docs/INSTALL_ON_IPHONE.md` for signing and installation. Simulator support provides no LiDAR capture evidence.
 
 ## Architecture and source map
 
