@@ -84,10 +84,49 @@ public final class HSSSnapshotLease {
         }
         guard triangleStatus == HSS_OK else { throw HSSBridgeError.native(triangleStatus) }
 
+        var requiredInclusion: UInt64 = 0
+        let inclusionQuery = hss_snapshot_copy_triangle_inclusion(handle, nil, 0, &requiredInclusion)
+        guard inclusionQuery == HSS_BUFFER_TOO_SMALL || (inclusionQuery == HSS_OK && requiredInclusion == 0) else {
+            throw HSSBridgeError.native(inclusionQuery)
+        }
+        guard requiredInclusion == counts.triangle_count,
+              requiredInclusion <= UInt64(Int.max) else {
+            throw HSSBridgeError.invalidValue("Snapshot triangle inclusion does not match its raw topology.")
+        }
+        var triangleInclusion = [UInt8](repeating: 0, count: Int(requiredInclusion))
+        let inclusionStatus = triangleInclusion.withUnsafeMutableBufferPointer { buffer in
+            hss_snapshot_copy_triangle_inclusion(handle, buffer.baseAddress, UInt64(buffer.count), &requiredInclusion)
+        }
+        guard inclusionStatus == HSS_OK,
+              triangleInclusion.allSatisfy({ $0 == 0 || $0 == 1 }) else {
+            throw inclusionStatus == HSS_OK
+                ? HSSBridgeError.invalidValue("Snapshot triangle inclusion contains an invalid value.")
+                : HSSBridgeError.native(inclusionStatus)
+        }
+
+        var nativeMaskSummary = HSSDynamicMaskSummary()
+        let summaryStatus = hss_snapshot_get_dynamic_mask_summary(handle, &nativeMaskSummary)
+        guard summaryStatus == HSS_OK else { throw HSSBridgeError.native(summaryStatus) }
+        guard nativeMaskSummary.scene_revision == counts.scene_revision,
+              nativeMaskSummary.triangle_count == counts.triangle_count,
+              nativeMaskSummary.included_triangle_count + nativeMaskSummary.excluded_triangle_count
+                == counts.triangle_count else {
+            throw HSSBridgeError.invalidValue("Snapshot dynamic mask summary does not match its accepted revision.")
+        }
+
         return ScannerSceneSnapshot(
             revision: counts.scene_revision,
             verticesMetres: nativeVertices.map { SIMD3($0.x, $0.y, $0.z) },
             triangleIndices: indices,
+            reviewTriangleInclusion: triangleInclusion,
+            dynamicMaskSummary: ScannerDynamicMaskSummary(
+                sceneRevision: nativeMaskSummary.scene_revision,
+                triangleCount: nativeMaskSummary.triangle_count,
+                includedTriangleCount: nativeMaskSummary.included_triangle_count,
+                excludedTriangleCount: nativeMaskSummary.excluded_triangle_count,
+                appliedExclusionCount: nativeMaskSummary.applied_exclusion_count,
+                staleExclusionCount: nativeMaskSummary.stale_exclusion_count
+            ),
             sceneJSON: try sceneJSON(),
             provenance: provenance,
             isFrozen: isFrozen

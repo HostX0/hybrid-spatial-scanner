@@ -17,10 +17,19 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
         ScannerWorkspaceView(
             presentation: presentation,
             actions: actions,
-            cameraContent: { ScannerCameraPreview(session: workspace.captureSession) },
+            cameraContent: {
+                ScannerCameraPreview(
+                    session: workspace.captureSession,
+                    onTargetTap: workspace.selectTarget
+                )
+            },
             sceneContent: {
                 if let snapshot = workspace.latestSnapshot {
-                    ScannerSnapshotMeshPreview(snapshot: snapshot)
+                    ScannerSnapshotMeshPreview(
+                        snapshot: snapshot,
+                        admittedAppearanceBinding: workspace.reviewAppearanceBinding,
+                        appearanceTextures: workspace.reviewAppearanceTextures
+                    )
                 }
             }
         )
@@ -109,16 +118,67 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
 
     private var targetGuidance: ScannerWorkspacePresentation.TargetGuidance? {
         guard isCaptureActive else { return nil }
-        // B-027's target contract is compiled into the native target, but this
-        // workspace has not yet received a target-selection bridge. Showing an
-        // explicit unsupported state keeps an arbitrary camera tap from being
-        // represented as observed project geometry.
-        return ScannerWorkspacePresentation.TargetGuidance(
-            state: .unavailable(String(localized: "Target selection is not available in this capture runtime.")),
-            title: String(localized: "Target assistance"),
-            detail: String(localized: "A supported depth target is required before protrusion guidance or an overlay can be shown."),
-            overlay: nil
-        )
+        let title = String(localized: "Target assistance")
+        switch workspace.targetSelectionState {
+        case .awaitingSelection:
+            return ScannerWorkspacePresentation.TargetGuidance(
+                state: .awaitingSelection,
+                title: title,
+                detail: String(localized: "Tap a visible surface to select current calibrated depth support."),
+                overlay: nil
+            )
+        case .pending(let reason):
+            return ScannerWorkspacePresentation.TargetGuidance(
+                state: .pendingNoDepth,
+                title: title,
+                detail: targetPendingDetail(reason),
+                overlay: nil
+            )
+        case .stale:
+            return ScannerWorkspacePresentation.TargetGuidance(
+                state: .staleSelection,
+                title: title,
+                detail: String(localized: "The accepted scene revision changed. Tap the feature again to confirm it against the current revision."),
+                overlay: nil
+            )
+        case .confirmed(let selection):
+            return ScannerWorkspacePresentation.TargetGuidance(
+                state: .confirmed(selection.provenance == .observed ? .observed : .fitted),
+                title: title,
+                detail: String(localized: "This target is bound to accepted revision \(selection.sceneRevision) and its retained source frame."),
+                overlay: ScannerWorkspacePresentation.TargetGuidance.CalibratedOverlay(
+                    observedDepthPixel: selection.observedDepthPixel,
+                    calibration: selection.calibration,
+                    frame: selection.overlayFrame,
+                    displayTransform: selection.displayTransform,
+                    currentEpoch: selection.sourceFrame.sessionEpoch,
+                    maximumFrameAge: 1
+                )
+            )
+        }
+    }
+
+    private func targetPendingDetail(_ reason: NativeTargetPendingReason) -> String {
+        switch reason {
+        case .captureUnavailable:
+            String(localized: "Precise capture must be active before a target can be selected.")
+        case .missingCurrentDepthFrame, .frameMismatch, .staleFrame:
+            String(localized: "No matching current depth frame is available. Hold the phone steady and tap again.")
+        case .invalidCalibration:
+            String(localized: "The current depth calibration is invalid, so this tap remains pending.")
+        case .invalidViewport, .viewportChanged:
+            String(localized: "The camera viewport changed during selection. Tap again in the current orientation.")
+        case .staleEpoch, .missingAcceptedEpochTransform:
+            String(localized: "Tracking coordinates are not accepted for this epoch yet. Wait for relocalization before selecting.")
+        case .outsideDepthSupport:
+            String(localized: "That pixel has no supported depth. Aim at a visible surface and tap again.")
+        case .lowConfidenceDepth:
+            String(localized: "Only low-confidence preview depth is available at that pixel; it was not promoted to measured support.")
+        case .awaitingSourceAcceptance:
+            String(localized: "The calibrated source frame is being retained and bound to an accepted scene revision.")
+        case .sourceCapacityReached:
+            String(localized: "The retained depth-frame limit was reached. Finish and save this draft before starting another capture.")
+        }
     }
 
     private var exportStatus: String? {
@@ -287,43 +347,116 @@ private struct ScannerProjectNameSheet: View {
 /// workspace. It never configures, starts, pauses, or delegates that session.
 private struct ScannerCameraPreview: UIViewRepresentable {
     let session: ARSession?
+    let onTargetTap: (NativeTargetTap) -> Void
 
-    func makeUIView(context: Context) -> ARSCNView {
-        let view = ARSCNView(frame: .zero)
+    func makeUIView(context: Context) -> ScannerTargetingARSCNView {
+        let view = ScannerTargetingARSCNView(frame: .zero)
         view.automaticallyUpdatesLighting = true
         view.rendersCameraGrain = false
+        view.onTargetTap = onTargetTap
         if let session { view.session = session }
         return view
     }
 
-    func updateUIView(_ view: ARSCNView, context: Context) {
+    func updateUIView(_ view: ScannerTargetingARSCNView, context: Context) {
+        view.onTargetTap = onTargetTap
         guard let session, view.session !== session else { return }
         view.session = session
     }
 }
 
+private final class ScannerTargetingARSCNView: ARSCNView {
+    var onTargetTap: ((NativeTargetTap) -> Void)?
+    private var viewportGeneration: UInt64 = 1
+    private var lastViewportSize: CGSize = .zero
+    private var lastOrientation: OverlayPresentationOrientation?
+
+    override init(frame: CGRect, options: [String: Any]? = nil) {
+        super.init(frame: frame, options: options)
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(didTap(_:))))
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateViewportGeneration()
+    }
+
+    @objc private func didTap(_ recognizer: UITapGestureRecognizer) {
+        updateViewportGeneration()
+        guard let orientation = interfaceOrientation(), bounds.width > 0, bounds.height > 0 else { return }
+        let location = recognizer.location(in: self)
+        onTargetTap?(NativeTargetTap(
+            screenPoint: SIMD2(Float(location.x), Float(location.y)),
+            viewport: OverlayViewport(
+                width: Float(bounds.width), height: Float(bounds.height),
+                orientation: orientation, generation: viewportGeneration
+            )
+        ))
+    }
+
+    private func updateViewportGeneration() {
+        let orientation = interfaceOrientation()
+        if bounds.size != lastViewportSize || orientation != lastOrientation {
+            if viewportGeneration != UInt64.max { viewportGeneration += 1 }
+            lastViewportSize = bounds.size
+            lastOrientation = orientation
+        }
+    }
+
+    private func interfaceOrientation() -> OverlayPresentationOrientation? {
+        switch window?.windowScene?.interfaceOrientation {
+        case .portrait: .portrait
+        case .portraitUpsideDown: .portraitUpsideDown
+        case .landscapeLeft: .landscapeLeft
+        case .landscapeRight: .landscapeRight
+        default: nil
+        }
+    }
+}
+
 private struct ScannerSnapshotMeshPreview: UIViewRepresentable {
     let snapshot: ScannerSceneSnapshot
+    let admittedAppearanceBinding: AppearanceAdmittedBinding?
+    let appearanceTextures: [AppearanceTextureResource]
 
     func makeUIView(context: Context) -> SCNView {
         let view = SCNView(frame: .zero)
         view.backgroundColor = UIColor(ScannerProductTheme.surface)
         view.allowsCameraControl = true
         view.autoenablesDefaultLighting = true
-        view.scene = ScannerMeshSceneBuilder.scene(from: snapshot)
+        view.scene = ScannerMeshSceneBuilder.scene(
+            from: snapshot,
+            admittedAppearanceBinding: admittedAppearanceBinding,
+            appearanceTextures: appearanceTextures
+        )
         view.accessibilityLabel = "3D geometry from accepted snapshot"
         return view
     }
 
     func updateUIView(_ view: SCNView, context: Context) {
-        view.scene = ScannerMeshSceneBuilder.scene(from: snapshot)
+        view.scene = ScannerMeshSceneBuilder.scene(
+            from: snapshot,
+            admittedAppearanceBinding: admittedAppearanceBinding,
+            appearanceTextures: appearanceTextures
+        )
     }
 }
 
-private enum ScannerMeshSceneBuilder {
-    static func scene(from snapshot: ScannerSceneSnapshot) -> SCNScene {
+enum ScannerMeshSceneBuilder {
+    static func scene(
+        from snapshot: ScannerSceneSnapshot,
+        admittedAppearanceBinding: AppearanceAdmittedBinding? = nil,
+        appearanceTextures: [AppearanceTextureResource] = []
+    ) -> SCNScene {
         let scene = SCNScene()
-        guard let geometry = geometry(from: snapshot) else { return scene }
+        guard let geometry = geometry(
+            from: snapshot,
+            admittedAppearanceBinding: admittedAppearanceBinding,
+            appearanceTextures: appearanceTextures
+        ) else { return scene }
         let node = SCNNode(geometry: geometry)
         scene.rootNode.addChildNode(node)
 
@@ -342,29 +475,78 @@ private enum ScannerMeshSceneBuilder {
         return scene
     }
 
-    private static func geometry(from snapshot: ScannerSceneSnapshot) -> SCNGeometry? {
+    static func displayTriangleIndices(from snapshot: ScannerSceneSnapshot) -> [UInt32]? {
+        guard snapshot.triangleIndices.count.isMultiple(of: 3) else { return nil }
+        if snapshot.reviewTriangleInclusion.isEmpty { return snapshot.triangleIndices }
+        guard snapshot.reviewTriangleInclusion.count == snapshot.triangleIndices.count / 3,
+              snapshot.reviewTriangleInclusion.allSatisfy({ $0 == 0 || $0 == 1 }) else { return nil }
+        var result: [UInt32] = []
+        result.reserveCapacity(snapshot.triangleIndices.count)
+        for triangle in snapshot.reviewTriangleInclusion.indices where snapshot.reviewTriangleInclusion[triangle] != 0 {
+            let start = triangle * 3
+            result.append(contentsOf: snapshot.triangleIndices[start..<(start + 3)])
+        }
+        return result
+    }
+
+    private static func geometry(
+        from snapshot: ScannerSceneSnapshot,
+        admittedAppearanceBinding: AppearanceAdmittedBinding?,
+        appearanceTextures: [AppearanceTextureResource]
+    ) -> SCNGeometry? {
+        guard let displayIndices = displayTriangleIndices(from: snapshot) else { return nil }
         guard !snapshot.verticesMetres.isEmpty,
               snapshot.verticesMetres.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.z.isFinite }),
-              snapshot.triangleIndices.count.isMultiple(of: 3),
-              snapshot.triangleIndices.allSatisfy({ Int($0) < snapshot.verticesMetres.count }) else {
+              !displayIndices.isEmpty,
+              displayIndices.allSatisfy({ Int($0) < snapshot.verticesMetres.count }) else {
             return nil
         }
         let vertices = snapshot.verticesMetres.map { SCNVector3(Float($0.x), Float($0.y), Float($0.z)) }
         let source = SCNGeometrySource(vertices: vertices)
-        let indexData = snapshot.triangleIndices.withUnsafeBufferPointer { Data(buffer: $0) }
+        let indexData = displayIndices.withUnsafeBufferPointer { Data(buffer: $0) }
         let element = SCNGeometryElement(
             data: indexData,
             primitiveType: .triangles,
-            primitiveCount: snapshot.triangleIndices.count / 3,
+            primitiveCount: displayIndices.count / 3,
             bytesPerIndex: MemoryLayout<UInt32>.size
         )
         let geometry = SCNGeometry(sources: [source], elements: [element])
+        geometry.materials = [reviewMaterial(
+            snapshot: snapshot,
+            admittedAppearanceBinding: admittedAppearanceBinding,
+            appearanceTextures: appearanceTextures
+        )]
+        return geometry
+    }
+
+    private static func reviewMaterial(
+        snapshot: ScannerSceneSnapshot,
+        admittedAppearanceBinding: AppearanceAdmittedBinding?,
+        appearanceTextures: [AppearanceTextureResource]
+    ) -> SCNMaterial {
         let material = SCNMaterial()
         material.diffuse.contents = UIColor(ScannerProductTheme.accent.opacity(0.75))
         material.fillMode = .lines
         material.isDoubleSided = true
-        geometry.materials = [material]
-        return geometry
+        guard let identity = AppearanceMetricSnapshotIdentity(
+            topologyToken: "snapshot-\(snapshot.revision)-\(snapshot.verticesMetres.count)-\(snapshot.triangleIndices.count / 3)",
+            sceneRevision: snapshot.revision
+        ), let target = AppearanceRenderTarget(entityID: "captured-mesh", metricSnapshot: identity) else {
+            return material
+        }
+        let presentation = AppearancePresentationAdapter.present(
+            target: target,
+            admittedBinding: admittedAppearanceBinding,
+            textures: appearanceTextures
+        )
+        guard case .present(let admitted) = presentation,
+              case .textured(let rendererTextureID) = admitted.material,
+              let texture = UIImage(named: rendererTextureID) else {
+            return material
+        }
+        material.diffuse.contents = texture
+        material.fillMode = .fill
+        return material
     }
 }
 

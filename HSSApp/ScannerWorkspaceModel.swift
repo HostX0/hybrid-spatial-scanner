@@ -22,6 +22,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     @Published private(set) var saveState: ScannerWorkspaceSaveState = .noProject
     @Published private(set) var exportState: ScannerExportState = .idle
     @Published private(set) var captureAccounting: ScannerCaptureAccounting = .zero
+    @Published private(set) var targetSelectionState: NativeTargetSelectionState = .awaitingSelection
 
     var captureSession: ARSession? { captureCoordinator.captureSession }
     var canConfirmPlanReference: Bool {
@@ -58,6 +59,10 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
 
         var isFrame: Bool {
             if case .frame = self { true } else { false }
+        }
+
+        var frameIdentity: SceneDepthFrameIdentity? {
+            if case .frame(let frame) = self { frame.identity } else { nil }
         }
     }
 
@@ -101,6 +106,11 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     private var isAssigningSelectedName = false
     private var observedProvenance: Set<ScannerSceneProvenance> = []
     private var didReportDepthKeyframeCapacity = false
+    private var latestTargetFrame: NormalizedSceneDepthFrame?
+    private var queuedTargetSourceFrames: [SceneDepthFrameIdentity] = []
+    private var acceptedTargetSourceFrames: [SceneDepthFrameIdentity] = []
+    private var pendingTargetCandidate: NativeTargetCandidate?
+    private var acceptedEpochProjectTransforms: [UInt64: [Double]] = [:]
     private var cancellables: Set<AnyCancellable> = []
     private let keyframeSelector = SceneDepthKeyframeSelector()
     private let maximumPendingEvents = 512
@@ -195,6 +205,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 keyframeSelector.reset()
                 captureAccounting = .zero
                 didReportDepthKeyframeCapacity = false
+                resetTargetSelection()
                 saveState = .saved(entry.updatedAt)
                 exportState = .idle
                 reloadProjects()
@@ -213,6 +224,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         keyframeSelector.reset()
         captureAccounting = .zero
         didReportDepthKeyframeCapacity = false
+        resetTargetSelection()
         if captureCoordinator.canRequestCameraPermission {
             Task { [weak self] in
                 guard let self else { return }
@@ -319,6 +331,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 latestSnapshot = snapshot
                 observedProvenance = provenance
                 nextEventSequence = max(1, snapshot.revision + 1)
+                resetTargetSelection()
                 saveState = .clean
                 exportState = .idle
                 phase = .frozen
@@ -339,8 +352,71 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         saveState = .noProject
         exportState = .idle
         currentIssue = nil
+        resetTargetSelection()
         phase = .browsing
         reloadProjects()
+    }
+
+    func selectTarget(_ tap: NativeTargetTap) {
+        guard phase == .capturing,
+              let arFrame = captureSession?.currentFrame else {
+            setPendingTarget(.captureUnavailable)
+            return
+        }
+        guard let normalizedFrame = latestTargetFrame else {
+            setPendingTarget(.missingCurrentDepthFrame)
+            return
+        }
+        guard let currentEpoch = captureCoordinator.epochRelocalization.currentEpoch,
+              let projectFromWorld = acceptedEpochProjectTransforms[currentEpoch] else {
+            setPendingTarget(.missingAcceptedEpochTransform)
+            return
+        }
+        guard let overlay = ARFrameCalibratedOverlayAdapter.makeSnapshot(
+            frame: arFrame,
+            sessionEpoch: normalizedFrame.identity.sessionEpoch,
+            sequence: normalizedFrame.identity.sequence,
+            viewport: tap.viewport
+        ) else {
+            setPendingTarget(.missingCurrentDepthFrame)
+            return
+        }
+        switch NativeTargetSelectionAdapter.prepare(
+            tap: tap,
+            normalizedFrame: normalizedFrame,
+            overlayCalibration: overlay.calibration,
+            overlayFrame: overlay.frame,
+            displayTransform: overlay.displayTransform,
+            currentEpoch: currentEpoch,
+            projectFromWorld: projectFromWorld,
+            now: arFrame.timestamp,
+            maximumFrameAge: 0
+        ) {
+        case .failure(let reason):
+            setPendingTarget(reason)
+        case .success(let candidate):
+            pendingTargetCandidate = candidate
+            if acceptedTargetSourceFrames.contains(candidate.sourceFrame),
+               let revision = latestSnapshot?.revision,
+               let selection = NativeTargetSelectionAdapter.confirm(
+                candidate,
+                acceptedSourceFrame: candidate.sourceFrame,
+                currentSceneRevision: revision
+               ) {
+                pendingTargetCandidate = nil
+                targetSelectionState = .confirmed(selection)
+                return
+            }
+            if !queuedTargetSourceFrames.contains(candidate.sourceFrame) {
+                guard keyframeSelector.retainForTarget(normalizedFrame) else {
+                    setPendingTarget(.sourceCapacityReached)
+                    return
+                }
+                captureAccounting = keyframeSelector.accounting
+                enqueueTargetFrame(normalizedFrame)
+            }
+            targetSelectionState = .pending(.awaitingSourceAcceptance)
+        }
     }
 
     func confirmPlanReference(projectFromFloor: simd_double4x4, cutHeightMetres: Double) {
@@ -433,10 +509,16 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     private func receive(_ control: CaptureEpochControl) {
+        if control.relationshipState == .accepted {
+            acceptedEpochProjectTransforms[control.sessionEpoch] = control.projectFromWorld
+        } else {
+            acceptedEpochProjectTransforms.removeValue(forKey: control.sessionEpoch)
+        }
         enqueue(.epoch(control, monotonicTime: ProcessInfo.processInfo.systemUptime))
     }
 
     private func receive(_ frame: NormalizedSceneDepthFrame) {
+        latestTargetFrame = frame
         let retained = keyframeSelector.shouldRetain(frame)
         captureAccounting = keyframeSelector.accounting
         guard retained else {
@@ -451,6 +533,12 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             }
             return
         }
+        enqueueTargetFrame(frame)
+    }
+
+    private func enqueueTargetFrame(_ frame: NormalizedSceneDepthFrame) {
+        queuedTargetSourceFrames.append(frame.identity)
+        if queuedTargetSourceFrames.count > 16 { queuedTargetSourceFrames.removeFirst() }
         enqueue(.frame(frame))
     }
 
@@ -462,8 +550,21 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         guard runtime != nil else { return }
         if event.isFrame {
             let pendingFrameIndices = pendingEvents.indices.filter { pendingEvents[$0].event.isFrame }
-            if pendingFrameIndices.count >= maximumPendingFrames, let oldest = pendingFrameIndices.first {
-                pendingEvents.remove(at: oldest)
+            if pendingFrameIndices.count >= maximumPendingFrames {
+                let pinned = pendingTargetCandidate?.sourceFrame
+                if let removable = pendingFrameIndices.first(where: {
+                    pendingEvents[$0].event.frameIdentity != pinned
+                }) {
+                    if let removedIdentity = pendingEvents[removable].event.frameIdentity {
+                        queuedTargetSourceFrames.removeAll { $0 == removedIdentity }
+                    }
+                    pendingEvents.remove(at: removable)
+                } else if event.frameIdentity != pinned {
+                    if let skippedIdentity = event.frameIdentity {
+                        queuedTargetSourceFrames.removeAll { $0 == skippedIdentity }
+                    }
+                    return
+                }
             }
         }
         guard pendingEvents.count < maximumPendingEvents else {
@@ -498,6 +599,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             return
         }
         do {
+            var acceptedFrames: [SceneDepthFrameIdentity] = []
             while !pendingEvents.isEmpty {
                 let next = pendingEvents.removeFirst()
                 switch next.event {
@@ -506,6 +608,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 case .frame(let frame):
                     try await runtime.submitFrame(frame, eventSequence: next.sequence)
                     observedProvenance.insert(.capturedSceneDepth)
+                    acceptedFrames.append(frame.identity)
                 case .mesh(let event):
                     try await runtime.submitMeshEvent(event, eventSequence: next.sequence)
                     observedProvenance.insert(.capturedARKitMesh)
@@ -518,6 +621,15 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 }
             }
             latestSnapshot = try await runtime.snapshot(provenance: observedProvenance, frozen: false)
+            for identity in acceptedFrames {
+                queuedTargetSourceFrames.removeAll { $0 == identity }
+                acceptedTargetSourceFrames.append(identity)
+            }
+            if acceptedTargetSourceFrames.count > 16 {
+                acceptedTargetSourceFrames.removeFirst(acceptedTargetSourceFrames.count - 16)
+            }
+            resolvePendingTargetIfPossible()
+            refreshTargetRevisionBinding()
             drainScheduled = false
             if freezeRequested && !captureCoordinator.isSessionRunning {
                 scheduleFreeze()
@@ -544,6 +656,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             do {
                 try await runtime.drain()
                 latestSnapshot = try await runtime.snapshot(provenance: observedProvenance, frozen: true)
+                refreshTargetRevisionBinding()
                 phase = .frozen
                 if saveAfterFreeze || saveRequested {
                     saveAfterFreeze = false
@@ -574,6 +687,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 selectedCatalogEntry = entry
                 assignSelectedName(entry.name)
                 latestSnapshot = snapshot
+                refreshTargetRevisionBinding()
                 saveState = .saved(entry.updatedAt)
                 exportState = .idle
                 currentIssue = checkpoint.durableRevision == 0 && checkpoint.durableEventCount > 0
@@ -649,6 +763,41 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         }
         return error.localizedDescription
     }
+
+    private func setPendingTarget(_ reason: NativeTargetPendingReason) {
+        pendingTargetCandidate = nil
+        targetSelectionState = .pending(reason)
+    }
+
+    private func resolvePendingTargetIfPossible() {
+        guard let candidate = pendingTargetCandidate,
+              acceptedTargetSourceFrames.contains(candidate.sourceFrame),
+              let revision = latestSnapshot?.revision,
+              let selection = NativeTargetSelectionAdapter.confirm(
+                candidate,
+                acceptedSourceFrame: candidate.sourceFrame,
+                currentSceneRevision: revision
+              ) else { return }
+        pendingTargetCandidate = nil
+        targetSelectionState = .confirmed(selection)
+    }
+
+    private func refreshTargetRevisionBinding() {
+        guard let revision = latestSnapshot?.revision else { return }
+        if case .confirmed(let selection) = targetSelectionState,
+           selection.sceneRevision != revision {
+            targetSelectionState = .stale(selection)
+        }
+    }
+
+    private func resetTargetSelection() {
+        latestTargetFrame = nil
+        queuedTargetSourceFrames.removeAll(keepingCapacity: true)
+        acceptedTargetSourceFrames.removeAll(keepingCapacity: true)
+        pendingTargetCandidate = nil
+        acceptedEpochProjectTransforms.removeAll(keepingCapacity: true)
+        targetSelectionState = .awaitingSelection
+    }
 }
 
 /// Deterministic capture-side selection. It retains the first valid frame and
@@ -720,6 +869,16 @@ final class SceneDepthKeyframeSelector {
             return false
         }
         accept(frame, support: support)
+        return true
+    }
+
+    /// A user target may promote the latest correlated frame into retained
+    /// source evidence. Capacity is never bypassed and a previously counted
+    /// correlated discard is corrected when the same latest frame is kept.
+    func retainForTarget(_ frame: NormalizedSceneDepthFrame) -> Bool {
+        guard !hasReachedCapacity else { return false }
+        if discardedCorrelatedFrameCount > 0 { discardedCorrelatedFrameCount -= 1 }
+        accept(frame, support: coarseSupport(frame))
         return true
     }
 

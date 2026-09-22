@@ -44,10 +44,45 @@ enum ScannerSceneProvenance: String, Codable, Equatable, Sendable {
 struct ScannerSceneSnapshot: Equatable, Sendable {
     let revision: UInt64
     let verticesMetres: [SIMD3<Double>]
+    /// Raw accepted captured-mesh topology. Exporters consume this array and
+    /// never rewrite it from the derived dynamic presentation mask.
     let triangleIndices: [UInt32]
+    /// One byte per raw triangle when supplied by the C facade. A value of
+    /// zero hides that triangle in the derived review view only.
+    let reviewTriangleInclusion: [UInt8]
+    let dynamicMaskSummary: ScannerDynamicMaskSummary?
     let sceneJSON: Data
     let provenance: Set<ScannerSceneProvenance>
     let isFrozen: Bool
+
+    init(
+        revision: UInt64,
+        verticesMetres: [SIMD3<Double>],
+        triangleIndices: [UInt32],
+        reviewTriangleInclusion: [UInt8] = [],
+        dynamicMaskSummary: ScannerDynamicMaskSummary? = nil,
+        sceneJSON: Data,
+        provenance: Set<ScannerSceneProvenance>,
+        isFrozen: Bool
+    ) {
+        self.revision = revision
+        self.verticesMetres = verticesMetres
+        self.triangleIndices = triangleIndices
+        self.reviewTriangleInclusion = reviewTriangleInclusion
+        self.dynamicMaskSummary = dynamicMaskSummary
+        self.sceneJSON = sceneJSON
+        self.provenance = provenance
+        self.isFrozen = isFrozen
+    }
+}
+
+struct ScannerDynamicMaskSummary: Equatable, Sendable {
+    let sceneRevision: UInt64
+    let triangleCount: UInt64
+    let includedTriangleCount: UInt64
+    let excludedTriangleCount: UInt64
+    let appliedExclusionCount: UInt64
+    let staleExclusionCount: UInt64
 }
 
 enum ScannerWorkspaceSaveState: Equatable, Sendable {
@@ -100,6 +135,9 @@ protocol ScannerWorkspaceModeling: ObservableObject {
     var exportState: ScannerExportState { get }
     var captureAccounting: ScannerCaptureAccounting { get }
     var captureSession: ARSession? { get }
+    var targetSelectionState: NativeTargetSelectionState { get }
+    var reviewAppearanceBinding: AppearanceAdmittedBinding? { get }
+    var reviewAppearanceTextures: [AppearanceTextureResource] { get }
     var canConfirmPlanReference: Bool { get }
     var canShowLibrary: Bool { get }
     var canExport: Bool { get }
@@ -112,8 +150,14 @@ protocol ScannerWorkspaceModeling: ObservableObject {
     func exportSelectedProject()
     func openProject(id: UUID)
     func showLibrary()
+    func selectTarget(_ tap: NativeTargetTap)
     /// Applies only a caller-confirmed observed floor reference. It never uses
     /// the arbitrary AR world origin as an automatic physical-floor claim.
     func confirmPlanReference(projectFromFloor: simd_double4x4, cutHeightMetres: Double)
     func recoverFromCurrentIssue()
+}
+
+extension ScannerWorkspaceModeling {
+    var reviewAppearanceBinding: AppearanceAdmittedBinding? { nil }
+    var reviewAppearanceTextures: [AppearanceTextureResource] { [] }
 }
