@@ -11,11 +11,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <new>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -78,6 +80,9 @@ struct HSSSnapshot {
   std::shared_ptr<const hss::live::Snapshot> data;
   std::vector<uint8_t> triangle_inclusion;
   HSSDynamicMaskSummary dynamic_summary{};
+  HSSPlanAnnotationSummary plan_summary{};
+  std::string plan_json;
+  std::string annotation_json;
 };
 
 namespace {
@@ -449,6 +454,360 @@ uint64_t triangle_mask_fingerprint(const std::vector<uint8_t> &mask) {
   for (uint8_t value : mask)
     mix(value);
   return hash;
+}
+
+std::string json_quote(const std::string &value) {
+  constexpr char digits[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(value.size() + 2U);
+  result.push_back('"');
+  for (const unsigned char character : value) {
+    switch (character) {
+    case '"': result += "\\\""; break;
+    case '\\': result += "\\\\"; break;
+    case '\b': result += "\\b"; break;
+    case '\f': result += "\\f"; break;
+    case '\n': result += "\\n"; break;
+    case '\r': result += "\\r"; break;
+    case '\t': result += "\\t"; break;
+    default:
+      if (character < 0x20U) {
+        result += "\\u00";
+        result.push_back(digits[character >> 4U]);
+        result.push_back(digits[character & 0x0fU]);
+      } else {
+        result.push_back(static_cast<char>(character));
+      }
+    }
+  }
+  result.push_back('"');
+  return result;
+}
+
+std::string json_number(double value) {
+  std::ostringstream output;
+  output.imbue(std::locale::classic());
+  output << std::setprecision(17) << value;
+  return output.str();
+}
+
+template <typename Range, typename Writer>
+void json_array(std::string &output, const Range &range, Writer writer) {
+  output.push_back('[');
+  bool first = true;
+  for (const auto &value : range) {
+    if (!first)
+      output.push_back(',');
+    first = false;
+    writer(output, value);
+  }
+  output.push_back(']');
+}
+
+const char *plan_view(hss::plan_semantics::View value) {
+  using V = hss::plan_semantics::View;
+  switch (value) {
+  case V::kFloorFootprint: return "floor_footprint";
+  case V::kArchitecturalCut: return "architectural_cut";
+  case V::kReflectedCeiling: return "reflected_ceiling";
+  }
+  return "unsupported";
+}
+
+const char *reference_state(hss::plan_semantics::ReferenceState value) {
+  using R = hss::plan_semantics::ReferenceState;
+  switch (value) {
+  case R::kConfirmedFloor: return "confirmed_floor";
+  case R::kFloorUnknown: return "floor_unknown";
+  case R::kUnsupported: return "unsupported";
+  case R::kNotApplicable: return "not_applicable";
+  }
+  return "unsupported";
+}
+
+const char *boundary_state(hss::plan_semantics::BoundaryState value) {
+  using B = hss::plan_semantics::BoundaryState;
+  switch (value) {
+  case B::kClosedAccepted: return "closed_accepted";
+  case B::kOpen: return "open";
+  case B::kUnknown: return "unknown";
+  case B::kUnsupported: return "unsupported";
+  }
+  return "unsupported";
+}
+
+const char *availability(hss::plan_semantics::Availability value) {
+  using A = hss::plan_semantics::Availability;
+  switch (value) {
+  case A::kReady: return "ready";
+  case A::kProvisional: return "provisional";
+  case A::kUnavailable: return "unavailable";
+  case A::kUnsupported: return "unsupported";
+  case A::kNotApplicable: return "not_applicable";
+  }
+  return "unsupported";
+}
+
+const char *evidence_state(hss::plan_semantics::EvidenceState value) {
+  using E = hss::plan_semantics::EvidenceState;
+  switch (value) {
+  case E::kSupported: return "supported";
+  case E::kUnknown: return "unknown";
+  case E::kUnsupported: return "unsupported";
+  }
+  return "unsupported";
+}
+
+const char *evidence_kind(hss::plan_semantics::EvidenceKind value) {
+  using E = hss::plan_semantics::EvidenceKind;
+  switch (value) {
+  case E::kSurfaceIntersection: return "surface_intersection";
+  case E::kFloorJunction: return "floor_junction";
+  case E::kCeilingPatch: return "ceiling_patch";
+  case E::kUnknownRegion: return "unknown_region";
+  case E::kUnknownBoundary: return "unknown_boundary";
+  case E::kUnsupported: return "unsupported";
+  case E::kCapturedSection: return "captured_section";
+  }
+  return "unsupported";
+}
+
+const char *geometry_origin(hss::area::GeometryOrigin value) {
+  using O = hss::area::GeometryOrigin;
+  switch (value) {
+  case O::kObserved: return "observed";
+  case O::kFitted: return "fitted";
+  case O::kUserMeasured: return "user_measured";
+  case O::kInferred: return "inferred";
+  case O::kUnknown: return "unknown";
+  }
+  return "unknown";
+}
+
+const char *plan_issue(hss::plan_semantics::IssueCode value) {
+  using I = hss::plan_semantics::IssueCode;
+  switch (value) {
+  case I::kFloorReferenceUnknown: return "floor_reference_unknown";
+  case I::kFloorReferenceUnsupported: return "floor_reference_unsupported";
+  case I::kOpenBoundary: return "open_boundary";
+  case I::kUnknownBoundaryEvidence: return "unknown_boundary_evidence";
+  case I::kUnsupportedBoundaryEvidence: return "unsupported_boundary_evidence";
+  case I::kInferredGeometry: return "inferred_geometry";
+  case I::kQualityNotReady: return "quality_not_ready";
+  case I::kCeilingUnknownRegion: return "ceiling_unknown_region";
+  case I::kAreaNotApplicable: return "area_not_applicable";
+  }
+  return "unknown";
+}
+
+std::string serialize_plan(const hss::plan_semantics::PlanLayer &plan) {
+  std::string output = "{\"scene_revision\":" + json_quote(plan.scene_revision) +
+                       ",\"source_is_synthetic\":" +
+                       (plan.source_is_synthetic ? "true" : "false") +
+                       ",\"view\":" + json_quote(plan_view(plan.view)) +
+                       ",\"height\":{\"cut_height_m\":";
+  output += plan.height.cut_height_m ? json_number(*plan.height.cut_height_m)
+                                     : "null";
+  output += ",\"sampling_band_m\":";
+  output += plan.height.sampling_band_m
+                ? json_number(*plan.height.sampling_band_m)
+                : "null";
+  output += ",\"reference_state\":" +
+            json_quote(reference_state(plan.height.reference_state)) +
+            ",\"floor_reference_id\":";
+  output += plan.height.floor_reference_id.empty()
+                ? "null"
+                : json_quote(plan.height.floor_reference_id);
+  output += "},\"boundary_state\":" +
+            json_quote(boundary_state(plan.boundary_state)) +
+            ",\"validity\":" + json_quote(availability(plan.validity)) +
+            ",\"fragments\":";
+  json_array(output, plan.fragments, [](std::string &destination,
+                                        const auto &fragment) {
+    destination += "{\"id\":" + json_quote(fragment.id) +
+                   ",\"state\":" + json_quote(evidence_state(fragment.state)) +
+                   ",\"kind\":" + json_quote(evidence_kind(fragment.kind)) +
+                   ",\"geometry_origin\":" +
+                   json_quote(geometry_origin(fragment.geometry_origin)) +
+                   ",\"segment_m\":";
+    if (fragment.segment) {
+      destination += "[[" + json_number(fragment.segment->start_m.x_m) + "," +
+                     json_number(fragment.segment->start_m.y_m) + "],[" +
+                     json_number(fragment.segment->end_m.x_m) + "," +
+                     json_number(fragment.segment->end_m.y_m) + "]]";
+    } else {
+      destination += "null";
+    }
+    destination += ",\"source_height_range_m\":";
+    if (fragment.source_height_range_m) {
+      destination += "[" +
+                     json_number(fragment.source_height_range_m->minimum_m) +
+                     "," +
+                     json_number(fragment.source_height_range_m->maximum_m) +
+                     "]";
+    } else {
+      destination += "null";
+    }
+    destination += ",\"source_revision\":" +
+                   json_quote(fragment.source_revision) +
+                   ",\"support_ids\":";
+    json_array(destination, fragment.support_ids,
+               [](std::string &array, const std::string &support) {
+                 array += json_quote(support);
+               });
+    destination += "}";
+  });
+  output += ",\"area\":{\"policy\":" +
+            json_quote(plan.area.policy == hss::area::AreaPolicy::kInternalFinishedFace
+                           ? "internal_finished_face"
+                           : "net_fixed_obstructions") +
+            ",\"availability\":" +
+            json_quote(availability(plan.area.availability)) +
+            ",\"area_m2\":";
+  output += plan.area.area_m2 ? json_number(*plan.area.area_m2) : "null";
+  output += ",\"calculator_status\":";
+  output += plan.area.calculator_status
+                ? json_quote(hss::area::status_name(*plan.area.calculator_status))
+                : "null";
+  output += "},\"issues\":";
+  json_array(output, plan.issues,
+             [](std::string &destination, const auto &issue) {
+               destination += "{\"code\":" +
+                              json_quote(plan_issue(issue.code)) +
+                              ",\"target_id\":";
+               destination += issue.target_id.empty() ? "null"
+                                                       : json_quote(issue.target_id);
+               destination += "}";
+             });
+  output += "}";
+  return output;
+}
+
+const char *annotation_kind(hss::annotation_geometry::Kind value) {
+  using K = hss::annotation_geometry::Kind;
+  switch (value) {
+  case K::kLength: return "length";
+  case K::kAngle: return "angle";
+  case K::kHeight: return "height";
+  case K::kLabel: return "label";
+  }
+  return "label";
+}
+
+const char *annotation_source(hss::annotation_geometry::EvidenceSource value) {
+  using E = hss::annotation_geometry::EvidenceSource;
+  switch (value) {
+  case E::kObserved: return "observed";
+  case E::kFitted: return "fitted";
+  case E::kUserMeasured: return "user_measured";
+  case E::kInferred: return "inferred";
+  case E::kUnknown: return "unknown";
+  }
+  return "unknown";
+}
+
+const char *annotation_availability(
+    hss::annotation_geometry::Availability value) {
+  using A = hss::annotation_geometry::Availability;
+  switch (value) {
+  case A::kReady: return "ready";
+  case A::kProvisional: return "provisional";
+  case A::kUnavailable: return "unavailable";
+  }
+  return "unavailable";
+}
+
+const char *display_unit(hss::annotation_geometry::DisplayUnit value) {
+  using U = hss::annotation_geometry::DisplayUnit;
+  switch (value) {
+  case U::kMetres: return "metres";
+  case U::kMillimetres: return "millimetres";
+  case U::kFeet: return "feet";
+  }
+  return "metres";
+}
+
+std::string serialize_annotations(
+    const hss::annotation_geometry::Layout &layout) {
+  std::string output = "{\"scene_revision\":" +
+                       json_quote(layout.scene_revision) +
+                       ",\"annotations\":";
+  json_array(output, layout.annotations,
+             [](std::string &destination, const auto &resolved) {
+    const auto &annotation = resolved.annotation;
+    destination += "{\"id\":" + json_quote(annotation.id) +
+                   ",\"kind\":" + json_quote(annotation_kind(annotation.kind)) +
+                   ",\"evidence_source\":" +
+                   json_quote(annotation_source(annotation.evidence_source)) +
+                   ",\"source_revision\":" +
+                   json_quote(annotation.source_revision) +
+                   ",\"evidence_ids\":";
+    json_array(destination, annotation.evidence_ids,
+               [](std::string &array, const std::string &evidence) {
+                 array += json_quote(evidence);
+               });
+    destination += ",\"anchors\":";
+    json_array(destination, annotation.anchors,
+               [](std::string &array, const auto &anchor) {
+                 array += "{\"geometry_id\":" +
+                          json_quote(anchor.geometry_id) +
+                          ",\"position_m\":[" +
+                          json_number(anchor.position_m.x_m) + "," +
+                          json_number(anchor.position_m.y_m) + "]}";
+               });
+    destination += ",\"display_unit\":" +
+                   json_quote(display_unit(annotation.display_unit)) +
+                   ",\"display_precision\":" +
+                   std::to_string(annotation.display_precision) +
+                   ",\"uncertainty_m\":";
+    destination += annotation.uncertainty_m
+                       ? json_number(*annotation.uncertainty_m)
+                       : "null";
+    destination += ",\"user_measured_value_m\":";
+    destination += annotation.user_measured_value_m
+                       ? json_number(*annotation.user_measured_value_m)
+                       : "null";
+    destination += ",\"label\":" + json_quote(annotation.label) +
+                   ",\"availability\":" +
+                   json_quote(annotation_availability(resolved.availability)) +
+                   ",\"metric_value\":";
+    destination += resolved.metric_value ? json_number(*resolved.metric_value)
+                                         : "null";
+    destination += "}";
+  });
+  output += "}";
+  return output;
+}
+
+void build_plan_snapshot(const hss::live::Snapshot &source,
+                         HSSSnapshot *destination) {
+  auto &summary = destination->plan_summary;
+  std::memset(&summary, 0, sizeof(summary));
+  summary.abi_version = HSS_ABI_VERSION;
+  summary.struct_size = sizeof(summary);
+  summary.scene_revision = source.revision;
+  if (!source.plan)
+    return;
+  const auto &plan = *source.plan;
+  summary.plan_available = 1U;
+  summary.source_is_synthetic = plan.source_is_synthetic ? 1U : 0U;
+  summary.fragment_count = plan.fragments.size();
+  summary.plan_issue_count = plan.issues.size();
+  summary.view = static_cast<uint32_t>(plan.view);
+  summary.reference_state = static_cast<uint32_t>(plan.height.reference_state);
+  summary.boundary_state = static_cast<uint32_t>(plan.boundary_state);
+  summary.plan_availability = static_cast<uint32_t>(plan.validity);
+  summary.area_availability = static_cast<uint32_t>(plan.area.availability);
+  summary.has_area = plan.area.area_m2 ? 1U : 0U;
+  summary.area_m2 = plan.area.area_m2.value_or(0.0);
+  summary.cut_height_m = plan.height.cut_height_m.value_or(0.0);
+  summary.sampling_band_m = plan.height.sampling_band_m.value_or(0.0);
+  destination->plan_json = serialize_plan(plan);
+  if (source.annotations) {
+    summary.annotation_layout_available = 1U;
+    summary.annotation_count = source.annotations->annotations.size();
+    destination->annotation_json = serialize_annotations(*source.annotations);
+  }
 }
 
 void build_snapshot_mask(const HSSEngine &engine, HSSSnapshot *snapshot) {
@@ -1033,6 +1392,7 @@ extern "C" HSSStatus hss_engine_acquire_snapshot(const HSSEngine *engine,
     auto *snapshot = new HSSSnapshot();
     snapshot->data = engine->live.snapshot();
     build_snapshot_mask(*engine, snapshot);
+    build_plan_snapshot(*snapshot->data, snapshot);
     *out_snapshot = snapshot;
     return HSS_OK;
   } catch (const std::bad_alloc &) {
@@ -1154,6 +1514,58 @@ extern "C" HSSStatus hss_snapshot_copy_scene_json(const HSSSnapshot *snapshot,
     return copy_out(
         reinterpret_cast<const uint8_t *>(snapshot->data->json.data()),
         snapshot->data->json.size(), destination, capacity, required);
+  } catch (...) {
+    return HSS_INTERNAL_ERROR;
+  }
+}
+
+extern "C" HSSStatus hss_snapshot_get_plan_annotation_summary(
+    const HSSSnapshot *snapshot, HSSPlanAnnotationSummary *summary) {
+  if (summary != nullptr)
+    std::memset(summary, 0, sizeof(*summary));
+  try {
+    if (snapshot == nullptr || summary == nullptr)
+      return HSS_INVALID_ARGUMENT;
+    *summary = snapshot->plan_summary;
+    return HSS_OK;
+  } catch (...) {
+    return HSS_INTERNAL_ERROR;
+  }
+}
+
+extern "C" HSSStatus hss_snapshot_copy_plan_json(
+    const HSSSnapshot *snapshot, uint8_t *destination, uint64_t capacity,
+    uint64_t *required) {
+  if (required != nullptr)
+    *required = 0U;
+  try {
+    if (snapshot == nullptr || required == nullptr ||
+        (destination == nullptr && capacity != 0U))
+      return HSS_INVALID_ARGUMENT;
+    if (snapshot->plan_summary.plan_available == 0U)
+      return HSS_UNSUPPORTED_CAPABILITY;
+    return copy_out(
+        reinterpret_cast<const uint8_t *>(snapshot->plan_json.data()),
+        snapshot->plan_json.size(), destination, capacity, required);
+  } catch (...) {
+    return HSS_INTERNAL_ERROR;
+  }
+}
+
+extern "C" HSSStatus hss_snapshot_copy_annotation_json(
+    const HSSSnapshot *snapshot, uint8_t *destination, uint64_t capacity,
+    uint64_t *required) {
+  if (required != nullptr)
+    *required = 0U;
+  try {
+    if (snapshot == nullptr || required == nullptr ||
+        (destination == nullptr && capacity != 0U))
+      return HSS_INVALID_ARGUMENT;
+    if (snapshot->plan_summary.annotation_layout_available == 0U)
+      return HSS_UNSUPPORTED_CAPABILITY;
+    return copy_out(
+        reinterpret_cast<const uint8_t *>(snapshot->annotation_json.data()),
+        snapshot->annotation_json.size(), destination, capacity, required);
   } catch (...) {
     return HSS_INTERNAL_ERROR;
   }

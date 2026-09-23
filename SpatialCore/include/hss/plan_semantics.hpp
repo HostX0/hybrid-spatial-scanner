@@ -48,6 +48,11 @@ enum class EvidenceKind : uint8_t {
   kUnknownRegion,
   kUnknownBoundary,
   kUnsupported,
+  // An exact section of retained captured geometry at the declared height.
+  // Unlike kSurfaceIntersection, this carries no B-017 plane-intersection
+  // claim. Its segment and support IDs must already exist; assemble never
+  // extends or otherwise repairs it.
+  kCapturedSection,
 };
 
 struct HeightRange {

@@ -141,6 +141,47 @@ typedef struct HSSCounts {
  uint64_t boundary_node_count, boundary_edge_count, issue_count;
 } HSSCounts;
 
+enum {
+ HSS_PLAN_VIEW_FLOOR_FOOTPRINT=0,
+ HSS_PLAN_VIEW_ARCHITECTURAL_CUT=1,
+ HSS_PLAN_VIEW_REFLECTED_CEILING=2
+};
+enum {
+ HSS_PLAN_REFERENCE_CONFIRMED_FLOOR=0,
+ HSS_PLAN_REFERENCE_FLOOR_UNKNOWN=1,
+ HSS_PLAN_REFERENCE_UNSUPPORTED=2,
+ HSS_PLAN_REFERENCE_NOT_APPLICABLE=3
+};
+enum {
+ HSS_PLAN_BOUNDARY_CLOSED_ACCEPTED=0,
+ HSS_PLAN_BOUNDARY_OPEN=1,
+ HSS_PLAN_BOUNDARY_UNKNOWN=2,
+ HSS_PLAN_BOUNDARY_UNSUPPORTED=3
+};
+enum {
+ HSS_PLAN_AVAILABILITY_READY=0,
+ HSS_PLAN_AVAILABILITY_PROVISIONAL=1,
+ HSS_PLAN_AVAILABILITY_UNAVAILABLE=2,
+ HSS_PLAN_AVAILABILITY_UNSUPPORTED=3,
+ HSS_PLAN_AVAILABILITY_NOT_APPLICABLE=4
+};
+
+/* Revision-bound B-031/B-032 runtime state. plan_available==0 means this
+ * snapshot cannot be represented by the semantic contract without guessing;
+ * the JSON copy functions then return HSS_UNSUPPORTED_CAPABILITY. has_area is
+ * independent of geometric closure: provisional/unavailable plans never
+ * publish a clean numeric area. */
+typedef struct HSSPlanAnnotationSummary {
+ uint32_t abi_version, struct_size;
+ uint64_t scene_revision;
+ uint64_t fragment_count, plan_issue_count, annotation_count;
+ uint32_t plan_available, annotation_layout_available;
+ uint32_t view, reference_state, boundary_state;
+ uint32_t plan_availability, area_availability;
+ uint32_t source_is_synthetic, has_area;
+ double area_m2, cut_height_m, sampling_band_m;
+} HSSPlanAnnotationSummary;
+
 typedef struct HSSEngineStats {
  uint32_t abi_version, struct_size;
  uint64_t accepted_frames, dropped_frames, accepted_commands;
@@ -197,6 +238,12 @@ HSSStatus hss_snapshot_copy_triangles(const HSSSnapshot*, uint32_t*, uint64_t in
 HSSStatus hss_snapshot_copy_triangle_inclusion(const HSSSnapshot*, uint8_t*, uint64_t capacity, uint64_t* required);
 HSSStatus hss_snapshot_get_dynamic_mask_summary(const HSSSnapshot*, HSSDynamicMaskSummary*);
 HSSStatus hss_snapshot_copy_scene_json(const HSSSnapshot*, uint8_t*, uint64_t capacity, uint64_t* required_bytes);
+HSSStatus hss_snapshot_get_plan_annotation_summary(const HSSSnapshot*, HSSPlanAnnotationSummary*);
+/* Complete value-owned semantic snapshots, UTF-8 without a trailing NUL.
+ * Coordinates remain metres in the accepted floor frame. These documents are
+ * derived views, not replacements for scene.json or durable source records. */
+HSSStatus hss_snapshot_copy_plan_json(const HSSSnapshot*, uint8_t*, uint64_t capacity, uint64_t* required_bytes);
+HSSStatus hss_snapshot_copy_annotation_json(const HSSSnapshot*, uint8_t*, uint64_t capacity, uint64_t* required_bytes);
 /* No function permits C++ exceptions to cross this C boundary. Pointer/count
  * validation cannot make arbitrary dangling pointers safe; valid ownership is
  * a caller precondition. Errors never overwrite the last accepted snapshot. */
@@ -205,9 +252,11 @@ HSSStatus hss_snapshot_copy_scene_json(const HSSSnapshot*, uint8_t*, uint64_t ca
 static_assert(sizeof(HSSId)==16, "HSSId layout");
 static_assert(sizeof(HSSVec3d)==24, "HSSVec3d layout");
 static_assert(offsetof(HSSFrame, struct_size)==4, "message prefix");
+static_assert(offsetof(HSSPlanAnnotationSummary, struct_size)==4, "plan summary prefix");
 #else
 _Static_assert(sizeof(HSSId)==16, "HSSId layout");
 _Static_assert(sizeof(HSSVec3d)==24, "HSSVec3d layout");
 _Static_assert(offsetof(HSSFrame, struct_size)==4, "message prefix");
+_Static_assert(offsetof(HSSPlanAnnotationSummary, struct_size)==4, "plan summary prefix");
 #endif
 #endif

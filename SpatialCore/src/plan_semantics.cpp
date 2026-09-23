@@ -43,7 +43,8 @@ bool valid_evidence_kind(EvidenceKind value) {
          value == EvidenceKind::kCeilingPatch ||
          value == EvidenceKind::kUnknownRegion ||
          value == EvidenceKind::kUnknownBoundary ||
-         value == EvidenceKind::kUnsupported;
+         value == EvidenceKind::kUnsupported ||
+         value == EvidenceKind::kCapturedSection;
 }
 
 bool valid_geometry_origin(area::GeometryOrigin value) {
@@ -392,7 +393,8 @@ Result assemble(const Input &input, const Options &options) {
         const bool valid_plan_kind =
             (fragment.state == EvidenceState::kSupported &&
              (fragment.kind == EvidenceKind::kSurfaceIntersection ||
-              fragment.kind == EvidenceKind::kFloorJunction)) ||
+              fragment.kind == EvidenceKind::kFloorJunction ||
+              fragment.kind == EvidenceKind::kCapturedSection)) ||
             (fragment.state == EvidenceState::kUnknown &&
              fragment.kind == EvidenceKind::kUnknownBoundary) ||
             (fragment.state == EvidenceState::kUnsupported &&

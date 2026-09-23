@@ -123,6 +123,17 @@ std::vector<HSSVec3d> mesh_vertices(HSSEngine *engine) {
   return result;
 }
 
+bool has_typed_plan(HSSEngine *engine) {
+  HSSSnapshot *snapshot = nullptr;
+  check(hss_engine_acquire_snapshot(engine, &snapshot) == HSS_OK,
+        "acquire plan snapshot");
+  HSSPlanAnnotationSummary summary{};
+  check(hss_snapshot_get_plan_annotation_summary(snapshot, &summary) == HSS_OK,
+        "read plan summary");
+  hss_snapshot_release(snapshot);
+  return summary.plan_available != 0U;
+}
+
 bool same_vertices(const std::vector<HSSVec3d> &left,
                    const std::vector<HSSVec3d> &right) {
   if (left.size() != right.size())
@@ -275,6 +286,8 @@ void submit_baseline(HSSEngine *engine, HSSProjectStore *store,
         "edited metric scene is published");
   check(same_vertices(mesh_vertices(engine), raw_vertices),
         "editing preserves captured mesh buffers exactly");
+  check(!has_typed_plan(engine),
+        "unmapped edit cannot reuse stale pre-command plan semantics");
 
   const auto c4 = context(5U, 4U);
   HSSProjectCommandRecord record{};
@@ -339,6 +352,8 @@ int main() {
         "all durable source/control events replayed");
   check(scene_json(engine) == edited_scene && result_json(engine) == exact_result,
         "reopened scene and exact command result match accepted publication");
+  check(!has_typed_plan(engine),
+        "replay preserves explicit unavailable typed-plan state");
 
   hss_engine_destroy(engine);
   hss_project_store_destroy(store);

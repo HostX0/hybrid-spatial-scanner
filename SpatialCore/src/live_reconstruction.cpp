@@ -415,6 +415,141 @@ struct Reconstruction::Impl {
       return;
     b.regions.push_back({nodes, *result.area_m2, graph.outer.id, supports});
   }
+
+#if defined(HSS_ENABLE_PLAN_ANNOTATION_RUNTIME)
+  bool build_semantic_snapshot() {
+    namespace annotations = hss::annotation_geometry;
+    namespace plan = hss::plan_semantics;
+    auto &b = *build;
+    const std::string revision = std::to_string(b.out->revision);
+
+    std::vector<std::string> supports;
+    const auto add_support = [&supports](const std::string &value) {
+      if (std::find(supports.begin(), supports.end(), value) == supports.end())
+        supports.push_back(value);
+    };
+    for (const Edge &edge : b.edges)
+      add_support(edge.support);
+    if (supports.empty()) {
+      for (const auto &[key, anchor] : b.anchors)
+        add_support(support(key, anchor));
+    }
+    if (supports.empty())
+      return false;
+
+    plan::Input input;
+    input.scene_revision = revision;
+    input.source_is_synthetic = synthetic;
+    input.view = plan::View::kArchitecturalCut;
+    input.height.cut_height_m = cut;
+    input.height.sampling_band_m = 0.10;
+    input.height.reference_state =
+        floor_confirmed ? plan::ReferenceState::kConfirmedFloor
+                        : plan::ReferenceState::kFloorUnknown;
+    if (floor_confirmed)
+      input.height.floor_reference_id = id("floor-reference:" + basis());
+
+    for (const Edge &edge : b.edges) {
+      plan::Fragment fragment;
+      fragment.id = edge.identity;
+      fragment.state = plan::EvidenceState::kSupported;
+      fragment.kind = plan::EvidenceKind::kCapturedSection;
+      fragment.geometry_origin = area::GeometryOrigin::kFitted;
+      const Node &start = b.nodes[edge.a];
+      const Node &end = b.nodes[edge.b];
+      fragment.segment = plan::Segment2d{{start.uv.x, start.uv.y},
+                                         {end.uv.x, end.uv.y}};
+      fragment.source_height_range_m = plan::HeightRange{cut, cut};
+      fragment.source_revision = revision;
+      fragment.support_ids = {edge.support};
+      input.fragments.push_back(std::move(fragment));
+    }
+
+    const bool all_nodes_closed =
+        !b.nodes.empty() &&
+        std::all_of(b.nodes.begin(), b.nodes.end(),
+                    [](const Node &node) { return node.edges.size() == 2U; });
+    const bool one_classified_loop =
+        floor_confirmed && !b.metric_limit && b.regions.size() == 1U &&
+        b.regions.front().nodes.size() == b.edges.size() && all_nodes_closed;
+    const bool open = !b.metric_limit && !b.edges.empty() && !all_nodes_closed;
+
+    if (one_classified_loop) {
+      input.boundary_state = plan::BoundaryState::kClosedAccepted;
+    } else if (open) {
+      input.boundary_state = plan::BoundaryState::kOpen;
+    } else {
+      input.boundary_state = b.metric_limit
+                                 ? plan::BoundaryState::kUnsupported
+                                 : plan::BoundaryState::kUnknown;
+      plan::Fragment unresolved;
+      unresolved.id = id((b.metric_limit ? "unsupported-runtime-cut:"
+                                         : "unknown-runtime-boundary:") +
+                         revision);
+      unresolved.state = b.metric_limit ? plan::EvidenceState::kUnsupported
+                                         : plan::EvidenceState::kUnknown;
+      unresolved.kind = b.metric_limit ? plan::EvidenceKind::kUnsupported
+                                        : plan::EvidenceKind::kUnknownBoundary;
+      unresolved.geometry_origin = area::GeometryOrigin::kUnknown;
+      unresolved.source_revision = revision;
+      unresolved.support_ids = supports;
+      input.fragments.push_back(std::move(unresolved));
+    }
+
+    area::Input area_input;
+    area_input.policy = area::AreaPolicy::kInternalFinishedFace;
+    area_input.outer.id = one_classified_loop
+                              ? b.regions.front().identity
+                              : id("runtime-plan-boundary:" + revision);
+    area_input.outer.topology_state =
+        one_classified_loop
+            ? area::TopologyState::kAccepted
+            : (open ? area::TopologyState::kIncomplete
+                    : area::TopologyState::kUnaccepted);
+    area_input.outer.provenance.geometry_origin = area::GeometryOrigin::kFitted;
+    area_input.outer.provenance.quality_state = area::QualityState::kProvisional;
+    area_input.outer.provenance.source_revision = revision;
+    area_input.outer.provenance.support_ids = supports;
+    if (one_classified_loop) {
+      for (const size_t node_index : b.regions.front().nodes) {
+        const auto &uv = b.nodes[node_index].uv;
+        area_input.outer.vertices_m.push_back({uv.x, uv.y});
+      }
+    }
+    input.area_input = std::move(area_input);
+
+    const plan::Result assembled = plan::assemble(input);
+    if (assembled.status != plan::Status::kOk || !assembled.layer)
+      return false;
+    b.out->plan = std::move(*assembled.layer);
+
+    annotations::Input annotation_input;
+    annotation_input.plan = *b.out->plan;
+    for (const plan::Fragment &fragment : b.out->plan->fragments) {
+      if (fragment.state != plan::EvidenceState::kSupported ||
+          !fragment.segment)
+        continue;
+      annotations::Annotation annotation;
+      annotation.id = id("runtime-length:" + fragment.id + ":" + revision);
+      annotation.kind = annotations::Kind::kLength;
+      annotation.evidence_source = annotations::EvidenceSource::kFitted;
+      annotation.source_revision = revision;
+      annotation.evidence_ids = fragment.support_ids;
+      annotation.anchors = {
+          {fragment.id, fragment.segment->start_m},
+          {fragment.id, fragment.segment->end_m},
+      };
+      annotation_input.annotations.push_back(std::move(annotation));
+    }
+    const annotations::Result resolved = annotations::resolve(annotation_input);
+    if (resolved.status != annotations::Status::kOk || !resolved.layout) {
+      b.out->plan.reset();
+      return false;
+    }
+    b.out->annotations = std::move(*resolved.layout);
+    return true;
+  }
+#endif
 };
 Reconstruction::Reconstruction(const HSSConfig &c)
     : impl_(std::make_unique<Impl>(c)) {
@@ -775,6 +910,12 @@ bool Reconstruction::advance() {
                 "Open or ambiguous measured slice; no invented gap closure");
         break;
       }
+#if defined(HSS_ENABLE_PLAN_ANNOTATION_RUNTIME)
+    if (!x.build_semantic_snapshot())
+      x.issue("plan_semantics_unavailable",
+              "Runtime cut cannot be represented by the revision-bound plan "
+              "and annotation contracts without invented lineage");
+#endif
     b.out->node_count = b.nodes.size();
     b.out->edge_count = b.edges.size();
     b.out->json = x.prefix(b.out->revision) + ",\"epochs\":[" + b.epoch_json +

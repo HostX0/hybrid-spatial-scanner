@@ -29,6 +29,7 @@ target_include_directories(SpatialCore
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/SpatialCore/include>
 )
 target_compile_features(SpatialCore PUBLIC cxx_std_20)
+target_compile_definitions(SpatialCore PRIVATE HSS_ENABLE_PLAN_ANNOTATION_RUNTIME=1)
 target_compile_options(SpatialCore PRIVATE -Wall -Wextra -Werror -Wpedantic)
 
 add_library(hss_robust_plane_fit STATIC
@@ -324,7 +325,7 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_link_options(hss_privacy_policy INTERFACE -fsanitize=address,undefined)
 endif()
 
-target_link_libraries(SpatialCore PUBLIC hss_robust_plane_fit hss_boundary_graph hss_topology_protection hss_ring_net_area hss_scene_editing hss_dynamic_provenance)
+target_link_libraries(SpatialCore PUBLIC hss_robust_plane_fit hss_boundary_graph hss_topology_protection hss_ring_net_area hss_scene_editing hss_dynamic_provenance hss_annotation_geometry)
 
 if(HSS_BUILD_TESTS)
 add_executable(abi_smoke tests/abi_smoke.c)
@@ -570,6 +571,22 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_link_options(hss_live_reconstruction_test PRIVATE -fsanitize=address,undefined)
 endif()
 add_test(NAME hss_live_reconstruction COMMAND hss_live_reconstruction_test)
+add_executable(hss_plan_annotation_runtime_test
+  tests/hss_plan_annotation_runtime_test.cpp
+)
+target_link_libraries(hss_plan_annotation_runtime_test PRIVATE SpatialCore)
+target_compile_options(hss_plan_annotation_runtime_test PRIVATE
+  -Wall -Wextra -Werror -Wpedantic
+)
+if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+ target_compile_options(hss_plan_annotation_runtime_test PRIVATE
+   -fsanitize=address,undefined -fno-omit-frame-pointer
+ )
+ target_link_options(hss_plan_annotation_runtime_test PRIVATE
+   -fsanitize=address,undefined
+ )
+endif()
+add_test(NAME hss_plan_annotation_runtime COMMAND hss_plan_annotation_runtime_test)
 add_executable(hss_engine_scene_editing_adapter_test tests/hss_engine_scene_editing_adapter_test.cpp)
 target_link_libraries(hss_engine_scene_editing_adapter_test PRIVATE SpatialCore)
 target_compile_options(hss_engine_scene_editing_adapter_test PRIVATE -Wall -Wextra -Werror -Wpedantic)

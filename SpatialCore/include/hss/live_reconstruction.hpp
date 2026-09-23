@@ -1,4 +1,5 @@
 #pragma once
+#include "hss/annotation_geometry.hpp"
 #include "hss/bounded_ingress.hpp"
 #include <memory>
 #include <string>
@@ -31,6 +32,10 @@ struct Snapshot {
   std::vector<HSSVec3d> vertices;
   std::vector<uint32_t> triangles;
   std::string json;
+  // Present only when the complete accepted runtime cut can be represented by
+  // the B-031/B-032 contracts without repairing geometry or inventing lineage.
+  std::optional<plan_semantics::PlanLayer> plan;
+  std::optional<annotation_geometry::Layout> annotations;
 };
 class Reconstruction {
 public:
