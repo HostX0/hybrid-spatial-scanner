@@ -69,7 +69,7 @@
   ],
   "local_sha256": {
     "SpatialCore/include/hss/mesh_anchor_patch_plan.hpp": "4643ce1ee3aa94355c96b095dca8213d552fdc9fc72554499459dfd8623bb7d8",
-    "tests/hss_mesh_anchor_patch_plan_test.cpp": "cbd67987183265fae5044b017acd610b7dc015d31694cf9d559c3a965cab4b6b",
+    "tests/hss_mesh_anchor_patch_plan_test.cpp": "c96752403cacde345df5e68e3586a026cf4e9a976c66b0ed45e600c760e29b62",
     "tools/verify_mesh_anchor_patch_plan.py": "797916c33dba588e8ffd69438178b529ae66e0141133745c2675d0f7ed97eaf7"
   },
   "verification_scope_note": "The private repository could not be materialized because github.com DNS resolution failed in the connected container. The new files were tested against contract-compatible local transcriptions of authenticated PR #6 dependency headers; this is not full repository CMake/CTest evidence.",
