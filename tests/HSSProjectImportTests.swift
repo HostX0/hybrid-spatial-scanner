@@ -21,6 +21,52 @@ final class HSSProjectImportTests: XCTestCase {
         XCTAssertThrowsError(try HSSImportedProjectMetadata.parse(data))
     }
 
+    @MainActor
+    func testPublicationFailureRollsBackOnlyThisNewlyMovedProject() async throws {
+        enum InjectedFailure: Error { case catalog }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hss-import-adoption-\(UUID().uuidString)")
+        let staged = root.appendingPathComponent("stage/project")
+        let destination = root.appendingPathComponent("library/project")
+        try FileManager.default.createDirectory(at: staged, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))
+        try Data("staged".utf8).write(to: staged.appendingPathComponent("marker"))
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        do {
+            _ = try await HSSProjectImportAdoption.adopt(
+                stagedProject: staged, destination: destination,
+                validate: { "validated" },
+                publish: { _ in throw InjectedFailure.catalog }
+            )
+            XCTFail("Injected catalog publication failure must escape adoption.")
+        } catch InjectedFailure.catalog {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        }
+    }
+
+    @MainActor
+    func testExistingDestinationIsNeverRemovedByFailedAdoption() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hss-import-existing-\(UUID().uuidString)")
+        let staged = root.appendingPathComponent("stage/project")
+        let destination = root.appendingPathComponent("library/project")
+        try FileManager.default.createDirectory(at: staged, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try Data("existing".utf8).write(to: destination.appendingPathComponent("marker"))
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        do {
+            _ = try await HSSProjectImportAdoption.adopt(
+                stagedProject: staged, destination: destination,
+                validate: { "unreachable" }, publish: { _ in }
+            )
+            XCTFail("An existing project must prevent adoption.")
+        } catch HSSProjectImportError.projectAlreadyExists {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: staged.path))
+            XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("marker")), Data("existing".utf8))
+        }
+    }
+
     private func metadata(projectID: UUID, synthetic: Bool) -> Data {
         let hex = projectID.hssDirectoryName
         let sourceKind = synthetic ? "true" : "false"

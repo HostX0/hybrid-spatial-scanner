@@ -15,6 +15,39 @@ enum HSSProjectImportError: LocalizedError {
     }
 }
 
+/// Final import adoption is intentionally separate from archive staging. Once
+/// the private staged directory is moved into the library, every following
+/// validation and catalog write belongs to the same rollback boundary.
+@MainActor
+enum HSSProjectImportAdoption {
+    static func adopt<Value>(
+        fileManager: FileManager = .default,
+        stagedProject: URL,
+        destination: URL,
+        validate: () async throws -> Value,
+        publish: (Value) throws -> Void
+    ) async throws -> Value {
+        guard !fileManager.fileExists(atPath: destination.path) else {
+            throw HSSProjectImportError.projectAlreadyExists
+        }
+        var movedDestination = false
+        do {
+            try fileManager.moveItem(at: stagedProject, to: destination)
+            movedDestination = true
+            let value = try await validate()
+            try publish(value)
+            return value
+        } catch {
+            // Never remove a pre-existing project. `movedDestination` becomes
+            // true only after this call moved the private staging directory.
+            if movedDestination {
+                try? fileManager.removeItem(at: destination)
+            }
+            throw error
+        }
+    }
+}
+
 struct HSSImportedProjectMetadata: Equatable, Sendable {
     let projectID: UUID
     let sourceIsSynthetic: Bool

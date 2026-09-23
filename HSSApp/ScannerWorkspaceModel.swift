@@ -259,35 +259,45 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 _ = try await candidate!.replayCommittedSource()
                 try await candidate!.drain()
                 candidate = nil
-                try FileManager.default.moveItem(at: projectDirectory, to: finalDirectory)
-                try? FileManager.default.removeItem(at: stageRoot)
-
-                let runtime = try HSSProjectRuntime(
-                    projectID: metadata.projectID,
-                    captureID: UUID(),
-                    sourceIsSynthetic: metadata.sourceIsSynthetic,
-                    trustedRoot: trustedRoot,
-                    openMode: .openExisting
-                )
-                let replay = try await runtime.replayCommittedSource()
-                try await runtime.drain()
                 let provenance: Set<ScannerSceneProvenance> = metadata.sourceIsSynthetic
                     ? [.syntheticTest, .importedReplay] : [.importedReplay]
-                let snapshot = try await runtime.snapshot(provenance: provenance, frozen: true)
                 let entry = WorkspaceCatalogEntry(
                     id: metadata.projectID, captureID: UUID(),
-                    name: "Imported \(metadata.projectID.uuidString.prefix(8))",
-                    updatedAt: Date(), sceneRevision: replay.durableRevision,
+                    name: "Imported \(metadata.projectID.uuidString.prefix(8))", updatedAt: Date(),
+                    sceneRevision: 0,
                     state: .frozen, sourceIsSynthetic: metadata.sourceIsSynthetic
                 )
-                try publishCatalogEntry(entry)
-                self.runtime = runtime
-                selectedCatalogEntry = entry
+                let adopted = try await HSSProjectImportAdoption.adopt(
+                    stagedProject: projectDirectory, destination: finalDirectory,
+                    validate: {
+                        let runtime = try HSSProjectRuntime(
+                            projectID: metadata.projectID,
+                            captureID: UUID(),
+                            sourceIsSynthetic: metadata.sourceIsSynthetic,
+                            trustedRoot: trustedRoot,
+                            openMode: .openExisting
+                        )
+                        let replay = try await runtime.replayCommittedSource()
+                        try await runtime.drain()
+                        let snapshot = try await runtime.snapshot(provenance: provenance, frozen: true)
+                        return (runtime, replay, snapshot)
+                    },
+                    publish: { adopted in
+                        var published = entry
+                        published.sceneRevision = adopted.1.durableRevision
+                        try publishCatalogEntry(published)
+                    }
+                )
+                try? FileManager.default.removeItem(at: stageRoot)
+                var adoptedEntry = entry
+                adoptedEntry.sceneRevision = adopted.1.durableRevision
+                self.runtime = adopted.0
+                selectedCatalogEntry = adoptedEntry
                 selectedProjectID = entry.id
-                assignSelectedName(entry.name)
-                latestSnapshot = snapshot
+                assignSelectedName(adoptedEntry.name)
+                latestSnapshot = adopted.2
                 observedProvenance = provenance
-                nextEventSequence = max(1, snapshot.revision + 1)
+                nextEventSequence = max(1, adopted.2.revision + 1)
                 resetTargetSelection()
                 saveState = .clean
                 exportState = .idle
