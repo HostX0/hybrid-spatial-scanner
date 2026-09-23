@@ -75,6 +75,40 @@ final class CalibratedOverlayMapperTests: XCTestCase {
         )
     }
 
+    func testProductOverlayUsesCurrentCameraViewportGeneration() {
+        let frame = OverlayFrameIdentity(epoch: 4, sequence: 12, timestamp: 10)
+        let sourceViewport = OverlayViewport(
+            width: 200, height: 400, orientation: .portrait, generation: 3
+        )
+        let changedViewport = OverlayViewport(
+            width: 200, height: 400, orientation: .portrait, generation: 4
+        )
+        let transform = OverlayDisplayTransform(
+            frame: frame, viewport: sourceViewport,
+            a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0
+        )
+        let guidance = ScannerWorkspacePresentation.TargetGuidance(
+            state: .confirmed(.observed),
+            title: "Target",
+            detail: "Observed",
+            overlay: .init(
+                observedDepthPixel: SIMD2(1.5, 0),
+                calibration: fixtureCalibration(),
+                frame: frame,
+                displayTransform: transform,
+                currentEpoch: 4,
+                maximumFrameAge: 0.1
+            ),
+            currentViewport: changedViewport
+        )
+
+        XCTAssertNil(ScannerTargetOverlayProjection.displayedPoint(
+            guidance: guidance,
+            renderedSize: CGSize(width: 200, height: 400),
+            now: 10.02
+        ))
+    }
+
     func testRejectsStaleEpochAndInvalidCalibrationWithoutSynthesizingAPoint() {
         let frame = OverlayFrameIdentity(epoch: 4, sequence: 12, timestamp: 10)
         let viewport = OverlayViewport(width: 200, height: 400, orientation: .portrait, generation: 3)

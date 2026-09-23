@@ -106,7 +106,6 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     private var isAssigningSelectedName = false
     private var observedProvenance: Set<ScannerSceneProvenance> = []
     private var didReportDepthKeyframeCapacity = false
-    private var latestTargetFrame: NormalizedSceneDepthFrame?
     private var queuedTargetSourceFrames: [SceneDepthFrameIdentity] = []
     private var acceptedTargetSourceFrames: [SceneDepthFrameIdentity] = []
     private var pendingTargetCandidate: NativeTargetCandidate?
@@ -358,39 +357,30 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     func selectTarget(_ tap: NativeTargetTap) {
-        guard phase == .capturing,
-              let arFrame = captureSession?.currentFrame else {
+        guard phase == .capturing else {
             setPendingTarget(.captureUnavailable)
             return
         }
-        guard let normalizedFrame = latestTargetFrame else {
+        guard let source = captureCoordinator.targetSelectionSource(viewport: tap.viewport) else {
             setPendingTarget(.missingCurrentDepthFrame)
             return
         }
+        let normalizedFrame = source.normalizedFrame
         guard let currentEpoch = captureCoordinator.epochRelocalization.currentEpoch,
               let projectFromWorld = acceptedEpochProjectTransforms[currentEpoch] else {
             setPendingTarget(.missingAcceptedEpochTransform)
             return
         }
-        guard let overlay = ARFrameCalibratedOverlayAdapter.makeSnapshot(
-            frame: arFrame,
-            sessionEpoch: normalizedFrame.identity.sessionEpoch,
-            sequence: normalizedFrame.identity.sequence,
-            viewport: tap.viewport
-        ) else {
-            setPendingTarget(.missingCurrentDepthFrame)
-            return
-        }
         switch NativeTargetSelectionAdapter.prepare(
             tap: tap,
             normalizedFrame: normalizedFrame,
-            overlayCalibration: overlay.calibration,
-            overlayFrame: overlay.frame,
-            displayTransform: overlay.displayTransform,
+            overlayCalibration: source.calibration,
+            overlayFrame: source.overlayFrame,
+            displayTransform: source.displayTransform,
             currentEpoch: currentEpoch,
             projectFromWorld: projectFromWorld,
-            now: arFrame.timestamp,
-            maximumFrameAge: 0
+            now: ProcessInfo.processInfo.systemUptime,
+            maximumFrameAge: 0.25
         ) {
         case .failure(let reason):
             setPendingTarget(reason)
@@ -518,7 +508,6 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     private func receive(_ frame: NormalizedSceneDepthFrame) {
-        latestTargetFrame = frame
         let retained = keyframeSelector.shouldRetain(frame)
         captureAccounting = keyframeSelector.accounting
         guard retained else {
@@ -791,7 +780,6 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     private func resetTargetSelection() {
-        latestTargetFrame = nil
         queuedTargetSourceFrames.removeAll(keepingCapacity: true)
         acceptedTargetSourceFrames.removeAll(keepingCapacity: true)
         pendingTargetCandidate = nil

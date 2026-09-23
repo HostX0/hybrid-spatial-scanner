@@ -9,17 +9,21 @@ import UIKit
 enum ARFrameCalibratedOverlayAdapter {
     static func makeSnapshot(
         frame: ARFrame,
-        sessionEpoch: UInt64,
-        sequence: UInt64,
+        matching normalizedFrame: NormalizedSceneDepthFrame,
         viewport: OverlayViewport
     ) -> (calibration: OverlayDepthCalibration, frame: OverlayFrameIdentity, displayTransform: OverlayDisplayTransform)? {
-        guard let sceneDepth = frame.sceneDepth,
+        guard frame.timestamp == normalizedFrame.identity.monotonicTimestamp,
+              let sceneDepth = frame.sceneDepth,
               let interfaceOrientation = uiOrientation(for: viewport.orientation) else {
             return nil
         }
         let imageResolution = frame.camera.imageResolution
         let intrinsics = frame.camera.intrinsics
-        let identity = OverlayFrameIdentity(epoch: sessionEpoch, sequence: sequence, timestamp: frame.timestamp)
+        let identity = OverlayFrameIdentity(
+            epoch: normalizedFrame.identity.sessionEpoch,
+            sequence: normalizedFrame.identity.sequence,
+            timestamp: frame.timestamp
+        )
         let transform = frame.displayTransform(
             for: interfaceOrientation,
             viewportSize: CGSize(width: CGFloat(viewport.width), height: CGFloat(viewport.height))

@@ -76,6 +76,53 @@ final class NativeTargetSelectionTests: XCTestCase {
         ), .lowConfidenceDepth)
     }
 
+    func testNewerFrameCannotMasqueradeAndDelayedRetainedFrameCanConfirm() throws {
+        let retainedFrame = normalizedFrame()
+        let viewport = OverlayViewport(
+            width: 400, height: 400, orientation: .portrait, generation: 9
+        )
+        let newerOverlayFrame = OverlayFrameIdentity(epoch: 3, sequence: 13, timestamp: 5.01)
+        let newerTransform = OverlayDisplayTransform(
+            frame: newerOverlayFrame, viewport: viewport,
+            a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0
+        )
+
+        XCTAssertEqual(rejection(
+            frame: retainedFrame, viewport: viewport,
+            overlayFrame: newerOverlayFrame, transform: newerTransform, currentEpoch: 3,
+            now: 5.01, maximumFrameAge: 0.25
+        ), .frameMismatch, "A newer ARFrame must not inherit the retained frame's identity.")
+
+        let retainedOverlayFrame = OverlayFrameIdentity(epoch: 3, sequence: 12, timestamp: 5)
+        let retainedTransform = OverlayDisplayTransform(
+            frame: retainedOverlayFrame, viewport: viewport,
+            a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0
+        )
+        let prepared = NativeTargetSelectionAdapter.prepare(
+            tap: NativeTargetTap(screenPoint: SIMD2(250, 250), viewport: viewport),
+            normalizedFrame: retainedFrame,
+            overlayCalibration: calibration(),
+            overlayFrame: retainedOverlayFrame,
+            displayTransform: retainedTransform,
+            currentEpoch: 3,
+            projectFromWorld: identityMatrix(),
+            now: 5.20,
+            maximumFrameAge: 0.25
+        )
+        let candidate = try XCTUnwrap(try? prepared.get())
+        let confirmed = NativeTargetSelectionAdapter.confirm(
+            candidate,
+            acceptedSourceFrame: retainedFrame.identity,
+            currentSceneRevision: 7
+        )
+        XCTAssertEqual(confirmed?.sceneRevision, 7)
+        XCTAssertEqual(rejection(
+            frame: retainedFrame, viewport: viewport,
+            overlayFrame: retainedOverlayFrame, transform: retainedTransform, currentEpoch: 3,
+            now: 5.26, maximumFrameAge: 0.25
+        ), .staleFrame)
+    }
+
     func testReviewMaskChangesDerivedTrianglesWithoutChangingRawTopology() {
         let snapshot = ScannerSceneSnapshot(
             revision: 4,
@@ -103,7 +150,9 @@ final class NativeTargetSelectionTests: XCTestCase {
         viewport: OverlayViewport,
         overlayFrame: OverlayFrameIdentity,
         transform: OverlayDisplayTransform,
-        currentEpoch: UInt64
+        currentEpoch: UInt64,
+        now: TimeInterval = 5,
+        maximumFrameAge: TimeInterval = 0
     ) -> NativeTargetPendingReason? {
         let result = NativeTargetSelectionAdapter.prepare(
             tap: NativeTargetTap(screenPoint: SIMD2(250, 250), viewport: viewport),
@@ -113,8 +162,8 @@ final class NativeTargetSelectionTests: XCTestCase {
             displayTransform: transform,
             currentEpoch: currentEpoch,
             projectFromWorld: identityMatrix(),
-            now: 5,
-            maximumFrameAge: 0
+            now: now,
+            maximumFrameAge: maximumFrameAge
         )
         if case .failure(let reason) = result { return reason }
         return nil

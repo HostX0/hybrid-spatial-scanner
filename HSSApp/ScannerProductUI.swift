@@ -118,6 +118,9 @@ struct ScannerWorkspacePresentation: Equatable {
         let title: String
         let detail: String
         let overlay: CalibratedOverlay?
+        /// Actual camera-view state at presentation time. A nil or changed
+        /// viewport suppresses the marker until a fresh selection is admitted.
+        let currentViewport: OverlayViewport?
     }
 
     let mode: Mode
@@ -605,11 +608,14 @@ private struct ScannerTargetGuidanceCard: View {
 /// orientation agree. A rejected mapping intentionally produces no marker.
 private struct ScannerCalibratedTargetOverlay: View {
     let guidance: ScannerWorkspacePresentation.TargetGuidance
-    @State private var orientation: OverlayPresentationOrientation?
 
     var body: some View {
         GeometryReader { proxy in
-            if let point = displayedPoint(in: proxy.size) {
+            if let point = ScannerTargetOverlayProjection.displayedPoint(
+                guidance: guidance,
+                renderedSize: proxy.size,
+                now: ProcessInfo.processInfo.systemUptime
+            ) {
                 Image(systemName: "scope")
                     .font(.title2.weight(.bold))
                     .foregroundStyle(ScannerProductTheme.accent)
@@ -618,23 +624,20 @@ private struct ScannerCalibratedTargetOverlay: View {
                     .accessibilityHidden(true)
             }
         }
-        .onAppear { orientation = currentOrientation() }
-        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
-            let updated = currentOrientation()
-            if updated != orientation {
-                orientation = updated
-            }
-        }
     }
+}
 
-    private func displayedPoint(in size: CGSize) -> SIMD2<Float>? {
+enum ScannerTargetOverlayProjection {
+    static func displayedPoint(
+        guidance: ScannerWorkspacePresentation.TargetGuidance,
+        renderedSize: CGSize,
+        now: TimeInterval
+    ) -> SIMD2<Float>? {
         guard let source = guidance.overlay,
-              let orientation,
-              size.width > 0, size.height > 0 else { return nil }
-        let viewport = OverlayViewport(
-            width: Float(size.width), height: Float(size.height),
-            orientation: orientation, generation: source.displayTransform.viewport.generation
-        )
+              let viewport = guidance.currentViewport,
+              renderedSize.width > 0, renderedSize.height > 0,
+              viewport.width == Float(renderedSize.width),
+              viewport.height == Float(renderedSize.height) else { return nil }
         let projection = CalibratedOverlayMapper.project(
             observedDepthPixel: source.observedDepthPixel,
             calibration: source.calibration,
@@ -642,22 +645,11 @@ private struct ScannerCalibratedTargetOverlay: View {
             displayTransform: source.displayTransform,
             currentViewport: viewport,
             currentEpoch: source.currentEpoch,
-            now: ProcessInfo.processInfo.systemUptime,
+            now: now,
             maximumFrameAge: source.maximumFrameAge
         )
         if case let .displayed(point) = projection { return point.point }
         return nil
-    }
-
-    private func currentOrientation() -> OverlayPresentationOrientation? {
-        switch UIDevice.current.orientation {
-        case .portrait: .portrait
-        case .portraitUpsideDown: .portraitUpsideDown
-        // UIDevice and UI interface landscape names are opposite.
-        case .landscapeLeft: .landscapeRight
-        case .landscapeRight: .landscapeLeft
-        default: nil
-        }
     }
 }
 

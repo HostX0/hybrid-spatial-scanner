@@ -46,6 +46,13 @@ struct EffectiveCaptureConfigurationReport: Equatable, Sendable {
     let fallbackReason: String?
 }
 
+struct CaptureTargetSelectionSource: Sendable {
+    let normalizedFrame: NormalizedSceneDepthFrame
+    let calibration: OverlayDepthCalibration
+    let overlayFrame: OverlayFrameIdentity
+    let displayTransform: OverlayDisplayTransform
+}
+
 enum CaptureTrackingLimitation: String, Equatable, Sendable {
     case initializing
     case excessiveMotion
@@ -202,6 +209,10 @@ protocol CaptureSessionRunning: AnyObject {
     var sceneDepthIngestionHandler: ((SceneDepthIngestionResult) -> Void)? { get set }
     var meshAnchorLifecycleHandler: ((MeshAnchorLifecycleResult) -> Void)? { get set }
     var epochStampedMeshLifecycleHandler: ((EpochStampedMeshLifecycleResult) -> Void)? { get set }
+    func targetSelectionSource(
+        matching identity: SceneDepthFrameIdentity,
+        viewport: OverlayViewport
+    ) -> CaptureTargetSelectionSource?
     func run(configuration: CaptureSessionRunConfiguration) throws -> CaptureSessionRunConfiguration
     func setCaptureEpoch(_ epoch: UInt64)
     func stop()
@@ -218,6 +229,15 @@ extension CaptureSessionRunning {
 
     func setCaptureEpoch(_ epoch: UInt64) {
         _ = epoch
+    }
+
+    func targetSelectionSource(
+        matching identity: SceneDepthFrameIdentity,
+        viewport: OverlayViewport
+    ) -> CaptureTargetSelectionSource? {
+        _ = identity
+        _ = viewport
+        return nil
     }
 }
 
@@ -260,6 +280,53 @@ enum SystemARSessionDriverError: Error {
     case effectiveConfigurationUnavailable
 }
 
+/// Retains a short history of immutable ARFrame references with normalized
+/// value-copies made from those exact callbacks. Looking up by accepted identity
+/// prevents a newer camera callback from masquerading as the displayed frame.
+private final class RetainedTargetSelectionFrameStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private let capacity = 8
+    private var retained: [(arFrame: ARFrame, normalizedFrame: NormalizedSceneDepthFrame)] = []
+
+    func replace(arFrame: ARFrame, normalizedFrame: NormalizedSceneDepthFrame) {
+        guard arFrame.timestamp == normalizedFrame.identity.monotonicTimestamp else { return }
+        lock.lock()
+        retained.removeAll { $0.normalizedFrame.identity == normalizedFrame.identity }
+        retained.append((arFrame, normalizedFrame))
+        if retained.count > capacity {
+            retained.removeFirst(retained.count - capacity)
+        }
+        lock.unlock()
+    }
+
+    func source(
+        matching identity: SceneDepthFrameIdentity,
+        viewport: OverlayViewport
+    ) -> CaptureTargetSelectionSource? {
+        lock.lock()
+        let value = retained.last { $0.normalizedFrame.identity == identity }
+        lock.unlock()
+        guard let value,
+              let overlay = ARFrameCalibratedOverlayAdapter.makeSnapshot(
+                frame: value.arFrame,
+                matching: value.normalizedFrame,
+                viewport: viewport
+              ) else { return nil }
+        return CaptureTargetSelectionSource(
+            normalizedFrame: value.normalizedFrame,
+            calibration: overlay.calibration,
+            overlayFrame: overlay.frame,
+            displayTransform: overlay.displayTransform
+        )
+    }
+
+    func clear() {
+        lock.lock()
+        retained.removeAll(keepingCapacity: true)
+        lock.unlock()
+    }
+}
+
 /// The only production owner of an ARSession. No RoomPlan session or second
 /// camera session is created by this spike.
 @MainActor
@@ -269,6 +336,7 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
     nonisolated private let frameIdentity: CaptureEventIdentitySequence
     nonisolated private let deliveryMailbox = CaptureDriverDeliveryMailbox()
     nonisolated private let meshAnchorStore = MeshAnchorLifecycleStore()
+    nonisolated private let targetSelectionFrameStore = RetainedTargetSelectionFrameStore()
     var eventHandler: ((CaptureSessionEvent) -> Void)?
     var sceneDepthIngestionHandler: ((SceneDepthIngestionResult) -> Void)?
     var meshAnchorLifecycleHandler: ((MeshAnchorLifecycleResult) -> Void)?
@@ -289,7 +357,15 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
     }
 
     func setCaptureEpoch(_ epoch: UInt64) {
+        targetSelectionFrameStore.clear()
         frameIdentity.transition(to: epoch)
+    }
+
+    func targetSelectionSource(
+        matching identity: SceneDepthFrameIdentity,
+        viewport: OverlayViewport
+    ) -> CaptureTargetSelectionSource? {
+        targetSelectionFrameStore.source(matching: identity, viewport: viewport)
     }
 
     func run(configuration requested: CaptureSessionRunConfiguration) throws -> CaptureSessionRunConfiguration {
@@ -311,6 +387,7 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
             configuration.sceneReconstruction = .mesh
         }
 
+        targetSelectionFrameStore.clear()
         session.delegate = self
         session.run(configuration)
 
@@ -324,6 +401,7 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
     }
 
     func stop() {
+        targetSelectionFrameStore.clear()
         session.pause()
         session.delegate = nil
         enqueue(.stopBarrier)
@@ -363,6 +441,9 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
             sequence: identity.sequence
         )
         let result = sceneDepthNormalizer.normalize(input)
+        if case .accepted(let normalizedFrame, _) = result {
+            targetSelectionFrameStore.replace(arFrame: frame, normalizedFrame: normalizedFrame)
+        }
         enqueue(.sceneDepth(result))
     }
 
@@ -497,6 +578,7 @@ final class ARSessionCoordinator: ObservableObject {
     private var nextEpochPolicyEventSequence: UInt64 = 0
     private var firstCaptureEpoch: UInt64?
     private var firstEpochAccepted = false
+    private var latestAuthorizedTargetSourceIdentity: SceneDepthFrameIdentity?
 
     init(
         readinessProvider: any CaptureReadinessProviding = CaptureReadinessProvider(),
@@ -550,6 +632,11 @@ final class ARSessionCoordinator: ObservableObject {
     /// The one session used for capture and camera preview. Consumers may
     /// render it but must not change its delegate or configuration.
     var captureSession: ARSession? { sessionDriver.captureSession }
+
+    func targetSelectionSource(viewport: OverlayViewport) -> CaptureTargetSelectionSource? {
+        guard let identity = latestAuthorizedTargetSourceIdentity else { return nil }
+        return sessionDriver.targetSelectionSource(matching: identity, viewport: viewport)
+    }
 
     /// This is the sole camera permission request path and is called only from
     /// the explicit UI action in ReadinessView.
@@ -708,6 +795,7 @@ final class ARSessionCoordinator: ObservableObject {
             lastEpochObservationDisposition = disposition
             epochRelocalization = epochPolicy.snapshot()
             if case .accepted = disposition {
+                latestAuthorizedTargetSourceIdentity = frame.identity
                 normalizedFrameSink(frame)
             }
         case .rejected(let reason, let counters):
@@ -791,6 +879,7 @@ final class ARSessionCoordinator: ObservableObject {
             epochRelocalization = snapshot
         }
         if let currentEpoch = epochRelocalization.currentEpoch, currentEpoch != priorEpoch {
+            latestAuthorizedTargetSourceIdentity = nil
             sessionDriver.setCaptureEpoch(currentEpoch)
             if firstCaptureEpoch == nil { firstCaptureEpoch = currentEpoch }
             epochControlSink(CaptureEpochControl(

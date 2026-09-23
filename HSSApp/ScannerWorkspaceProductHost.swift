@@ -12,6 +12,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
     @State private var isCreatingProject = false
     @State private var isObjectCapturePresented = false
     @State private var completedObjectArtifact: ObjectCaptureArtifact?
+    @State private var currentCameraViewport: OverlayViewport?
 
     var body: some View {
         ScannerWorkspaceView(
@@ -20,7 +21,8 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             cameraContent: {
                 ScannerCameraPreview(
                     session: workspace.captureSession,
-                    onTargetTap: workspace.selectTarget
+                    onTargetTap: workspace.selectTarget,
+                    onViewportChange: { currentCameraViewport = $0 }
                 )
             },
             sceneContent: {
@@ -125,21 +127,24 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
                 state: .awaitingSelection,
                 title: title,
                 detail: String(localized: "Tap a visible surface to select current calibrated depth support."),
-                overlay: nil
+                overlay: nil,
+                currentViewport: currentCameraViewport
             )
         case .pending(let reason):
             return ScannerWorkspacePresentation.TargetGuidance(
                 state: .pendingNoDepth,
                 title: title,
                 detail: targetPendingDetail(reason),
-                overlay: nil
+                overlay: nil,
+                currentViewport: currentCameraViewport
             )
         case .stale:
             return ScannerWorkspacePresentation.TargetGuidance(
                 state: .staleSelection,
                 title: title,
                 detail: String(localized: "The accepted scene revision changed. Tap the feature again to confirm it against the current revision."),
-                overlay: nil
+                overlay: nil,
+                currentViewport: currentCameraViewport
             )
         case .confirmed(let selection):
             return ScannerWorkspacePresentation.TargetGuidance(
@@ -153,7 +158,8 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
                     displayTransform: selection.displayTransform,
                     currentEpoch: selection.sourceFrame.sessionEpoch,
                     maximumFrameAge: 1
-                )
+                ),
+                currentViewport: currentCameraViewport
             )
         }
     }
@@ -348,18 +354,23 @@ private struct ScannerProjectNameSheet: View {
 private struct ScannerCameraPreview: UIViewRepresentable {
     let session: ARSession?
     let onTargetTap: (NativeTargetTap) -> Void
+    let onViewportChange: (OverlayViewport?) -> Void
 
     func makeUIView(context: Context) -> ScannerTargetingARSCNView {
         let view = ScannerTargetingARSCNView(frame: .zero)
         view.automaticallyUpdatesLighting = true
         view.rendersCameraGrain = false
         view.onTargetTap = onTargetTap
+        view.onViewportChange = onViewportChange
         if let session { view.session = session }
+        view.publishCurrentViewport()
         return view
     }
 
     func updateUIView(_ view: ScannerTargetingARSCNView, context: Context) {
         view.onTargetTap = onTargetTap
+        view.onViewportChange = onViewportChange
+        view.publishCurrentViewport()
         guard let session, view.session !== session else { return }
         view.session = session
     }
@@ -367,9 +378,11 @@ private struct ScannerCameraPreview: UIViewRepresentable {
 
 private final class ScannerTargetingARSCNView: ARSCNView {
     var onTargetTap: ((NativeTargetTap) -> Void)?
+    var onViewportChange: ((OverlayViewport?) -> Void)?
     private var viewportGeneration: UInt64 = 1
     private var lastViewportSize: CGSize = .zero
     private var lastOrientation: OverlayPresentationOrientation?
+    private var lastPublishedViewport: OverlayViewport?
 
     override init(frame: CGRect, options: [String: Any]? = nil) {
         super.init(frame: frame, options: options)
@@ -386,14 +399,11 @@ private final class ScannerTargetingARSCNView: ARSCNView {
 
     @objc private func didTap(_ recognizer: UITapGestureRecognizer) {
         updateViewportGeneration()
-        guard let orientation = interfaceOrientation(), bounds.width > 0, bounds.height > 0 else { return }
+        guard let viewport = currentViewport() else { return }
         let location = recognizer.location(in: self)
         onTargetTap?(NativeTargetTap(
             screenPoint: SIMD2(Float(location.x), Float(location.y)),
-            viewport: OverlayViewport(
-                width: Float(bounds.width), height: Float(bounds.height),
-                orientation: orientation, generation: viewportGeneration
-            )
+            viewport: viewport
         ))
     }
 
@@ -403,7 +413,25 @@ private final class ScannerTargetingARSCNView: ARSCNView {
             if viewportGeneration != UInt64.max { viewportGeneration += 1 }
             lastViewportSize = bounds.size
             lastOrientation = orientation
+            publishCurrentViewport()
         }
+    }
+
+    func publishCurrentViewport() {
+        let viewport = currentViewport()
+        guard viewport != lastPublishedViewport else { return }
+        lastPublishedViewport = viewport
+        DispatchQueue.main.async { [weak self] in
+            self?.onViewportChange?(viewport)
+        }
+    }
+
+    private func currentViewport() -> OverlayViewport? {
+        guard let orientation = interfaceOrientation(), bounds.width > 0, bounds.height > 0 else { return nil }
+        return OverlayViewport(
+            width: Float(bounds.width), height: Float(bounds.height),
+            orientation: orientation, generation: viewportGeneration
+        )
     }
 
     private func interfaceOrientation() -> OverlayPresentationOrientation? {
