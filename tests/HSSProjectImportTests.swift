@@ -22,6 +22,15 @@ final class HSSProjectImportTests: XCTestCase {
     }
 
     @MainActor
+    func testArchiveWorkLeavesWorkspaceActorBeforeRunningBlockingOperation() async throws {
+        let ranOffMainThread = try await HSSProjectImportBackgroundWork.perform {
+            !Thread.isMainThread
+        }
+
+        XCTAssertTrue(ranOffMainThread)
+    }
+
+    @MainActor
     func testPublicationFailureRollsBackOnlyThisNewlyMovedProject() async throws {
         enum InjectedFailure: Error { case catalog }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("hss-import-adoption-\(UUID().uuidString)")

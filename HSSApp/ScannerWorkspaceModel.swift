@@ -235,8 +235,9 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             do {
                 try FileManager.default.createDirectory(at: trustedRoot, withIntermediateDirectories: true)
                 let payload = stageRoot.appendingPathComponent("payload", isDirectory: true)
-                try HSSProjectImportBridge.extractHSSCANArchive(
-                    at: URL(fileURLWithPath: sourcePath), toStagingDirectory: payload
+                try await HSSProjectImportBackgroundWork.extractArchive(
+                    sourcePath: sourcePath,
+                    stagingPath: payload.path(percentEncoded: false)
                 )
                 let metadata = try HSSImportedProjectMetadata.parse(Data(contentsOf: payload.appendingPathComponent("project.json")))
                 let projectDirectory = stageRoot.appendingPathComponent(metadata.projectID.hssDirectoryName, isDirectory: true)

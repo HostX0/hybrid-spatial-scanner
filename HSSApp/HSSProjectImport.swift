@@ -15,6 +15,30 @@ enum HSSProjectImportError: LocalizedError {
     }
 }
 
+/// Archive parsing, decompression, stream verification, and staging can read
+/// gigabytes. Keep that synchronous native work off the workspace actor while
+/// handing it only copied file paths; the caller owns security-scoped access
+/// until this operation returns.
+enum HSSProjectImportBackgroundWork {
+    static func perform<Value: Sendable>(
+        _ operation: @escaping @Sendable () throws -> Value
+    ) async throws -> Value {
+        try Task.checkCancellation()
+        let value = try await Task.detached(priority: .userInitiated, operation: operation).value
+        try Task.checkCancellation()
+        return value
+    }
+
+    static func extractArchive(sourcePath: String, stagingPath: String) async throws {
+        try await perform {
+            try HSSProjectImportBridge.extractHSSCANArchive(
+                at: URL(fileURLWithPath: sourcePath),
+                toStagingDirectory: URL(fileURLWithPath: stagingPath)
+            )
+        }
+    }
+}
+
 /// Final import adoption is intentionally separate from archive staging. Once
 /// the private staged directory is moved into the library, every following
 /// validation and catalog write belongs to the same rollback boundary.
