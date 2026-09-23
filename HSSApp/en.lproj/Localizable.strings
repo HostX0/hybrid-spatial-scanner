@@ -25,6 +25,13 @@
 "Only a saved, frozen accepted revision with measured plan and mesh geometry can be exported." = "Only a saved, frozen accepted revision with measured plan and mesh geometry can be exported.";
 "The native exporters did not produce a complete offline bundle." = "The native exporters did not produce a complete offline bundle.";
 "The selected local project directory is unavailable." = "The selected local project directory is unavailable.";
+"Only a saved local project can be archived." = "Only a saved local project can be archived.";
+"Preparing HSSCAN archive…" = "Preparing HSSCAN archive…";
+"Share HSSCAN archive" = "Share HSSCAN archive";
+"Creates a local HSSCAN archive, then lets you choose Files or another destination." = "Creates a local HSSCAN archive, then lets you choose Files or another destination.";
+"Creating a local HSSCAN archive for Files." = "Creating a local HSSCAN archive for Files.";
+"HSSCAN archive is ready to share or save to Files." = "HSSCAN archive is ready to share or save to Files.";
+"HSSCAN archive failed: %@" = "HSSCAN archive failed: %@";
 "Projects" = "Projects";
 "No saved projects" = "No saved projects";
 "Projects appear here after a local save." = "Projects appear here after a local save.";

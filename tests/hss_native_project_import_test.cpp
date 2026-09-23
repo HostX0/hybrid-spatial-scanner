@@ -1,4 +1,5 @@
 #include "HSSProjectArchiveImport.hpp"
+#include "HSSProjectArchiveExport.hpp"
 
 #include <array>
 #include <cstdint>
@@ -137,6 +138,48 @@ int main() {
   write_zip(root / "duplicate.hsscan", {stored, stored});
   check_rejected(root / "duplicate.hsscan", root / "duplicate-stage");
 
+  const auto project = root / "committed-project";
+  std::filesystem::create_directories(project / "chunks", error);
+  check(!error, "create committed project");
+  {
+    std::ofstream metadata(project / "project.json", std::ios::binary);
+    metadata << "{}\n";
+    std::ofstream chunk(project / "chunks/source.bin", std::ios::binary);
+    chunk << "abc";
+    std::ofstream manifest(project / "active.manifest", std::ios::binary);
+    manifest << "HSS_SOURCE_MANIFEST 1\nrevision 1\nrecords 1\n"
+             << "record epoch captured 1 1 1 "
+             << "00000000000000000000000000000000 "
+             << "00000000000000000000000000000000 1 1 3 "
+             << "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad "
+             << "chunks/source.bin\n"
+             << "manifest_sha256 0000000000000000000000000000000000000000000000000000000000000000\n";
+  }
+  const auto exported = root / "committed.hsscan";
+  const auto exported_result = hss::native_export::write_hsscan_archive(project.string(), exported.string());
+  if (exported_result.status != hss::native_export::Status::kOk) std::cerr << exported_result.message << '\n';
+  check(exported_result.status == hss::native_export::Status::kOk, "writer publishes a store-only HSSCAN archive");
+  const auto exported_stage = root / "exported-stage";
+  const auto imported_result = hss::native_import::extract_hsscan_archive(exported.string(), exported_stage.string());
+  check(imported_result.status == hss::native_import::Status::kOk, "writer output passes importer validation");
+  std::ifstream exported_chunk(exported_stage / "chunks/source.bin", std::ios::binary);
+  std::string exported_chunk_bytes((std::istreambuf_iterator<char>(exported_chunk)), std::istreambuf_iterator<char>());
+  check(exported_chunk_bytes == "abc", "writer preserves committed source bytes");
+  check(!std::filesystem::exists(exported_stage / "temporary"), "writer excludes temporary source files");
+  {
+    std::ofstream outside(root / "outside.bin", std::ios::binary);
+    outside << "outside";
+  }
+  std::filesystem::remove(project / "chunks/source.bin", error);
+  std::filesystem::create_symlink(root / "outside.bin", project / "chunks/source.bin", error);
+  check(!error, "create hostile source symlink");
+  const auto linked_result = hss::native_export::write_hsscan_archive(
+      project.string(), (root / "linked-source.hsscan").string());
+  check(linked_result.status != hss::native_export::Status::kOk,
+        "writer rejects a symlinked committed source path");
+  check(!std::filesystem::exists(root / "linked-source.hsscan"),
+        "writer does not publish an archive from a linked source path");
+
   std::filesystem::remove_all(root, error);
-  std::cout << "native ZIP staging rejects hostile entries and publishes only fully validated files\n";
+  std::cout << "native HSSCAN import/export validates hostile entries and round-trips committed files\n";
 }

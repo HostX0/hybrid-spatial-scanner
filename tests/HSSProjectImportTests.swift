@@ -1,4 +1,5 @@
 import CryptoKit
+import simd
 import XCTest
 @testable import HybridSpatialScanner
 
@@ -76,11 +77,147 @@ final class HSSProjectImportTests: XCTestCase {
         }
     }
 
+    func testCommittedProjectExportsAndImportsWithReplayAndCorruptionRejection() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hsscan-round-trip-\(UUID().uuidString)", isDirectory: true)
+        let sourceRoot = root.appendingPathComponent("source", isDirectory: true)
+        let importedRoot = root.appendingPathComponent("imported", isDirectory: true)
+        let archive = root.appendingPathComponent("saved-project.hsscan", isDirectory: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
+
+        let projectID = UUID()
+        let captureID = UUID()
+        let source = try await createCommittedSyntheticProject(
+            root: sourceRoot, projectID: projectID, captureID: captureID
+        )
+        let sourceProject = sourceRoot.appendingPathComponent(projectID.hssDirectoryName, isDirectory: true)
+        try HSSProjectArchiveExportBridge.writeHSSCANArchive(
+            forProjectDirectory: sourceProject,
+            to: archive
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: archive.path))
+
+        let staging = root.appendingPathComponent("staging", isDirectory: true)
+        try HSSProjectImportBridge.extractHSSCANArchive(at: archive, toStagingDirectory: staging)
+        let metadata = try HSSImportedProjectMetadata.parse(Data(contentsOf: staging.appendingPathComponent("project.json")))
+        XCTAssertEqual(metadata.projectID, projectID)
+        XCTAssertTrue(metadata.sourceIsSynthetic)
+        try FileManager.default.createDirectory(at: importedRoot, withIntermediateDirectories: true)
+        try FileManager.default.moveItem(
+            at: staging,
+            to: importedRoot.appendingPathComponent(projectID.hssDirectoryName, isDirectory: true)
+        )
+
+        let imported = try HSSProjectRuntime(
+            projectID: metadata.projectID,
+            captureID: UUID(),
+            sourceIsSynthetic: metadata.sourceIsSynthetic,
+            trustedRoot: importedRoot,
+            openMode: .openExisting
+        )
+        let replay = try await imported.replayCommittedSource()
+        let importedSnapshot = try await imported.snapshot(
+            provenance: [.syntheticTest, .importedReplay],
+            frozen: true
+        )
+        XCTAssertEqual(replay.durableRevision, source.durableRevision)
+        XCTAssertEqual(importedSnapshot.revision, source.snapshot.revision)
+        XCTAssertEqual(importedSnapshot.verticesMetres, source.snapshot.verticesMetres)
+        XCTAssertEqual(importedSnapshot.triangleIndices, source.snapshot.triangleIndices)
+        XCTAssertEqual(importedSnapshot.provenance, [.syntheticTest, .importedReplay])
+
+        var corrupt = try Data(contentsOf: archive)
+        XCTAssertGreaterThan(corrupt.count, 30)
+        let firstNameBytes = Int(corrupt[26]) | (Int(corrupt[27]) << 8)
+        let firstExtraBytes = Int(corrupt[28]) | (Int(corrupt[29]) << 8)
+        let firstPayload = 30 + firstNameBytes + firstExtraBytes
+        XCTAssertLessThan(firstPayload, corrupt.count)
+        corrupt[firstPayload] = corrupt[firstPayload] ^ 0x01
+        let corruptedArchive = root.appendingPathComponent("corrupt.hsscan", isDirectory: false)
+        try corrupt.write(to: corruptedArchive, options: [.atomic])
+        XCTAssertThrowsError(
+            try HSSProjectImportBridge.extractHSSCANArchive(
+                at: corruptedArchive,
+                toStagingDirectory: root.appendingPathComponent("corrupt-staging", isDirectory: true)
+            )
+        )
+    }
+
     private func metadata(projectID: UUID, synthetic: Bool) -> Data {
         let hex = projectID.hssDirectoryName
         let sourceKind = synthetic ? "true" : "false"
         let body = "{\"format\":\"hss.project\",\"version\":1,\"project_id\":\"\(hex)\",\"source_is_synthetic\":\(sourceKind)}"
         let checksum = SHA256.hash(data: Data(body.utf8)).map { String(format: "%02x", $0) }.joined()
         return Data("\(body.dropLast()),\"metadata_sha256\":\"\(checksum)\"}\n".utf8)
+    }
+
+    private func createCommittedSyntheticProject(
+        root: URL,
+        projectID: UUID,
+        captureID: UUID
+    ) async throws -> (snapshot: ScannerSceneSnapshot, durableRevision: UInt64) {
+        let runtime = try HSSProjectRuntime(
+            projectID: projectID,
+            captureID: captureID,
+            sourceIsSynthetic: true,
+            trustedRoot: root,
+            openMode: .create
+        )
+        let identity = matrix().map(Double.init)
+        try await runtime.setEpoch(
+            CaptureEpochControl(
+                sessionEpoch: 1,
+                relationshipState: .unresolved,
+                projectFromWorld: identity,
+                transformRevision: 1
+            ),
+            eventSequence: 1,
+            monotonicTime: 1
+        )
+        try await runtime.setEpoch(
+            CaptureEpochControl(
+                sessionEpoch: 1,
+                relationshipState: .accepted,
+                projectFromWorld: identity,
+                transformRevision: 2
+            ),
+            eventSequence: 2,
+            monotonicTime: 2
+        )
+        let mesh = OwnedMeshAnchorEvent(
+            kind: .add,
+            anchorID: UUID(),
+            anchorRevision: 1,
+            generation: 1,
+            sessionEpoch: 1,
+            sequence: 3,
+            monotonicTimestamp: 3,
+            worldFromAnchor: matrix(),
+            payload: MeshAnchorPayload(
+                vertices: [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 0, -1)],
+                normals: [],
+                triangleIndices: [0, 1, 2],
+                classifications: [],
+                localBoundsMin: SIMD3(0, 0, -1),
+                localBoundsMax: SIMD3(1, 0, 0)
+            )
+        )
+        try await runtime.submitMeshEvent(mesh, eventSequence: 3)
+        let checkpoint = try await runtime.checkpoint()
+        XCTAssertEqual(checkpoint.durableEventCount, 3)
+        return (
+            try await runtime.snapshot(provenance: [.syntheticTest], frozen: true),
+            checkpoint.durableRevision
+        )
+    }
+
+    private func matrix() -> [Float] {
+        [
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1,
+        ]
     }
 }

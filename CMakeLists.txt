@@ -515,6 +515,7 @@ target_link_libraries(hss_project_import_validation_test PRIVATE SpatialCore)
 add_executable(hss_native_project_import_test
   tests/hss_native_project_import_test.cpp
   HSSApp/HSSProjectArchiveImport.cpp
+  HSSApp/HSSProjectArchiveExport.cpp
 )
 target_include_directories(hss_native_project_import_test PRIVATE HSSApp)
 target_link_libraries(hss_native_project_import_test PRIVATE SpatialCore ZLIB::ZLIB)

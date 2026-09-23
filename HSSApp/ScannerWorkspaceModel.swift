@@ -21,6 +21,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     @Published private(set) var currentIssue: ScannerWorkspaceIssue?
     @Published private(set) var saveState: ScannerWorkspaceSaveState = .noProject
     @Published private(set) var exportState: ScannerExportState = .idle
+    @Published private(set) var projectArchiveExportState: ScannerProjectArchiveExportState = .idle
     @Published private(set) var captureAccounting: ScannerCaptureAccounting = .zero
     @Published private(set) var targetSelectionState: NativeTargetSelectionState = .awaitingSelection
 
@@ -49,6 +50,13 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             saveState: saveState,
             phase: phase
         ) && exportState != .exporting
+    }
+    var canExportProjectArchive: Bool {
+        selectedProjectID != nil
+            && selectedCatalogEntry != nil
+            && phase == .frozen
+            && (saveState == .clean || isSavedState)
+            && projectArchiveExportState != .exporting
     }
 
     private enum PendingNativeEvent: Sendable {
@@ -207,6 +215,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 resetTargetSelection()
                 saveState = .saved(entry.updatedAt)
                 exportState = .idle
+                projectArchiveExportState = .idle
                 reloadProjects()
                 phase = .ready
             } catch {
@@ -302,6 +311,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 resetTargetSelection()
                 saveState = .clean
                 exportState = .idle
+                projectArchiveExportState = .idle
                 phase = .frozen
             } catch {
                 try? FileManager.default.removeItem(at: stageRoot)
@@ -314,6 +324,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         guard runtime != nil, selectedProjectID != nil, !captureCoordinator.isSessionRunning else { return }
         currentIssue = nil
         exportState = .idle
+        projectArchiveExportState = .idle
         phase = .startingCapture
         keyframeSelector.reset()
         captureAccounting = .zero
@@ -393,6 +404,39 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         }
     }
 
+    func exportSelectedProjectArchive() {
+        guard canExportProjectArchive,
+              let projectID = selectedProjectID,
+              let entry = selectedCatalogEntry else {
+            projectArchiveExportState = .failed(
+                String(localized: "Only a saved local project can be archived.")
+            )
+            return
+        }
+        projectArchiveExportState = .exporting
+        let projectDirectory = trustedRoot.appendingPathComponent(projectID.hssDirectoryName, isDirectory: true)
+        let archiveDirectory = trustedRoot.appendingPathComponent("archives", isDirectory: true)
+        let archive = archiveDirectory.appendingPathComponent(
+            "(projectID.hssDirectoryName)-r(entry.sceneRevision)-(UUID().uuidString.lowercased()).hsscan",
+            isDirectory: false
+        )
+        Task { [weak self] in
+            do {
+                try await HSSProjectArchiveExport.writeArchive(
+                    projectPath: projectDirectory.path(percentEncoded: false),
+                    destinationPath: archive.path(percentEncoded: false)
+                )
+                guard let self,
+                      selectedProjectID == projectID,
+                      selectedCatalogEntry?.sceneRevision == entry.sceneRevision else { return }
+                projectArchiveExportState = .exported(archive)
+            } catch {
+                guard let self else { return }
+                projectArchiveExportState = .failed(describe(error))
+            }
+        }
+    }
+
     func openProject(id: UUID) {
         guard !captureCoordinator.isSessionRunning, !drainScheduled else { return }
         guard let entry = (try? loadCatalog().projects.first(where: { $0.id == id })) ?? nil else {
@@ -428,6 +472,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 resetTargetSelection()
                 saveState = .clean
                 exportState = .idle
+                projectArchiveExportState = .idle
                 phase = .frozen
             } catch {
                 fail(title: "Project could not be reopened", message: describe(error), recovery: .reopenProject)
@@ -445,6 +490,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         observedProvenance = []
         saveState = .noProject
         exportState = .idle
+        projectArchiveExportState = .idle
         currentIssue = nil
         resetTargetSelection()
         phase = .browsing
@@ -774,6 +820,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 refreshTargetRevisionBinding()
                 saveState = .saved(entry.updatedAt)
                 exportState = .idle
+                projectArchiveExportState = .idle
                 currentIssue = checkpoint.durableRevision == 0 && checkpoint.durableEventCount > 0
                     ? ScannerWorkspaceIssue(
                         id: UUID(), title: "Save verification failed",

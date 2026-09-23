@@ -8,6 +8,15 @@ enum ScannerExportState: Equatable, Sendable {
     case failed(String)
 }
 
+/// A shareable HSSCAN package remains local until the owner chooses a system
+/// share destination. It is independent from the frozen PDF/SVG/DXF/OBJ bundle.
+enum ScannerProjectArchiveExportState: Equatable, Sendable {
+    case idle
+    case exporting
+    case exported(URL)
+    case failed(String)
+}
+
 struct ScannerOfflineArtifactSet: Sendable {
     let files: [String: Data]
 

@@ -25,6 +25,13 @@
 "Only a saved, frozen accepted revision with measured plan and mesh geometry can be exported." = "لا يمكن التصدير إلا من مراجعة مقبولة ومحفوظة ومجمّدة تحتوي على مخطط وشبكة بهندسة مقاسة.";
 "The native exporters did not produce a complete offline bundle." = "لم تُنتج أدوات التصدير الأصلية حزمة محلية مكتملة.";
 "The selected local project directory is unavailable." = "مجلد المشروع المحلي المحدد غير متاح.";
+"Only a saved local project can be archived." = "لا يمكن أرشفة إلا مشروع محلي محفوظ.";
+"Preparing HSSCAN archive…" = "يجري إعداد أرشيف HSSCAN…";
+"Share HSSCAN archive" = "مشاركة أرشيف HSSCAN";
+"Creates a local HSSCAN archive, then lets you choose Files or another destination." = "ينشئ أرشيف HSSCAN محليًا ثم يتيح لك اختيار «الملفات» أو وجهة أخرى.";
+"Creating a local HSSCAN archive for Files." = "يجري إنشاء أرشيف HSSCAN محلي لتطبيق «الملفات».";
+"HSSCAN archive is ready to share or save to Files." = "أرشيف HSSCAN جاهز للمشاركة أو الحفظ في «الملفات».";
+"HSSCAN archive failed: %@" = "فشل إنشاء أرشيف HSSCAN: %@";
 "Projects" = "المشاريع";
 "No saved projects" = "لا توجد مشاريع محفوظة";
 "Projects appear here after a local save." = "تظهر المشاريع هنا بعد الحفظ محليًا.";

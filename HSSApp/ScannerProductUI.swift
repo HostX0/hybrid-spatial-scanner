@@ -138,6 +138,7 @@ struct ScannerWorkspacePresentation: Equatable {
     let isReferenceScene: Bool
     let objectDetailDescription: String?
     let exportStatus: String?
+    let projectArchiveExportStatus: String?
     let canStartCapture: Bool
     let canFinishCapture: Bool
     let canAssist: Bool
@@ -145,6 +146,8 @@ struct ScannerWorkspacePresentation: Equatable {
     let canSave: Bool
     let canExport: Bool
     let isExporting: Bool
+    let canExportProjectArchive: Bool
+    let isExportingProjectArchive: Bool
     let canOpenLibrary: Bool
     let canCaptureObject: Bool
 }
@@ -157,6 +160,7 @@ struct ScannerWorkspaceActions {
     let undo: () -> Void
     let save: () -> Void
     let export: () -> Void
+    let exportProjectArchive: () -> Void
     let openLibrary: () -> Void
     let openProject: (UUID) -> Void
     let captureObject: () -> Void
@@ -439,6 +443,21 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
                         .foregroundStyle(ScannerProductTheme.muted)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                Button(action: actions.exportProjectArchive) {
+                    Label(
+                        presentation.isExportingProjectArchive ? "Preparing HSSCAN archive…" : "Share HSSCAN archive",
+                        systemImage: "archivebox"
+                    )
+                }
+                .buttonStyle(ScannerSecondaryButtonStyle())
+                .disabled(!presentation.canExportProjectArchive || presentation.isExportingProjectArchive)
+                .accessibilityHint("Creates a local HSSCAN archive, then lets you choose Files or another destination.")
+                if let projectArchiveExportStatus = presentation.projectArchiveExportStatus {
+                    Label(projectArchiveExportStatus, systemImage: presentation.isExportingProjectArchive ? "hourglass" : "archivebox.fill")
+                        .font(.subheadline)
+                        .foregroundStyle(ScannerProductTheme.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 if presentation.canCaptureObject {
                     Button("Capture a detailed object", action: actions.captureObject)
                         .buttonStyle(ScannerSecondaryButtonStyle())
@@ -579,7 +598,6 @@ private struct ScannerTargetGuidanceCard: View {
         .padding(16)
         .background(.black.opacity(0.58), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(guidance.title). \(status). \(guidance.detail)")
     }
 
     private var status: LocalizedStringKey {

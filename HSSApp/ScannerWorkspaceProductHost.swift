@@ -2,6 +2,7 @@ import ARKit
 import SceneKit
 import SwiftUI
 import UniformTypeIdentifiers
+import UIKit
 import simd
 
 /// Binds the product shell to the native workspace without introducing another
@@ -15,6 +16,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
     @State private var isObjectCapturePresented = false
     @State private var completedObjectArtifact: ObjectCaptureArtifact?
     @State private var currentCameraViewport: OverlayViewport?
+    @State private var projectArchiveToShare: URL?
 
     var body: some View {
         ScannerWorkspaceView(
@@ -67,6 +69,19 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
                 completedObjectArtifact = artifact
             }
         }
+        .sheet(isPresented: Binding(
+            get: { projectArchiveToShare != nil },
+            set: { if !$0 { projectArchiveToShare = nil } }
+        )) {
+            if let projectArchiveToShare {
+                ScannerProjectArchiveShareSheet(archiveURL: projectArchiveToShare)
+            }
+        }
+        .onChange(of: workspace.projectArchiveExportState) { _, state in
+            if case .exported(let archiveURL) = state {
+                projectArchiveToShare = archiveURL
+            }
+        }
         .task { workspace.reloadProjects() }
     }
 
@@ -95,6 +110,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
                 String(localized: "A detailed object model was saved separately on this device.")
             },
             exportStatus: exportStatus,
+            projectArchiveExportStatus: projectArchiveExportStatus,
             canStartCapture: workspace.phase == .ready || workspace.phase == .browsing,
             canFinishCapture: isCaptureActive,
             canAssist: false,
@@ -102,6 +118,8 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             canSave: workspace.saveState == .hasUnsavedChanges,
             canExport: workspace.canExport,
             isExporting: workspace.exportState == .exporting,
+            canExportProjectArchive: workspace.canExportProjectArchive,
+            isExportingProjectArchive: workspace.projectArchiveExportState == .exporting,
             canOpenLibrary: workspace.canShowLibrary,
             canCaptureObject: canCaptureObject
         )
@@ -122,6 +140,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             undo: {},
             save: workspace.saveSelectedProject,
             export: workspace.exportSelectedProject,
+            exportProjectArchive: workspace.exportSelectedProjectArchive,
             openLibrary: workspace.showLibrary,
             openProject: workspace.openProject,
             captureObject: { isObjectCapturePresented = true },
@@ -208,6 +227,19 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             String(localized: "Offline export saved inside this local project.")
         case .failed(let message):
             String(localized: "Offline export failed: \(message)")
+        }
+    }
+
+    private var projectArchiveExportStatus: String? {
+        switch workspace.projectArchiveExportState {
+        case .idle:
+            nil
+        case .exporting:
+            String(localized: "Creating a local HSSCAN archive for Files.")
+        case .exported:
+            String(localized: "HSSCAN archive is ready to share or save to Files.")
+        case .failed(let message):
+            String(localized: "HSSCAN archive failed: \(message)")
         }
     }
 
@@ -356,6 +388,16 @@ private struct ScannerProjectImportPicker: UIViewControllerRepresentable {
             completed(urls.first)
         }
     }
+}
+
+private struct ScannerProjectArchiveShareSheet: UIViewControllerRepresentable {
+    let archiveURL: URL
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [archiveURL], applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
 private struct ScannerProjectNameSheet: View {

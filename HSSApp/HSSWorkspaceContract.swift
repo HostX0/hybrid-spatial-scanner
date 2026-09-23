@@ -133,6 +133,7 @@ protocol ScannerWorkspaceModeling: ObservableObject {
     var currentIssue: ScannerWorkspaceIssue? { get }
     var saveState: ScannerWorkspaceSaveState { get }
     var exportState: ScannerExportState { get }
+    var projectArchiveExportState: ScannerProjectArchiveExportState { get }
     var captureAccounting: ScannerCaptureAccounting { get }
     var captureSession: ARSession? { get }
     var targetSelectionState: NativeTargetSelectionState { get }
@@ -141,6 +142,7 @@ protocol ScannerWorkspaceModeling: ObservableObject {
     var canConfirmPlanReference: Bool { get }
     var canShowLibrary: Bool { get }
     var canExport: Bool { get }
+    var canExportProjectArchive: Bool { get }
 
     func reloadProjects()
     func createProject(named name: String)
@@ -149,6 +151,7 @@ protocol ScannerWorkspaceModeling: ObservableObject {
     func stopCapture()
     func saveSelectedProject()
     func exportSelectedProject()
+    func exportSelectedProjectArchive()
     func openProject(id: UUID)
     func showLibrary()
     func selectTarget(_ tap: NativeTargetTap)

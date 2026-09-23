@@ -39,6 +39,17 @@ enum HSSProjectImportBackgroundWork {
     }
 }
 
+enum HSSProjectArchiveExport {
+    static func writeArchive(projectPath: String, destinationPath: String) async throws {
+        try await HSSProjectImportBackgroundWork.perform {
+            try HSSProjectArchiveExportBridge.writeHSSCANArchive(
+                forProjectDirectory: URL(fileURLWithPath: projectPath),
+                to: URL(fileURLWithPath: destinationPath)
+            )
+        }
+    }
+}
+
 /// Final import adoption is intentionally separate from archive staging. Once
 /// the private staged directory is moved into the library, every following
 /// validation and catalog write belongs to the same rollback boundary.
