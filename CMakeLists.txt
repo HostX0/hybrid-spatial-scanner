@@ -243,6 +243,20 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_compile_options(hss_dynamic_provenance PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
  target_link_options(hss_dynamic_provenance INTERFACE -fsanitize=address,undefined)
 endif()
+add_library(hss_dynamic_evidence_verifier STATIC
+  SpatialCore/src/dynamic_evidence_verifier.cpp
+)
+target_include_directories(hss_dynamic_evidence_verifier
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/SpatialCore/include>
+)
+target_link_libraries(hss_dynamic_evidence_verifier PUBLIC hss_dynamic_provenance)
+target_compile_features(hss_dynamic_evidence_verifier PUBLIC cxx_std_20)
+target_compile_options(hss_dynamic_evidence_verifier PRIVATE -Wall -Wextra -Werror -Wpedantic)
+if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+ target_compile_options(hss_dynamic_evidence_verifier PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+ target_link_options(hss_dynamic_evidence_verifier INTERFACE -fsanitize=address,undefined)
+endif()
 add_library(hss_appearance_isolation STATIC
   SpatialCore/src/appearance_isolation.cpp
 )
@@ -381,6 +395,9 @@ target_compile_options(hss_scene_editing_test PRIVATE -Wall -Wextra -Werror -Wpe
 add_executable(hss_dynamic_provenance_test tests/hss_dynamic_provenance_test.cpp)
 target_link_libraries(hss_dynamic_provenance_test PRIVATE hss_dynamic_provenance)
 target_compile_options(hss_dynamic_provenance_test PRIVATE -Wall -Wextra -Werror -Wpedantic)
+add_executable(hss_dynamic_evidence_verifier_test tests/hss_dynamic_evidence_verifier_test.cpp)
+target_link_libraries(hss_dynamic_evidence_verifier_test PRIVATE hss_dynamic_evidence_verifier)
+target_compile_options(hss_dynamic_evidence_verifier_test PRIVATE -Wall -Wextra -Werror -Wpedantic)
 add_executable(hss_appearance_isolation_test tests/hss_appearance_isolation_test.cpp)
 target_link_libraries(hss_appearance_isolation_test PRIVATE hss_appearance_isolation)
 target_compile_options(hss_appearance_isolation_test PRIVATE -Wall -Wextra -Werror -Wpedantic)
@@ -478,6 +495,8 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_link_options(hss_scene_editing_test PRIVATE -fsanitize=address,undefined)
  target_compile_options(hss_dynamic_provenance_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
  target_link_options(hss_dynamic_provenance_test PRIVATE -fsanitize=address,undefined)
+ target_compile_options(hss_dynamic_evidence_verifier_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+ target_link_options(hss_dynamic_evidence_verifier_test PRIVATE -fsanitize=address,undefined)
  target_compile_options(hss_appearance_isolation_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
  target_link_options(hss_appearance_isolation_test PRIVATE -fsanitize=address,undefined)
  target_compile_options(hss_obj_mtl_exporter_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -532,6 +551,7 @@ add_test(NAME hss_cross_export_regression COMMAND hss_cross_export_regression_te
 add_test(NAME hss_revisioned_command COMMAND hss_revisioned_command_test)
 add_test(NAME hss_scene_editing COMMAND hss_scene_editing_test)
 add_test(NAME hss_dynamic_provenance COMMAND hss_dynamic_provenance_test)
+add_test(NAME hss_dynamic_evidence_verifier COMMAND hss_dynamic_evidence_verifier_test)
 add_test(NAME hss_appearance_isolation COMMAND hss_appearance_isolation_test)
 add_test(NAME hss_obj_mtl_exporter COMMAND hss_obj_mtl_exporter_test)
 add_test(NAME hss_guidance_policy COMMAND hss_guidance_policy_test)
