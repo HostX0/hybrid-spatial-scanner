@@ -73,7 +73,7 @@ Observed environment and results:
 Local SHA-256 before publication:
 
 - `mesh_anchor_patch_plan.hpp`: `4643ce1ee3aa94355c96b095dca8213d552fdc9fc72554499459dfd8623bb7d8`
-- `hss_mesh_anchor_patch_plan_test.cpp`: `cbd67987183265fae5044b017acd610b7dc015d31694cf9d559c3a965cab4b6b`
+- `hss_mesh_anchor_patch_plan_test.cpp`: `c96752403cacde345df5e68e3586a026cf4e9a976c66b0ed45e600c760e29b62`
 - `verify_mesh_anchor_patch_plan.py`: `797916c33dba588e8ffd69438178b529ae66e0141133745c2675d0f7ed97eaf7`
 
 This is targeted Linux host evidence. It is not a full repository CMake/CTest run, Apple build, simulator run, device benchmark, or metrology result.
