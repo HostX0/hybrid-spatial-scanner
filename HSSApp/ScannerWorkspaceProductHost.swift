@@ -1,6 +1,7 @@
 import ARKit
 import SceneKit
 import SwiftUI
+import UniformTypeIdentifiers
 import simd
 
 /// Binds the product shell to the native workspace without introducing another
@@ -10,6 +11,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
     @ObservedObject var workspace: Model
     @Environment(\.locale) private var locale
     @State private var isCreatingProject = false
+    @State private var isImportingProject = false
     @State private var isObjectCapturePresented = false
     @State private var completedObjectArtifact: ObjectCaptureArtifact?
     @State private var currentCameraViewport: OverlayViewport?
@@ -48,6 +50,14 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
                 cancel: { isCreatingProject = false }
             )
             .presentationDetents([.medium])
+        }
+        .sheet(isPresented: $isImportingProject) {
+            ScannerProjectImportPicker { url in
+                isImportingProject = false
+                guard let url else { return }
+                workspace.importProjectArchive(at: url)
+            }
+            .ignoresSafeArea()
         }
         .sheet(isPresented: $isObjectCapturePresented) {
             // This is deliberately a separate RealityKit-owned workflow. It is
@@ -106,6 +116,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
                     workspace.startCapture()
                 }
             },
+            importProject: { isImportingProject = true },
             finishCapture: workspace.stopCapture,
             assist: {},
             undo: {},
@@ -312,6 +323,37 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
         case .browsing, .preparingProject, .ready, .startingCapture, .stoppingCapture,
              .frozen, .saving, .openingProject, .captureUnsupported, .failed:
             false
+        }
+    }
+}
+
+private struct ScannerProjectImportPicker: UIViewControllerRepresentable {
+    let completed: (URL?) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(completed: completed) }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.zip], asCopy: false)
+        picker.allowsMultipleSelection = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let completed: (URL?) -> Void
+
+        init(completed: @escaping (URL?) -> Void) {
+            self.completed = completed
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            completed(nil)
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            completed(urls.first)
         }
     }
 }

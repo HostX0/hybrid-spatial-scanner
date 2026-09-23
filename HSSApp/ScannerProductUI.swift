@@ -151,6 +151,7 @@ struct ScannerWorkspacePresentation: Equatable {
 
 struct ScannerWorkspaceActions {
     let startCapture: () -> Void
+    let importProject: () -> Void
     let finishCapture: () -> Void
     let assist: () -> Void
     let undo: () -> Void
@@ -457,10 +458,26 @@ private struct ScannerLibraryScreen: View {
             Text("Projects")
                 .font(.largeTitle.weight(.semibold))
             if presentation.projects.isEmpty {
+                Spacer(minLength: 8)
                 ContentUnavailableView(
                     "No saved projects",
                     systemImage: "square.stack.3d.up",
-                    description: Text("Projects appear here after a local save."))
+                    description: Text("Import an HSSCAN archive or start a room scan. Imported projects stay local to this device."))
+                    .frame(maxWidth: .infinity)
+                VStack(spacing: 12) {
+                    Button(action: actions.startCapture) {
+                        Text("Start a new room scan")
+                            .frame(maxWidth: .infinity, minHeight: 56)
+                    }
+                        .buttonStyle(ScannerPrimaryButtonStyle())
+                        .accessibilityHint("Creates a local room project and prepares the camera.")
+                    Button("Import HSSCAN archive", action: actions.importProject)
+                        .buttonStyle(ScannerSecondaryButtonStyle())
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .accessibilityHint("Selects a local archive and verifies it before adding it to projects.")
+                }
+                .padding(.horizontal, 8)
+                Spacer(minLength: 12)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 12) {
@@ -473,11 +490,17 @@ private struct ScannerLibraryScreen: View {
                         }
                     }
                 }
-            }
-            Spacer()
-            if presentation.canStartCapture {
-                Button("Start a new scan", action: actions.startCapture)
-                    .buttonStyle(ScannerPrimaryButtonStyle())
+                Button("Import HSSCAN archive", action: actions.importProject)
+                    .buttonStyle(ScannerSecondaryButtonStyle())
+                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .accessibilityHint("Selects a local archive and verifies it before adding it to projects.")
+                if presentation.canStartCapture {
+                    Button(action: actions.startCapture) {
+                        Text("Start a new room scan")
+                            .frame(maxWidth: .infinity, minHeight: 56)
+                    }
+                        .buttonStyle(ScannerPrimaryButtonStyle())
+                }
             }
         }
         .padding(24)

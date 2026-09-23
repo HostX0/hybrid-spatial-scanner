@@ -215,6 +215,90 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         }
     }
 
+    func importProjectArchive(at url: URL) {
+        guard !captureCoordinator.isSessionRunning, !drainScheduled else { return }
+        guard url.isFileURL else {
+            fail(title: "Project import failed", message: "Choose a local HSSCAN archive.", recovery: .returnToProjectList)
+            return
+        }
+        phase = .openingProject
+        currentIssue = nil
+        let sourcePath = url.path(percentEncoded: false)
+        let hasSecurityScope = url.startAccessingSecurityScopedResource()
+
+        Task { [weak self] in
+            defer {
+                if hasSecurityScope { url.stopAccessingSecurityScopedResource() }
+            }
+            guard let self else { return }
+            let stageRoot = trustedRoot.appendingPathComponent(".hss-import-\(UUID().uuidString)", isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: trustedRoot, withIntermediateDirectories: true)
+                let payload = stageRoot.appendingPathComponent("payload", isDirectory: true)
+                try HSSProjectImportBridge.extractHSSCANArchive(
+                    at: URL(fileURLWithPath: sourcePath), toStagingDirectory: payload
+                )
+                let metadata = try HSSImportedProjectMetadata.parse(Data(contentsOf: payload.appendingPathComponent("project.json")))
+                let projectDirectory = stageRoot.appendingPathComponent(metadata.projectID.hssDirectoryName, isDirectory: true)
+                let finalDirectory = trustedRoot.appendingPathComponent(metadata.projectID.hssDirectoryName, isDirectory: true)
+                guard !FileManager.default.fileExists(atPath: finalDirectory.path),
+                      !(try loadCatalog()).projects.contains(where: { $0.id == metadata.projectID }) else {
+                    throw HSSProjectImportError.projectAlreadyExists
+                }
+                try FileManager.default.moveItem(at: payload, to: projectDirectory)
+
+                // Validate every committed source/manifest and replay into an
+                // isolated engine before any staged bytes enter the library.
+                var candidate: HSSProjectRuntime? = try HSSProjectRuntime(
+                    projectID: metadata.projectID,
+                    captureID: UUID(),
+                    sourceIsSynthetic: metadata.sourceIsSynthetic,
+                    trustedRoot: stageRoot,
+                    openMode: .openExisting
+                )
+                _ = try await candidate!.replayCommittedSource()
+                try await candidate!.drain()
+                candidate = nil
+                try FileManager.default.moveItem(at: projectDirectory, to: finalDirectory)
+                try? FileManager.default.removeItem(at: stageRoot)
+
+                let runtime = try HSSProjectRuntime(
+                    projectID: metadata.projectID,
+                    captureID: UUID(),
+                    sourceIsSynthetic: metadata.sourceIsSynthetic,
+                    trustedRoot: trustedRoot,
+                    openMode: .openExisting
+                )
+                let replay = try await runtime.replayCommittedSource()
+                try await runtime.drain()
+                let provenance: Set<ScannerSceneProvenance> = metadata.sourceIsSynthetic
+                    ? [.syntheticTest, .importedReplay] : [.importedReplay]
+                let snapshot = try await runtime.snapshot(provenance: provenance, frozen: true)
+                let entry = WorkspaceCatalogEntry(
+                    id: metadata.projectID, captureID: UUID(),
+                    name: "Imported \(metadata.projectID.uuidString.prefix(8))",
+                    updatedAt: Date(), sceneRevision: replay.durableRevision,
+                    state: .frozen, sourceIsSynthetic: metadata.sourceIsSynthetic
+                )
+                try publishCatalogEntry(entry)
+                self.runtime = runtime
+                selectedCatalogEntry = entry
+                selectedProjectID = entry.id
+                assignSelectedName(entry.name)
+                latestSnapshot = snapshot
+                observedProvenance = provenance
+                nextEventSequence = max(1, snapshot.revision + 1)
+                resetTargetSelection()
+                saveState = .clean
+                exportState = .idle
+                phase = .frozen
+            } catch {
+                try? FileManager.default.removeItem(at: stageRoot)
+                fail(title: "Project import failed", message: describe(error), recovery: .returnToProjectList)
+            }
+        }
+    }
+
     func startCapture() {
         guard runtime != nil, selectedProjectID != nil, !captureCoordinator.isSessionRunning else { return }
         currentIssue = nil

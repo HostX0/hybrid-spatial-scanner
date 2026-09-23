@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(HSS_ENABLE_SANITIZERS "Host address and undefined behavior sanitizers" OFF)
 option(HSS_BUILD_TESTS "Build portable host tests" ON)
+find_package(ZLIB REQUIRED)
 
 # Portable captured-mesh reconstruction; physical/device acceptance remains separate.
 add_library(SpatialCore STATIC
@@ -511,9 +512,15 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 add_executable(hss_project_import_validation_test tests/hss_project_import_validation_test.cpp)
 target_link_libraries(hss_project_import_validation_test PRIVATE SpatialCore)
+add_executable(hss_native_project_import_test
+  tests/hss_native_project_import_test.cpp
+  HSSApp/HSSProjectArchiveImport.cpp
+)
+target_include_directories(hss_native_project_import_test PRIVATE HSSApp)
+target_link_libraries(hss_native_project_import_test PRIVATE SpatialCore ZLIB::ZLIB)
 add_executable(hss_resource_policy_test tests/hss_resource_policy_test.cpp)
 target_link_libraries(hss_resource_policy_test PRIVATE SpatialCore)
-foreach(target abi_smoke cpp_math_test hss_engine_contract_test hss_bounded_ingress_test hss_coordinate_basis_test hss_durable_source_store_test hss_normalized_replay_test hss_project_store_test hss_provisional_plan_test hss_interruption_recovery_test hss_project_import_validation_test hss_resource_policy_test)
+foreach(target abi_smoke cpp_math_test hss_engine_contract_test hss_bounded_ingress_test hss_coordinate_basis_test hss_durable_source_store_test hss_normalized_replay_test hss_project_store_test hss_provisional_plan_test hss_interruption_recovery_test hss_project_import_validation_test hss_native_project_import_test hss_resource_policy_test)
  target_compile_options(${target} PRIVATE -Wall -Wextra -Werror -Wpedantic)
  if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -558,6 +565,7 @@ add_test(NAME hss_obj_mtl_exporter COMMAND hss_obj_mtl_exporter_test)
 add_test(NAME hss_guidance_policy COMMAND hss_guidance_policy_test)
 add_test(NAME hss_target_tools COMMAND hss_target_tools_test)
 add_test(NAME hss_project_import_validation COMMAND hss_project_import_validation_test)
+add_test(NAME hss_native_project_import COMMAND hss_native_project_import_test)
 add_test(NAME hss_resource_policy COMMAND hss_resource_policy_test)
 add_test(NAME hss_privacy_policy COMMAND hss_privacy_policy_test)
 endif()

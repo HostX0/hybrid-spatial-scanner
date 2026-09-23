@@ -144,6 +144,7 @@ protocol ScannerWorkspaceModeling: ObservableObject {
 
     func reloadProjects()
     func createProject(named name: String)
+    func importProjectArchive(at url: URL)
     func startCapture()
     func stopCapture()
     func saveSelectedProject()

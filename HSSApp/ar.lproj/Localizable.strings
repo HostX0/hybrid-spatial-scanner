@@ -29,6 +29,11 @@
 "No saved projects" = "لا توجد مشاريع محفوظة";
 "Projects appear here after a local save." = "تظهر المشاريع هنا بعد الحفظ محليًا.";
 "Start a new scan" = "بدء مسح جديد";
+"Start a new room scan" = "بدء مسح غرفة جديد";
+"Import HSSCAN archive" = "استيراد أرشيف HSSCAN";
+"Import an HSSCAN archive or start a room scan. Imported projects stay local to this device." = "استورد أرشيف HSSCAN أو ابدأ مسح غرفة. تبقى المشاريع المستوردة محليًا على هذا الجهاز.";
+"Creates a local room project and prepares the camera." = "ينشئ مشروع غرفة محليًا ويجهّز الكاميرا.";
+"Selects a local archive and verifies it before adding it to projects." = "يختار أرشيفًا محليًا ويتحقق منه قبل إضافته إلى المشاريع.";
 "Draft" = "مسودة";
 "Saved" = "محفوظ";
 "Blocked" = "متوقف";

@@ -29,6 +29,11 @@
 "No saved projects" = "No saved projects";
 "Projects appear here after a local save." = "Projects appear here after a local save.";
 "Start a new scan" = "Start a new scan";
+"Start a new room scan" = "Start a new room scan";
+"Import HSSCAN archive" = "Import HSSCAN archive";
+"Import an HSSCAN archive or start a room scan. Imported projects stay local to this device." = "Import an HSSCAN archive or start a room scan. Imported projects stay local to this device.";
+"Creates a local room project and prepares the camera." = "Creates a local room project and prepares the camera.";
+"Selects a local archive and verifies it before adding it to projects." = "Selects a local archive and verifies it before adding it to projects.";
 "Draft" = "Draft";
 "Saved" = "Saved";
 "Blocked" = "Blocked";
