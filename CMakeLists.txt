@@ -621,4 +621,22 @@ endif()
 add_test(NAME hss_dynamic_runtime_integration
   COMMAND hss_dynamic_runtime_integration_test
 )
+add_executable(hss_resource_runtime_integration_test
+  tests/hss_resource_runtime_integration_test.cpp
+)
+target_link_libraries(hss_resource_runtime_integration_test PRIVATE SpatialCore)
+target_compile_options(hss_resource_runtime_integration_test PRIVATE
+  -Wall -Wextra -Werror -Wpedantic
+)
+if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+ target_compile_options(hss_resource_runtime_integration_test PRIVATE
+   -fsanitize=address,undefined -fno-omit-frame-pointer
+ )
+ target_link_options(hss_resource_runtime_integration_test PRIVATE
+   -fsanitize=address,undefined
+ )
+endif()
+add_test(NAME hss_resource_runtime_integration
+  COMMAND hss_resource_runtime_integration_test
+)
 endif()

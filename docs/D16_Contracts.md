@@ -170,3 +170,32 @@ The captured-mesh runtime submits its exact cut segments and retained mesh-suppo
 Automatic runtime annotations are fitted lengths of the explicit retained cut fragments only. Their anchors, support IDs, revision, availability, and metre values are copied through B-032. No label collision operation moves a wall or an anchor. These JSON documents are derived snapshot views; source events plus ordered plan-reference controls remain the durable authority and deterministically regenerate them. A command-edited snapshot does not reuse a stale pre-command typed plan when the edit adapter cannot prove the mapping.
 
 The current CMake core enables this adapter and links the B-031/B-032 modules. A direct-source native target that has not added those module sources keeps the same additive ABI but reports the view unsupported; native project-file adoption and renderer consumption are separate integration work.
+
+### Resource admission and checkpoint handshake
+
+The ABI adds `HSSResourceSample`, `HSSResourceDecision`,
+`hss_engine_observe_resource_sample`, `hss_engine_get_resource_decision`, and
+`hss_engine_acknowledge_resource_checkpoint`. Existing layouts and functions
+are unchanged. The serialized native owner supplies an ordered sample with an
+independent measured/unmeasured status for thermal state, memory pressure, and
+free storage. The core does not query platform sensors. The checkpoint
+acknowledgement reports the result of durable work performed elsewhere; it
+does not write a journal, source chunk, or project package.
+
+The engine uses the provisional B-041 policy defaults. Constrained pressure
+drops smoothed preview depth while calibrated scene depth and mesh add/replace
+remain metric observations subject to all existing validity checks. Unsafe
+pressure rejects new metric observations with `HSS_NOT_READY`, requests a
+checkpoint, retains accepted source, and continues draining work that was
+already accepted. Epoch transitions, mesh removals, scene commands, plan
+reference controls, dynamic-evidence commands, and checkpoint completion stay
+on the protected control path. Preview degradation never turns off metric
+validation or converts preview depth into measurement evidence.
+
+Invalid and out-of-order samples leave policy pressure state unchanged and
+latch `input_fault`, so new metric intake fails closed. An unmeasured sample
+cannot clear that latch. A subsequent complete, valid, ordered sample can
+clear the input fault; recovery from a policy pause still requires explicit
+checkpoint acknowledgement and the policy's complete nominal-sample
+hysteresis. `last_accepted_sample_sequence` and time identify the last sample
+the policy accepted, not the last call attempted.

@@ -3,6 +3,7 @@
 #include "hss/dynamic_provenance.hpp"
 #include "hss/hss_api.h"
 #include "hss/live_reconstruction.hpp"
+#include "hss/resource_policy.hpp"
 #include "hss/scene_editing.hpp"
 #include <chrono>
 #include <deque>
@@ -59,6 +60,13 @@ struct VerifiedExclusion {
 struct HSSEngine {
   explicit HSSEngine(const HSSConfig &c)
       : config(c), ingress(c.max_working_bytes, c.max_pending_frames), live(c) {
+    resource_decision.status = hss::resource::Status::kOk;
+    resource_decision.mode = hss::resource::PolicyMode::kNormal;
+    resource_decision.pressure = hss::resource::PressureLevel::kNone;
+    resource_decision.reason = hss::resource::Reason::kMeasurementsUnavailable;
+    resource_decision.validity_checks_enabled = true;
+    resource_decision.accept_metric_observations = true;
+    resource_decision.retain_existing_sources = true;
   }
   HSSConfig config{};
   hss::ingress::BoundedIngress ingress;
@@ -73,6 +81,11 @@ struct HSSEngine {
                                   uint64_t>> pending_exclusions;
   std::map<std::string, runtime_provenance::VerifiedExclusion>
       verified_exclusions;
+  hss::resource::ResourcePolicy resource_policy;
+  hss::resource::Decision resource_decision;
+  bool resource_input_fault{false};
+  uint64_t last_resource_sample_sequence{0U};
+  double last_resource_sample_time_s{0.0};
   uint64_t accepted_frames{}, accepted_commands{};
   HSSStatus last_status{HSS_OK};
 };
@@ -261,6 +274,79 @@ HSSStatus validate_json_bytes(HSSBytes bytes) {
 HSSStatus remembered(HSSEngine *engine, HSSStatus status) {
   engine->last_status = status;
   return status;
+}
+
+HSSStatus resource_status(hss::resource::Status status) {
+  using Status = hss::resource::Status;
+  switch (status) {
+  case Status::kOk:
+    return HSS_OK;
+  case Status::kOutOfOrder:
+    return HSS_STALE_REVISION;
+  case Status::kInvalidTransition:
+    return HSS_NOT_READY;
+  case Status::kInvalidConfiguration:
+  case Status::kInvalidMeasurement:
+  case Status::kInvalidEventKind:
+    return HSS_INVALID_ARGUMENT;
+  }
+  return HSS_INTERNAL_ERROR;
+}
+
+void fill_resource_decision(const HSSEngine &engine,
+                            HSSResourceDecision *output) {
+  std::memset(output, 0, sizeof(*output));
+  output->abi_version = HSS_ABI_VERSION;
+  output->struct_size = sizeof(*output);
+  output->last_accepted_sample_sequence =
+      engine.last_resource_sample_sequence;
+  output->last_accepted_sample_time_s = engine.last_resource_sample_time_s;
+  output->resource_status =
+      static_cast<uint32_t>(engine.resource_decision.status);
+  output->mode = static_cast<uint32_t>(engine.resource_decision.mode);
+  output->pressure = static_cast<uint32_t>(engine.resource_decision.pressure);
+  output->reason = static_cast<uint32_t>(engine.resource_decision.reason);
+  output->monitoring_complete = engine.resource_decision.monitoring_complete;
+  output->input_fault = engine.resource_input_fault;
+  output->reduce_preview_quality =
+      engine.resource_decision.reduce_preview_quality;
+  output->suspend_optional_appearance =
+      engine.resource_decision.suspend_optional_appearance;
+  output->reduce_unprotected_display_lod =
+      engine.resource_decision.reduce_unprotected_display_lod;
+  output->validity_checks_enabled = true;
+  output->accept_metric_observations =
+      engine.resource_input_fault
+          ? 0U
+          : engine.resource_decision.accept_metric_observations;
+  output->request_checkpoint = engine.resource_decision.request_checkpoint;
+  output->pause_capture = engine.resource_input_fault
+                              ? 1U
+                              : engine.resource_decision.pause_capture;
+  output->retain_existing_sources = true;
+}
+
+void latch_resource_input_fault(HSSEngine *engine) {
+  engine->resource_input_fault = true;
+  engine->resource_decision.status =
+      hss::resource::Status::kInvalidMeasurement;
+  engine->resource_decision.reason =
+      hss::resource::Reason::kInvalidMeasurement;
+  engine->resource_decision.monitoring_complete = false;
+}
+
+hss::resource::EventDecision
+decide_resource_event(HSSEngine *engine, hss::resource::EventKind kind) {
+  auto decision = engine->resource_policy.decide_event(kind);
+  if (!engine->resource_input_fault || decision.protected_event) {
+    return decision;
+  }
+  decision.status = hss::resource::Status::kInvalidMeasurement;
+  decision.retain_existing_sources = true;
+  decision.action = kind == hss::resource::EventKind::kPreviewFrame
+                        ? hss::resource::EventAction::kDropPreview
+                        : hss::resource::EventAction::kRetainSourceAndPauseCapture;
+  return decision;
 }
 
 std::string uuid(const HSSId &value) {
@@ -884,6 +970,104 @@ extern "C" void hss_engine_destroy(HSSEngine *engine) {
   }
 }
 
+extern "C" HSSStatus hss_engine_observe_resource_sample(
+    HSSEngine *engine, const HSSResourceSample *sample,
+    HSSResourceDecision *decision) {
+  if (decision != nullptr)
+    std::memset(decision, 0, sizeof(*decision));
+  try {
+    if (engine == nullptr || decision == nullptr)
+      return engine == nullptr ? HSS_INVALID_ARGUMENT
+                               : remembered(engine, HSS_INVALID_ARGUMENT);
+    const HSSStatus header_status = validate_message(sample);
+    if (header_status != HSS_OK) {
+      latch_resource_input_fault(engine);
+      fill_resource_decision(*engine, decision);
+      return remembered(engine, header_status);
+    }
+    if (sample->flags != 0U || sample->reserved != 0U ||
+        sample->thermal_status > HSS_RESOURCE_MEASUREMENT_MEASURED ||
+        sample->thermal_state > HSS_RESOURCE_THERMAL_CRITICAL ||
+        sample->memory_status > HSS_RESOURCE_MEASUREMENT_MEASURED ||
+        sample->memory_pressure > HSS_RESOURCE_MEMORY_CRITICAL ||
+        sample->storage_status > HSS_RESOURCE_MEASUREMENT_MEASURED) {
+      latch_resource_input_fault(engine);
+      fill_resource_decision(*engine, decision);
+      return remembered(engine, HSS_INVALID_ARGUMENT);
+    }
+
+    hss::resource::ResourceSample input;
+    input.sequence = sample->sequence;
+    input.monotonic_time_s = sample->monotonic_time_s;
+    input.thermal.status =
+        static_cast<hss::resource::MeasurementStatus>(sample->thermal_status);
+    input.thermal.state =
+        static_cast<hss::resource::ThermalState>(sample->thermal_state);
+    input.memory.status =
+        static_cast<hss::resource::MeasurementStatus>(sample->memory_status);
+    input.memory.pressure =
+        static_cast<hss::resource::MemoryPressure>(sample->memory_pressure);
+    input.storage.status =
+        static_cast<hss::resource::MeasurementStatus>(sample->storage_status);
+    input.storage.free_bytes = sample->free_storage_bytes;
+    engine->resource_decision = engine->resource_policy.observe(input);
+    if (engine->resource_decision.status == hss::resource::Status::kOk) {
+      engine->last_resource_sample_sequence = sample->sequence;
+      engine->last_resource_sample_time_s = sample->monotonic_time_s;
+      if (engine->resource_decision.monitoring_complete)
+        engine->resource_input_fault = false;
+    } else {
+      engine->resource_input_fault = true;
+    }
+    fill_resource_decision(*engine, decision);
+    return remembered(engine, resource_status(engine->resource_decision.status));
+  } catch (...) {
+    return engine == nullptr ? HSS_INTERNAL_ERROR
+                             : remembered(engine, HSS_INTERNAL_ERROR);
+  }
+}
+
+extern "C" HSSStatus
+hss_engine_get_resource_decision(const HSSEngine *engine,
+                                 HSSResourceDecision *decision) {
+  if (decision != nullptr)
+    std::memset(decision, 0, sizeof(*decision));
+  try {
+    if (engine == nullptr || decision == nullptr)
+      return HSS_INVALID_ARGUMENT;
+    fill_resource_decision(*engine, decision);
+    return HSS_OK;
+  } catch (...) {
+    return HSS_INTERNAL_ERROR;
+  }
+}
+
+extern "C" HSSStatus hss_engine_acknowledge_resource_checkpoint(
+    HSSEngine *engine, uint32_t checkpoint_result,
+    HSSResourceDecision *decision) {
+  if (decision != nullptr)
+    std::memset(decision, 0, sizeof(*decision));
+  try {
+    if (engine == nullptr || decision == nullptr)
+      return engine == nullptr ? HSS_INVALID_ARGUMENT
+                               : remembered(engine, HSS_INVALID_ARGUMENT);
+    if (checkpoint_result > HSS_RESOURCE_CHECKPOINT_FAILED)
+      return remembered(engine, HSS_INVALID_ARGUMENT);
+    const auto durable = decide_resource_event(
+        engine, hss::resource::EventKind::kDurableCommit);
+    if (!durable.protected_event ||
+        durable.action != hss::resource::EventAction::kAcceptProtected)
+      return remembered(engine, HSS_INTERNAL_ERROR);
+    engine->resource_decision = engine->resource_policy.complete_checkpoint(
+        static_cast<hss::resource::CheckpointResult>(checkpoint_result));
+    fill_resource_decision(*engine, decision);
+    return remembered(engine, resource_status(engine->resource_decision.status));
+  } catch (...) {
+    return engine == nullptr ? HSS_INTERNAL_ERROR
+                             : remembered(engine, HSS_INTERNAL_ERROR);
+  }
+}
+
 extern "C" HSSStatus hss_engine_set_epoch(HSSEngine *engine,
                                           const HSSEpoch *epoch) {
   try {
@@ -900,6 +1084,11 @@ extern "C" HSSStatus hss_engine_set_epoch(HSSEngine *engine,
     if (!hss::coordinate::is_rigid_transform(epoch->T_project_world)) {
       return remembered(engine, HSS_INVALID_COORDINATE_FRAME);
     }
+    const auto resource = decide_resource_event(
+        engine, hss::resource::EventKind::kEpochTransition);
+    if (!resource.protected_event ||
+        resource.action != hss::resource::EventAction::kAcceptProtected)
+      return remembered(engine, HSS_INTERNAL_ERROR);
     hss::ingress::Event event{};
     event.kind = hss::ingress::EventKind::epoch;
     event.epoch = *epoch;
@@ -983,6 +1172,19 @@ extern "C" HSSStatus hss_engine_submit_frame(HSSEngine *engine,
         return remembered(engine, HSS_RESOURCE_LIMIT);
       }
     }
+    const auto resource = decide_resource_event(
+        engine, frame->depth_source == 1U
+                    ? hss::resource::EventKind::kPreviewFrame
+                    : hss::resource::EventKind::kMetricObservation);
+    if (resource.action == hss::resource::EventAction::kDropPreview) {
+      engine->ingress.record_dropped_frame();
+      return remembered(engine, HSS_OK);
+    }
+    if (resource.action ==
+        hss::resource::EventAction::kRetainSourceAndPauseCapture)
+      return remembered(engine, HSS_NOT_READY);
+    if (resource.action != hss::resource::EventAction::kProcess)
+      return remembered(engine, HSS_INTERNAL_ERROR);
     const hss::ingress::Admission admission =
         check_admission(engine, hss::ingress::EventKind::frame, payload_bytes);
     if (admission == hss::ingress::Admission::dropped_frame) {
@@ -1071,6 +1273,20 @@ extern "C" HSSStatus hss_engine_submit_mesh_event(HSSEngine *engine,
             ? hss::ingress::EventKind::mesh_add
             : (event->kind == 1U ? hss::ingress::EventKind::mesh_replace
                                  : hss::ingress::EventKind::mesh_remove);
+    const auto resource = decide_resource_event(
+        engine, remove ? hss::resource::EventKind::kMeshRemoval
+                       : hss::resource::EventKind::kMetricObservation);
+    if (remove) {
+      if (!resource.protected_event ||
+          resource.action != hss::resource::EventAction::kAcceptProtected)
+        return remembered(engine, HSS_INTERNAL_ERROR);
+    } else {
+      if (resource.action ==
+          hss::resource::EventAction::kRetainSourceAndPauseCapture)
+        return remembered(engine, HSS_NOT_READY);
+      if (resource.action != hss::resource::EventAction::kProcess)
+        return remembered(engine, HSS_INTERNAL_ERROR);
+    }
     const hss::ingress::Admission admission =
         check_admission(engine, kind, payload_bytes);
     if (admission != hss::ingress::Admission::accepted) {
@@ -1131,6 +1347,11 @@ extern "C" HSSStatus hss_engine_apply_command_json(HSSEngine *engine,
     }
     if (engine->live.busy() || engine->ingress.pending_events() != 0U)
       return remembered(engine, HSS_NOT_READY);
+    const auto resource = decide_resource_event(
+        engine, hss::resource::EventKind::kCommand);
+    if (!resource.protected_event ||
+        resource.action != hss::resource::EventAction::kAcceptProtected)
+      return remembered(engine, HSS_INTERNAL_ERROR);
     const std::string exact(reinterpret_cast<const char *>(command.data),
                             static_cast<size_t>(command.length));
     const auto processed = engine->scene_editor.process(
@@ -1203,6 +1424,11 @@ extern "C" HSSStatus hss_engine_apply_dynamic_evidence(
                                     engine->ingress.pending_events() != 0U
                                 ? HSS_NOT_READY
                                 : HSS_INVALID_ARGUMENT);
+    const auto resource = decide_resource_event(
+        engine, hss::resource::EventKind::kCommand);
+    if (!resource.protected_event ||
+        resource.action != hss::resource::EventAction::kAcceptProtected)
+      return remembered(engine, HSS_INTERNAL_ERROR);
     const std::string command_id = uuid(batch->exclusion_command_id);
     const auto pending = engine->pending_exclusions.find(command_id);
     if (pending == engine->pending_exclusions.end())
@@ -1588,6 +1814,11 @@ hss_engine_set_plan_reference(HSSEngine *e, const HSSMat4d *t, double cut) {
   if (e->ingress.pending_events() != 0 || e->live.busy())
     return remembered(e, HSS_NOT_READY);
   try {
+    const auto resource =
+        decide_resource_event(e, hss::resource::EventKind::kCommand);
+    if (!resource.protected_event ||
+        resource.action != hss::resource::EventAction::kAcceptProtected)
+      return remembered(e, HSS_INTERNAL_ERROR);
     return remembered(e, e->live.set_plan_reference(*t, cut));
   } catch (...) {
     e->live.cancel(HSS_RESOURCE_LIMIT);

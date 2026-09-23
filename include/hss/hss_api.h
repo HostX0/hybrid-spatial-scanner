@@ -182,6 +182,94 @@ typedef struct HSSPlanAnnotationSummary {
  double area_m2, cut_height_m, sampling_band_m;
 } HSSPlanAnnotationSummary;
 
+enum {
+ HSS_RESOURCE_MEASUREMENT_UNMEASURED=0,
+ HSS_RESOURCE_MEASUREMENT_MEASURED=1
+};
+enum {
+ HSS_RESOURCE_THERMAL_NOMINAL=0,
+ HSS_RESOURCE_THERMAL_FAIR=1,
+ HSS_RESOURCE_THERMAL_SERIOUS=2,
+ HSS_RESOURCE_THERMAL_CRITICAL=3
+};
+enum {
+ HSS_RESOURCE_MEMORY_NOMINAL=0,
+ HSS_RESOURCE_MEMORY_WARNING=1,
+ HSS_RESOURCE_MEMORY_CRITICAL=2
+};
+enum {
+ HSS_RESOURCE_STATUS_OK=0,
+ HSS_RESOURCE_STATUS_INVALID_CONFIGURATION=1,
+ HSS_RESOURCE_STATUS_INVALID_MEASUREMENT=2,
+ HSS_RESOURCE_STATUS_OUT_OF_ORDER=3,
+ HSS_RESOURCE_STATUS_INVALID_TRANSITION=4,
+ HSS_RESOURCE_STATUS_INVALID_EVENT_KIND=5
+};
+enum {
+ HSS_RESOURCE_MODE_NORMAL=0,
+ HSS_RESOURCE_MODE_CONSERVING=1,
+ HSS_RESOURCE_MODE_CHECKPOINT_PENDING=2,
+ HSS_RESOURCE_MODE_PAUSED=3
+};
+enum {
+ HSS_RESOURCE_PRESSURE_NONE=0,
+ HSS_RESOURCE_PRESSURE_CONSTRAINED=1,
+ HSS_RESOURCE_PRESSURE_UNSAFE=2
+};
+enum {
+ HSS_RESOURCE_REASON_NOMINAL=0,
+ HSS_RESOURCE_REASON_MEASUREMENTS_UNAVAILABLE=1,
+ HSS_RESOURCE_REASON_THERMAL_FAIR=2,
+ HSS_RESOURCE_REASON_THERMAL_SERIOUS=3,
+ HSS_RESOURCE_REASON_THERMAL_CRITICAL=4,
+ HSS_RESOURCE_REASON_MEMORY_WARNING=5,
+ HSS_RESOURCE_REASON_MEMORY_CRITICAL=6,
+ HSS_RESOURCE_REASON_STORAGE_WARNING=7,
+ HSS_RESOURCE_REASON_STORAGE_STOP=8,
+ HSS_RESOURCE_REASON_RECOVERY_HYSTERESIS=9,
+ HSS_RESOURCE_REASON_CHECKPOINT_SUCCEEDED=10,
+ HSS_RESOURCE_REASON_CHECKPOINT_FAILED=11,
+ HSS_RESOURCE_REASON_INVALID_CONFIGURATION=12,
+ HSS_RESOURCE_REASON_INVALID_MEASUREMENT=13,
+ HSS_RESOURCE_REASON_OUT_OF_ORDER=14,
+ HSS_RESOURCE_REASON_INVALID_TRANSITION=15
+};
+enum {
+ HSS_RESOURCE_CHECKPOINT_SUCCEEDED=0,
+ HSS_RESOURCE_CHECKPOINT_FAILED=1
+};
+
+/* Runtime measurements are supplied by the serialized native owner. The core
+ * does not query iOS APIs. Every sensor has an independent status; unmeasured
+ * thermal/memory values use their nominal placeholder and unmeasured storage
+ * uses zero bytes. flags and reserved must be zero. */
+typedef struct HSSResourceSample {
+ uint32_t abi_version, struct_size;
+ uint64_t sequence;
+ double monotonic_time_s;
+ uint32_t thermal_status, thermal_state;
+ uint32_t memory_status, memory_pressure;
+ uint32_t storage_status, flags;
+ uint64_t free_storage_bytes;
+ uint64_t reserved;
+} HSSResourceSample;
+
+/* Snapshot of the resource admission decision. input_fault is latched after
+ * an invalid/out-of-order sample and blocks new metric intake until a complete
+ * valid ordered sample is accepted. Preview degradation never disables metric
+ * validity checks. */
+typedef struct HSSResourceDecision {
+ uint32_t abi_version, struct_size;
+ uint64_t last_accepted_sample_sequence;
+ double last_accepted_sample_time_s;
+ uint32_t resource_status, mode, pressure, reason;
+ uint32_t monitoring_complete, input_fault;
+ uint32_t reduce_preview_quality, suspend_optional_appearance;
+ uint32_t reduce_unprotected_display_lod, validity_checks_enabled;
+ uint32_t accept_metric_observations, request_checkpoint;
+ uint32_t pause_capture, retain_existing_sources;
+} HSSResourceDecision;
+
 typedef struct HSSEngineStats {
  uint32_t abi_version, struct_size;
  uint64_t accepted_frames, dropped_frames, accepted_commands;
@@ -209,6 +297,12 @@ HSSStatus hss_engine_create(const HSSConfig*, HSSEngine** out_engine);
  * Without a reference, project-Y slicing is provisional and area unavailable. */
 HSSStatus hss_engine_set_source_is_synthetic(HSSEngine*, uint32_t source_is_synthetic);
 HSSStatus hss_engine_set_plan_reference(HSSEngine*, const HSSMat4d* T_project_floor, double cut_height_m);
+/* Default reserves are the provisional B-041 policy values. observe validates
+ * and applies one ordered owner-supplied sample. acknowledge records only the
+ * result of a durable checkpoint completed elsewhere; it performs no I/O. */
+HSSStatus hss_engine_observe_resource_sample(HSSEngine*, const HSSResourceSample*, HSSResourceDecision*);
+HSSStatus hss_engine_get_resource_decision(const HSSEngine*, HSSResourceDecision*);
+HSSStatus hss_engine_acknowledge_resource_checkpoint(HSSEngine*, uint32_t checkpoint_result, HSSResourceDecision*);
 void hss_engine_destroy(HSSEngine*); /* NULL allowed; other double destroy invalid */
 HSSStatus hss_engine_set_epoch(HSSEngine*, const HSSEpoch*);
 HSSStatus hss_engine_submit_frame(HSSEngine*, const HSSFrame*);
@@ -253,10 +347,14 @@ static_assert(sizeof(HSSId)==16, "HSSId layout");
 static_assert(sizeof(HSSVec3d)==24, "HSSVec3d layout");
 static_assert(offsetof(HSSFrame, struct_size)==4, "message prefix");
 static_assert(offsetof(HSSPlanAnnotationSummary, struct_size)==4, "plan summary prefix");
+static_assert(offsetof(HSSResourceSample, struct_size)==4, "resource sample prefix");
+static_assert(offsetof(HSSResourceDecision, struct_size)==4, "resource decision prefix");
 #else
 _Static_assert(sizeof(HSSId)==16, "HSSId layout");
 _Static_assert(sizeof(HSSVec3d)==24, "HSSVec3d layout");
 _Static_assert(offsetof(HSSFrame, struct_size)==4, "message prefix");
 _Static_assert(offsetof(HSSPlanAnnotationSummary, struct_size)==4, "plan summary prefix");
+_Static_assert(offsetof(HSSResourceSample, struct_size)==4, "resource sample prefix");
+_Static_assert(offsetof(HSSResourceDecision, struct_size)==4, "resource decision prefix");
 #endif
 #endif
