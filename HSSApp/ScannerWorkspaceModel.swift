@@ -219,7 +219,8 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                     trustedRoot: trustedRoot,
                     openMode: .create
                 )
-                _ = try await candidate.checkpoint()
+                // Store creation already persists empty project metadata. The
+                // first source checkpoint is valid only after source events.
                 let entry = WorkspaceCatalogEntry(
                     id: projectID, captureID: captureID, name: displayName,
                     updatedAt: Date(), sceneRevision: 0, state: .draft,

@@ -3,6 +3,36 @@ import UniformTypeIdentifiers
 @testable import HybridSpatialScanner
 
 final class ScannerWorkspacePipelineTests: XCTestCase {
+    func testEmptyDraftCreatesAndReopensBeforeAnySourceEvent() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hss-empty-draft-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = await MainActor.run {
+            ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true)
+        }
+        await MainActor.run { model.createProject(named: "Empty draft") }
+        for _ in 0..<100 {
+            if await MainActor.run(body: { model.phase == .ready }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let createdID = await MainActor.run { model.selectedProjectID }
+        let createdPhase = await MainActor.run { model.phase }
+        let projectID = try XCTUnwrap(createdID)
+        XCTAssertEqual(createdPhase, .ready)
+        await MainActor.run {
+            model.showLibrary()
+            model.openProject(id: projectID)
+        }
+        for _ in 0..<100 {
+            if await MainActor.run(body: { model.phase == .frozen }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let reopenedPhase = await MainActor.run { model.phase }
+        let reopenedRevision = await MainActor.run { model.latestSnapshot?.revision }
+        XCTAssertEqual(reopenedPhase, .frozen)
+        XCTAssertEqual(reopenedRevision, 0)
+    }
+
     func testNativeResourceCheckpointAndUnmeasuredRecoveryStayPaused() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("hss-resource-native-\(UUID().uuidString)", isDirectory: true)
