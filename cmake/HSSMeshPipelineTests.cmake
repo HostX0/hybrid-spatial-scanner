@@ -2,9 +2,10 @@
 #
 # This module is intentionally included only by the reconciled current-main
 # candidate. It keeps test registration separate from production runtime
-# wiring, preserves the existing top-level targets, and makes CTest discovery
-# explicit. A source that exists must compile; missing stack sources are skipped
-# so this file can be reviewed independently without fabricating coverage.
+# wiring, preserves the existing top-level targets, and requires the complete
+# reconciled mesh regression set to be present. Missing required sources are a
+# configuration error because silently shrinking CTest coverage would make a
+# green run misleading.
 
 if(NOT HSS_BUILD_TESTS)
   return()
@@ -12,8 +13,7 @@ endif()
 
 function(hss_add_mesh_pipeline_test target test_name source)
   if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
-    message(STATUS "HSS mesh pipeline test source not present: ${source}")
-    return()
+    message(FATAL_ERROR "Required HSS mesh pipeline test source is missing: ${source}")
   endif()
 
   add_executable(${target} ${source})
