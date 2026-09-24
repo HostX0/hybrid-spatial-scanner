@@ -1,0 +1,176 @@
+{
+  "date": "2026-09-23",
+  "reports": {
+    "clang-release": {
+      "baseline_commit": "598b43d4901f2c5f1e5886d80fea6373ddf737a0",
+      "baseline_source_blob": "1ed46d88b6a372ae58a9b0bcb031a5b19bcc0577",
+      "benchmark": {
+        "clutter4096": {
+          "baseline_median_ms": 12.3241,
+          "baseline_ms_samples": [
+            11.786,
+            16.0763,
+            12.0764,
+            12.3241,
+            12.6008
+          ],
+          "candidate_median_ms": 8.45748,
+          "candidate_ms_samples": [
+            8.44687,
+            9.04751,
+            8.45748,
+            7.87553,
+            8.915
+          ],
+          "speedup": 1.457183463632193
+        },
+        "live_mesh96": {
+          "baseline_median_ms": 0.0804899,
+          "baseline_ms_samples": [
+            0.0801305,
+            0.0804899,
+            0.480501,
+            0.0762435,
+            0.0832654
+          ],
+          "candidate_median_ms": 0.0315814,
+          "candidate_ms_samples": [
+            0.0351216,
+            0.0314724,
+            0.0315814,
+            0.0316901,
+            0.0313584
+          ],
+          "speedup": 2.548648888269678
+        },
+        "oblique4096": {
+          "baseline_median_ms": 29.7415,
+          "baseline_ms_samples": [
+            29.0862,
+            31.094,
+            27.745,
+            29.7415,
+            31.0497
+          ],
+          "candidate_median_ms": 10.8503,
+          "candidate_ms_samples": [
+            11.0371,
+            10.8503,
+            10.6515,
+            10.6328,
+            11.5888
+          ],
+          "speedup": 2.7410762836050613
+        }
+      },
+      "benchmark_method": "One warmup and eight fits per sample; alternating binary order. Clutter fixture intentionally ends in refinement nonconvergence, not an accepted plane. No timing pass/fail threshold.",
+      "candidate_source_blob": "d2c077283761082dc4817f822c70fa0a6f26328d",
+      "compiler": "clang version 17.0.0 (https://github.com/swiftlang/llvm-project.git 10999b6d034fe318f3d56c83bddb6572593a8bb0)",
+      "fixture_fit_status_counts": {
+        "0": 212,
+        "1": 24,
+        "2": 24,
+        "3": 24,
+        "4": 24,
+        "5": 48,
+        "6": 24,
+        "7": 24,
+        "8": 4
+      },
+      "flags": [
+        "-std=c++20",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-O3"
+      ],
+      "header_blob": "35735ffc667c45357bef2023c28875ff46219dd1",
+      "machine": "x86_64",
+      "output_sha256": "d588c909ebe12c9fc7d41f54d68e4b0e3af153bdc1adc76a1000e0286c916c87",
+      "parity_cases_passed": 408,
+      "parity_mismatches": 0,
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+      "probe_blob": "40e2cf8cc2dbfa3590d7a315c6cc7ad44d3c391c",
+      "sanitizers": false,
+      "scope": "Targeted host module only; not full CTest, Apple build, sensor metrology or app FPS",
+      "unit_scenarios_per_suite": 7,
+      "unit_suites_passed": 2,
+      "unit_test_blob": "9af5adc580f2fb58669bdaeaac8b93419ef44164"
+    },
+    "clang-sanitized": {
+      "baseline_commit": "598b43d4901f2c5f1e5886d80fea6373ddf737a0",
+      "baseline_source_blob": "1ed46d88b6a372ae58a9b0bcb031a5b19bcc0577",
+      "candidate_source_blob": "d2c077283761082dc4817f822c70fa0a6f26328d",
+      "compiler": "clang version 17.0.0 (https://github.com/swiftlang/llvm-project.git 10999b6d034fe318f3d56c83bddb6572593a8bb0)",
+      "fixture_fit_status_counts": {
+        "0": 212,
+        "1": 24,
+        "2": 24,
+        "3": 24,
+        "4": 24,
+        "5": 48,
+        "6": 24,
+        "7": 24,
+        "8": 4
+      },
+      "flags": [
+        "-std=c++20",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-O1",
+        "-g",
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer"
+      ],
+      "header_blob": "35735ffc667c45357bef2023c28875ff46219dd1",
+      "machine": "x86_64",
+      "output_sha256": "d588c909ebe12c9fc7d41f54d68e4b0e3af153bdc1adc76a1000e0286c916c87",
+      "parity_cases_passed": 408,
+      "parity_mismatches": 0,
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+      "probe_blob": "40e2cf8cc2dbfa3590d7a315c6cc7ad44d3c391c",
+      "sanitizers": true,
+      "scope": "Targeted host module only; not full CTest, Apple build, sensor metrology or app FPS",
+      "unit_scenarios_per_suite": 7,
+      "unit_suites_passed": 2,
+      "unit_test_blob": "9af5adc580f2fb58669bdaeaac8b93419ef44164"
+    },
+    "gcc-release": {
+      "baseline_commit": "598b43d4901f2c5f1e5886d80fea6373ddf737a0",
+      "baseline_source_blob": "1ed46d88b6a372ae58a9b0bcb031a5b19bcc0577",
+      "candidate_source_blob": "d2c077283761082dc4817f822c70fa0a6f26328d",
+      "compiler": "g++ (Debian 14.2.0-19) 14.2.0",
+      "fixture_fit_status_counts": {
+        "0": 212,
+        "1": 24,
+        "2": 24,
+        "3": 24,
+        "4": 24,
+        "5": 48,
+        "6": 24,
+        "7": 24,
+        "8": 4
+      },
+      "flags": [
+        "-std=c++20",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-O3"
+      ],
+      "header_blob": "35735ffc667c45357bef2023c28875ff46219dd1",
+      "machine": "x86_64",
+      "output_sha256": "d588c909ebe12c9fc7d41f54d68e4b0e3af153bdc1adc76a1000e0286c916c87",
+      "parity_cases_passed": 408,
+      "parity_mismatches": 0,
+      "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+      "probe_blob": "40e2cf8cc2dbfa3590d7a315c6cc7ad44d3c391c",
+      "sanitizers": false,
+      "scope": "Targeted host module only; not full CTest, Apple build, sensor metrology or app FPS",
+      "unit_scenarios_per_suite": 7,
+      "unit_suites_passed": 2,
+      "unit_test_blob": "9af5adc580f2fb58669bdaeaac8b93419ef44164"
+    }
+  }
+}
