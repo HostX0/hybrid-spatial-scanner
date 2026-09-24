@@ -96,6 +96,17 @@ Observed:
 
 This harness result is **not** evidence that the twelve real repository test sources compile or pass together. It validates only the new registration layer.
 
+### Hosted Actions observed after opening the reconciliation PR
+
+Opening/updating PR #18 automatically triggered the two stack-provided pull-request workflows on reconciled head `6bf570a3fffb890750acf7eee48172f92ba27100`:
+
+- Plane-fit exact scoring: run `35978260979`, job `107563762489`
+- Anchor-patch exact branch verification: run `35978260931`, job `107563762157`
+
+Both completed `failure`, but both jobs report `steps=[]`, `runner_id=0`, empty runner name, and requested label `ubuntu-24.04`. Therefore checkout, compiler, verifier, CMake, CTest and sanitizer commands did **not** execute. This independently confirms that the previously observed hosted pre-step blocker persists on the reconciled branch. The cause remains unverified and is not attributed to billing, quota or account state.
+
+No manual rerun was requested.
+
 ## Evidence boundary / remaining gate
 
 The connected execution container still cannot materialize the complete private repository checkout. Therefore this round did **not** run:
