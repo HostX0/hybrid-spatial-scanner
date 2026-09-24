@@ -54,6 +54,33 @@
     "placeholder_fail": 0,
     "scope": "CMake registration mechanics only; placeholder translation units, not real mesh tests"
   },
+  "hosted_actions": {
+    "head": "6bf570a3fffb890750acf7eee48172f92ba27100",
+    "manually_rerun": false,
+    "runs": [
+      {
+        "workflow": "Plane fit exact scoring",
+        "run_id": 35978260979,
+        "job_id": 107563762489,
+        "conclusion": "failure",
+        "steps": 0,
+        "runner_id": 0,
+        "runner_name": "",
+        "requested_label": "ubuntu-24.04"
+      },
+      {
+        "workflow": "Anchor patch exact branch verification",
+        "run_id": 35978260931,
+        "job_id": 107563762157,
+        "conclusion": "failure",
+        "steps": 0,
+        "runner_id": 0,
+        "runner_name": "",
+        "requested_label": "ubuntu-24.04"
+      }
+    ],
+    "interpretation": "No checkout/compiler/verifier/CMake/CTest/sanitizer step executed; hosting cause remains unverified."
+  },
   "remaining_required_commands": [
     "cmake -S . -B build -DHSS_BUILD_TESTS=ON -DHSS_ENABLE_SANITIZERS=ON",
     "cmake --build build --parallel",
