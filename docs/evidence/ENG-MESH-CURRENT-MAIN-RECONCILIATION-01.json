@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "task": "Reconcile deterministic mesh stack with current main and register missing CTest suites",
+  "repository": "HostX0/hybrid-spatial-scanner",
+  "source": {
+    "main": "4cae5a0aaf5b28827f6c96b54d2ec9dbea42ef25",
+    "stack_head": "afe2c994ebae7af73e736439ac1976e1e2e013d3",
+    "synthetic_merge_commit": "ae1e14ec31ff0473b8d119280b8b5a1ae645479d",
+    "synthetic_merge_tree": "4f70d43a61ea8b4d79467ca6d03829c9e9727d4c",
+    "pull_request": 18,
+    "branch": "hss/current-main-stack-candidate"
+  },
+  "merge_observation": {
+    "mergeable": true,
+    "rebaseable": true,
+    "mergeable_state": "unstable",
+    "merged_to_main": false
+  },
+  "cmake": {
+    "current_main_blob_before_registration": "3631977c845ff9155776e0ebba495bea4b0e250b",
+    "root_blob_after_registration": "068385bd79424dc0b70f0df13ed5b00baa254f09",
+    "registration_commit": "b21f12073a96af253b662b966bcb49a022a4ca16",
+    "registration_module_blob": "bb7c283235378031467d61bc70a10a650d032f9b",
+    "root_diff_additions": 2,
+    "root_diff_deletions": 0
+  },
+  "registered_tests": [
+    "hss_mesh_patch_components",
+    "hss_mesh_patch_runtime_plan",
+    "hss_mesh_patch_surface_binding",
+    "hss_mesh_anchor_patch_plan",
+    "hss_mesh_event_payload",
+    "hss_mesh_anchor_project_batch",
+    "hss_mesh_anchor_reconstruction_plan",
+    "hss_mesh_anchor_cut_fragments",
+    "hss_mesh_anchor_surface_assembly",
+    "hss_mesh_anchor_scene_graph",
+    "hss_mesh_anchor_scene_entities",
+    "hss_mesh_anchor_scene_snapshot"
+  ],
+  "links_spatial_core": [
+    "hss_mesh_anchor_project_batch",
+    "hss_mesh_anchor_reconstruction_plan",
+    "hss_mesh_anchor_cut_fragments",
+    "hss_mesh_anchor_scene_snapshot"
+  ],
+  "isolated_stub_test": "hss_mesh_anchor_surface_assembly",
+  "registration_harness": {
+    "exact_module_blob_verified": true,
+    "configure": "pass",
+    "build": "pass",
+    "ctest_discovered": 12,
+    "placeholder_pass": 12,
+    "placeholder_fail": 0,
+    "scope": "CMake registration mechanics only; placeholder translation units, not real mesh tests"
+  },
+  "remaining_required_commands": [
+    "cmake -S . -B build -DHSS_BUILD_TESTS=ON -DHSS_ENABLE_SANITIZERS=ON",
+    "cmake --build build --parallel",
+    "ctest --test-dir build -N",
+    "ctest --test-dir build --output-on-failure"
+  ],
+  "not_claimed": [
+    "full reconciled repository compile",
+    "real mesh-source CTest pass",
+    "hosted exact-branch pass",
+    "production live_reconstruction integration",
+    "Xcode or simulator validation",
+    "physical iPhone LiDAR or Metal validation",
+    "thermal, memory, or real-room metrology"
+  ]
+}
