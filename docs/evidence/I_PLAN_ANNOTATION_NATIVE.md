@@ -54,3 +54,8 @@ physical metrology, and thermal/resource endurance remain untested. The core
 currently leaves finished-room area unavailable, including for a confirmed
 single captured-mesh loop, until classification and calibrated quality have
 independent accepted authority.
+
+Follow-up: duplicate fragment IDs in a typed plan now suppress native review
+instead of trapping during dictionary construction. The isolated simulator
+test `ScannerWorkspacePipelineTests/testDuplicateSemanticFragmentIDSuppressesReview`
+passed (1 test, zero failures); no broad suite was rerun for this guard change.

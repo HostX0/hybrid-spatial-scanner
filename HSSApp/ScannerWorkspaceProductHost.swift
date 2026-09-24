@@ -788,7 +788,12 @@ enum ScannerAcceptedPlanDecoder {
         let bounds = points.dropFirst().reduce(points.first.map { CGRect(origin: $0, size: .zero) }) { partial, point in
             partial?.union(CGRect(origin: point, size: .zero))
         }
-        let boundFragments = Dictionary(uniqueKeysWithValues: segments.map { ($0.0.id, $0.0) })
+        var boundFragments: [String: Fragment] = [:]
+        for (fragment, _, _) in segments {
+            guard boundFragments.updateValue(fragment, forKey: fragment.id) == nil else {
+                return nil
+            }
+        }
         var measurements: [ScannerWorkspacePresentation.Measurement] = []
         var dimensions: [ScannerWorkspacePresentation.DimensionAnnotation] = []
         for (index, annotation) in annotations.enumerated() {

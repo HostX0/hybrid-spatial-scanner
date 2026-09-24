@@ -10,6 +10,37 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
         })
     }
 
+    func testDuplicateSemanticFragmentIDSuppressesReview() {
+        let fragmentID = UUID().uuidString.lowercased()
+        let fragment = """
+        {"id":"\(fragmentID)","state":"supported","geometry_origin":"fitted",\
+        "segment_m":[[0,0],[1,0]],"source_revision":"7"}
+        """
+        func snapshot(_ fragments: String) -> ScannerSceneSnapshot {
+            let plan = """
+            {"scene_revision":"7","source_is_synthetic":false,"boundary_state":"open",\
+            "validity":"unavailable","height":{"reference_state":"floor_unknown"},\
+            "fragments":[\(fragments)],"area":{"availability":"unavailable","area_m2":null}}
+            """
+            return ScannerSceneSnapshot(
+                revision: 7,
+                verticesMetres: [],
+                triangleIndices: [],
+                sceneJSON: Data("{}".utf8),
+                planAnnotation: ScannerPlanAnnotationSnapshot(
+                    sceneRevision: 7, planAvailable: true, annotationLayoutAvailable: false,
+                    referenceState: 1, boundaryState: 1, planAvailability: 2,
+                    areaAvailability: 2, areaMetresSquared: nil, cutHeightMetres: 1.2,
+                    isSynthetic: false, planJSON: Data(plan.utf8), annotationJSON: nil
+                ),
+                provenance: [],
+                isFrozen: true
+            )
+        }
+        XCTAssertNotNil(ScannerAcceptedPlanDecoder.decode(snapshot(fragment)))
+        XCTAssertNil(ScannerAcceptedPlanDecoder.decode(snapshot("\(fragment),\(fragment)")))
+    }
+
     func testSyntheticProjectCheckpointReopenAndReplay() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("hss-workspace-tests-\(UUID().uuidString)", isDirectory: true)
