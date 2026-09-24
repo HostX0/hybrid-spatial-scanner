@@ -311,14 +311,67 @@ static void check_fail_closed() {
   }
 }
 
+static bool same_point(const HSSVec3d &a, const HSSVec3d &b) {
+  return a.x == b.x && a.y == b.y && a.z == b.z;
+}
+
+static bool same_plan_point(const hss::coordinate::PlanPoint &a,
+                            const hss::coordinate::PlanPoint &b) {
+  return a.u_m == b.u_m && a.v_m == b.v_m;
+}
+
+static bool same_graph_input(const graph::Result &a, const graph::Result &b) {
+  if (a.status != b.status || a.merged_endpoint_count != b.merged_endpoint_count ||
+      a.merged_edge_fragment_count != b.merged_edge_fragment_count ||
+      a.multi_surface_edge_count != b.multi_surface_edge_count ||
+      a.nodes.size() != b.nodes.size() || a.edges.size() != b.edges.size())
+    return false;
+  for (size_t i = 0; i < a.nodes.size(); ++i) {
+    const auto &x = a.nodes[i];
+    const auto &y = b.nodes[i];
+    if (!(x.cell == y.cell) || !same_point(x.point_m, y.point_m) ||
+        !same_plan_point(x.uv, y.uv) || x.node_key != y.node_key ||
+        x.surface_keys != y.surface_keys || x.edge_indices != y.edge_indices)
+      return false;
+  }
+  for (size_t i = 0; i < a.edges.size(); ++i) {
+    const auto &x = a.edges[i];
+    const auto &y = b.edges[i];
+    if (x.a != y.a || x.b != y.b || x.edge_key != y.edge_key ||
+        x.surface_keys != y.surface_keys ||
+        x.source_fragment_indices != y.source_fragment_indices ||
+        x.source_triangle_indices != y.source_triangle_indices)
+      return false;
+  }
+  return true;
+}
+
+static bool same_surface_inputs(const std::vector<surface::Surface> &a,
+                                const std::vector<surface::Surface> &b) {
+  if (a.size() != b.size())
+    return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    const auto &x = a[i];
+    const auto &y = b[i];
+    if (x.surface_key != y.surface_key ||
+        x.support_identity != y.support_identity ||
+        x.canonical_triangle != y.canonical_triangle ||
+        x.triangle_count != y.triangle_count || x.fit_status != y.fit_status ||
+        x.plane != y.plane ||
+        x.cut_fragment_indices != y.cut_fragment_indices)
+      return false;
+  }
+  return true;
+}
+
 static void check_input_immutability() {
   Fixture f = fixture();
   const auto graph_before = f.graph;
   const auto surfaces_before = f.surfaces.surfaces;
   auto r = scene::assemble(f.graph, f.surfaces, kSupport, live_id);
   CHECK(r.status == scene::Status::kOk);
-  CHECK(f.graph == graph_before);
-  CHECK(f.surfaces.surfaces == surfaces_before);
+  CHECK(same_graph_input(f.graph, graph_before));
+  CHECK(same_surface_inputs(f.surfaces.surfaces, surfaces_before));
 }
 
 int main(int argc, char **argv) {
