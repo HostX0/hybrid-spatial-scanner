@@ -47,6 +47,17 @@ failing event sequence/status when the engine rejects an otherwise valid record.
 The caller discards a newly created engine when replay fails after partial
 application; no failed replay engine may become the live project.
 
+After successful replay, the additive `hss_project_store_get_resume_cursor`
+query revalidates the committed manifest and complete source stream and returns
+its last event sequence, accepted scene revision, capture ID, highest epoch,
+last monotonic event time, manifest revision and event count. It refuses a
+store with pending records or a changed durable stream. A metadata-only draft
+returns a zero cursor without inventing a capture identity. The diagnostic
+`failed_event_sequence` is never a resume cursor. Native consumers compare
+the query to the just-replayed engine and use the retained capture ID with a
+fresh epoch above the durable namespace; a new AR world origin stays unresolved
+until a separately accepted relationship exists.
+
 Replay submits every command disposition to the engine processor and compares
 its exact result bytes and revision boundary to the journal. For conflict,
 rejected, and pending-exclusion records it also compares the immutable scene
@@ -65,3 +76,9 @@ in one serialized owner, retain no borrowed buffers after a call, and display a
 saved state only after `hss_project_store_checkpoint` returns `HSS_OK` with
 `durability_state=1`. Use `OPEN_EXISTING` for reopen so a missing or mismatched
 project cannot be replaced by an empty one.
+
+This cursor is a new C function and message. Existing C layouts, ABI version 1,
+persisted metadata/chunks/manifests, and HSSCAN archive schema are unchanged;
+existing projects require no migration. Older clients can continue replaying,
+but a client that resumes appends must adopt the cursor to avoid mixing event,
+scene, and manifest revision domains.

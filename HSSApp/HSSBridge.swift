@@ -254,6 +254,11 @@ struct HSSProjectReplay: Equatable, Sendable {
     let durableEventCount: UInt64
     let appliedEventCount: UInt64
     let usedPreviousManifest: Bool
+    let lastEventSequence: UInt64
+    let acceptedSceneRevision: UInt64
+    let lastMonotonicTime: TimeInterval
+    let highestSessionEpoch: UInt32
+    let captureID: UUID
 }
 
 struct ScannerResourceDecision: Equatable, Sendable {
@@ -363,7 +368,7 @@ actor HSSProjectRuntime {
     private var nextResourceSequence: UInt64 = 1
     private var lastResourceTime: TimeInterval = 0
     let projectID: UUID
-    let captureID: UUID
+    private(set) var captureID: UUID
     let sourceIsSynthetic: Bool
 
     init(
@@ -829,12 +834,42 @@ actor HSSProjectRuntime {
         var result = HSSProjectReplayResult()
         let status = hss_project_store_replay(store, engine, &result)
         guard status == HSS_OK else { throw HSSBridgeError.native(status) }
+        var cursor = HSSProjectResumeCursor()
+        cursor.abi_version = HSS_PROJECT_STORE_ABI_VERSION
+        cursor.struct_size = UInt32(MemoryLayout<HSSProjectResumeCursor>.size)
+        let cursorStatus = hss_project_store_get_resume_cursor(store, &cursor)
+        guard cursorStatus == HSS_OK else { throw HSSBridgeError.native(cursorStatus) }
+        guard cursor.durable_revision == result.durable_revision,
+              cursor.durable_event_count == result.durable_event_count,
+              result.applied_event_count == result.durable_event_count,
+              cursor.accepted_scene_revision == (try stats().scene_revision),
+              cursor.has_capture_id == (cursor.durable_event_count == 0 ? 0 : 1) else {
+            throw HSSBridgeError.invalidValue("Recovered source cursor does not match replayed scene.")
+        }
+        let recoveredCaptureID = cursor.has_capture_id == 1
+            ? Self.uuid(cursor.capture_id) : captureID
+        captureID = recoveredCaptureID
         return HSSProjectReplay(
             durableRevision: result.durable_revision,
             durableEventCount: result.durable_event_count,
             appliedEventCount: result.applied_event_count,
-            usedPreviousManifest: result.used_previous_manifest != 0
+            usedPreviousManifest: result.used_previous_manifest != 0,
+            lastEventSequence: cursor.last_event_sequence,
+            acceptedSceneRevision: cursor.accepted_scene_revision,
+            lastMonotonicTime: cursor.last_monotonic_time_s,
+            highestSessionEpoch: cursor.highest_session_epoch,
+            captureID: recoveredCaptureID
         )
+    }
+
+    private static func uuid(_ native: HSSId) -> UUID {
+        var value = UUID().uuid
+        withUnsafeMutableBytes(of: &value) { destination in
+            withUnsafeBytes(of: native) { source in
+                destination.copyBytes(from: source)
+            }
+        }
+        return UUID(uuid: value)
     }
 
     private static func nativeID(_ uuid: UUID) -> HSSId {

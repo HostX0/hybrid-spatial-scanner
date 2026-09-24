@@ -210,6 +210,13 @@ void run() {
   auto create = config(root_path, HSS_PROJECT_STORE_CREATE_NEW);
   check(hss_project_store_create(&create, &store) == HSS_OK && store,
         "create project");
+  HSSProjectResumeCursor cursor{};
+  cursor.abi_version = HSS_PROJECT_STORE_ABI_VERSION;
+  cursor.struct_size = sizeof(cursor);
+  check(hss_project_store_get_resume_cursor(store, &cursor) == HSS_OK &&
+            cursor.durable_event_count == 0 && cursor.last_event_sequence == 0 &&
+            cursor.has_capture_id == 0,
+        "empty metadata has a verified zero resume cursor");
   HSSProjectCheckpointResult empty_checkpoint{};
   check(hss_project_store_checkpoint(store, &empty_checkpoint) == HSS_NOT_READY &&
             empty_checkpoint.durable_revision == 0,
@@ -337,12 +344,30 @@ void run() {
         "reopened no-pending checkpoint verifies the recovered manifest");
   check(replay.applied_event_count == 8 && engine.revision == 7,
         "all events replay with exact revisions");
+  cursor = {};
+  cursor.abi_version = HSS_PROJECT_STORE_ABI_VERSION;
+  cursor.struct_size = sizeof(cursor);
+  const HSSId expected_capture = id(7);
+  check(hss_project_store_get_resume_cursor(store, &cursor) == HSS_OK &&
+            cursor.durable_revision == 2 && cursor.durable_event_count == 8 &&
+            cursor.last_event_sequence == 8 && cursor.accepted_scene_revision == 7 &&
+            cursor.last_monotonic_time_s == 8.0 &&
+            cursor.highest_session_epoch == 2 && cursor.has_capture_id == 1 &&
+            std::memcmp(&cursor.capture_id, &expected_capture, sizeof(HSSId)) == 0,
+        "verified cursor keeps event sequence, scene and manifest revisions separate");
   check(engine.applied ==
             std::vector<std::string>({"epoch", "frame", "epoch", "mesh-add",
                                       "mesh-remove", "command", "plan"}),
         "original event/control order");
   check(engine.epoch_relationships == std::vector<uint32_t>({1, 0}),
         "unresolved epoch remains unresolved");
+  append_epoch(store, cursor.last_event_sequence + 1,
+               cursor.accepted_scene_revision + 1,
+               cursor.highest_session_epoch + 1, 0);
+  cursor.abi_version = HSS_PROJECT_STORE_ABI_VERSION;
+  cursor.struct_size = sizeof(cursor);
+  check(hss_project_store_get_resume_cursor(store, &cursor) == HSS_NOT_READY,
+        "cursor cannot be reused while new source is pending");
   hss_project_store_destroy(store);
   std::filesystem::path project =
       std::filesystem::path(root_path) / "00000000000000000000000000000009";

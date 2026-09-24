@@ -629,6 +629,22 @@ final class ARSessionCoordinator: ObservableObject {
         activeConfiguration != nil
     }
 
+    /// Rebase the next AR session onto a project's verified durable epoch
+    /// namespace. A resumed stream must not accept a new world origin as the
+    /// prior project's identity transform without relocalization evidence.
+    func prepareForProject(lastCommittedEpoch: UInt32, hasRetainedSource: Bool) -> Bool {
+        guard !isSessionRunning,
+              epochPolicy.prepareForProject(lastCommittedEpoch: lastCommittedEpoch) else { return false }
+        epochRelocalization = epochPolicy.snapshot()
+        hasAcceptedSessionRun = false
+        nextEpochPolicyEventSequence = 0
+        firstCaptureEpoch = nil
+        firstEpochAccepted = hasRetainedSource
+        latestAuthorizedTargetSourceIdentity = nil
+        sessionDriver.setCaptureEpoch(0)
+        return true
+    }
+
     /// The one session used for capture and camera preview. Consumers may
     /// render it but must not change its delegate or configuration.
     var captureSession: ARSession? { sessionDriver.captureSession }

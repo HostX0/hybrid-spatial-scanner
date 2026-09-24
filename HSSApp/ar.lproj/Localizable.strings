@@ -121,3 +121,5 @@
 "Resource monitoring could not verify safe metric capture." = "لم تتمكن مراقبة الموارد من التحقق من سلامة الالتقاط المتري.";
 "Resource monitoring paused capture" = "أوقفت مراقبة الموارد الالتقاط";
 "Retained source remains local. Retry saving, then review the project." = "تبقى البيانات المصدرية المحتفظ بها محلية. أعد محاولة الحفظ ثم راجع المشروع.";
+"Capture time is not yet monotonic" = "وقت الالتقاط ليس متسلسلًا بعد";
+"The retained source time is ahead of this device clock. Start a new local project or retry after the monotonic clock catches up." = "وقت البيانات المصدرية المحتفظ بها يتقدم على ساعة هذا الجهاز. ابدأ مشروعًا محليًا جديدًا أو أعد المحاولة بعد أن تلحق الساعة الرتيبة به.";

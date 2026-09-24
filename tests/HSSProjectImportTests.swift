@@ -172,6 +172,116 @@ final class HSSProjectImportTests: XCTestCase {
         )
     }
 
+    func testImportedCatalogTracksSceneRevisionAndRecoveredSequence() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hss-import-resume-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceRoot = root.appendingPathComponent("source", isDirectory: true)
+        let libraryRoot = root.appendingPathComponent("library", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
+        let projectID = UUID()
+        let captureID = UUID()
+        _ = try await createCommittedSyntheticProject(
+            root: sourceRoot, projectID: projectID, captureID: captureID
+        )
+        let source = try HSSProjectRuntime(
+            projectID: projectID, captureID: captureID, sourceIsSynthetic: true,
+            trustedRoot: sourceRoot, openMode: .openExisting
+        )
+        let firstReplay = try await source.replayCommittedSource()
+        XCTAssertEqual(firstReplay.lastEventSequence, 3)
+        try await source.setEpoch(
+            CaptureEpochControl(
+                sessionEpoch: 2, relationshipState: .unresolved,
+                projectFromWorld: matrix().map(Double.init), transformRevision: 1
+            ), eventSequence: 10, monotonicTime: 10
+        )
+        let sourceCheckpoint = try await source.checkpoint()
+        XCTAssertEqual(sourceCheckpoint.durableRevision, 2)
+        let archive = root.appendingPathComponent("source.hsscan")
+        try HSSProjectArchiveExportBridge.writeHSSCANArchive(
+            forProjectDirectory: sourceRoot.appendingPathComponent(projectID.hssDirectoryName),
+            to: archive
+        )
+
+        let workspace = await MainActor.run {
+            ScannerWorkspaceModel(trustedRoot: libraryRoot, sourceIsSynthetic: true)
+        }
+        await MainActor.run { workspace.importProjectArchive(at: archive) }
+        for _ in 0..<200 {
+            if await MainActor.run(body: { workspace.phase == .frozen }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let imported = await MainActor.run {
+            (workspace.latestSnapshot, workspace.localProjects.first(where: { $0.id == projectID }),
+             workspace.canExportProjectArchive, workspace.phase)
+        }
+        XCTAssertEqual(imported.3, .frozen)
+        XCTAssertEqual(imported.0?.revision, 4)
+        XCTAssertEqual(imported.1?.sceneRevision, 4,
+                       "Catalog stores accepted scene revision, not manifest revision 2.")
+        XCTAssertTrue(imported.2, "The imported frozen project remains archive-export eligible.")
+        let frozen = try XCTUnwrap(imported.0)
+        let catalog = try XCTUnwrap(imported.1)
+        let measuredScene = ScannerSceneSnapshot(
+            revision: frozen.revision,
+            verticesMetres: frozen.verticesMetres,
+            triangleIndices: frozen.triangleIndices,
+            sceneJSON: Data("""
+            {"project_id":"\(projectID.uuidString.lowercased())","scene_revision":"4",\
+            "nodes":[{"id":"a","position_m":[0,0,0]},{"id":"b","position_m":[1,0,0]}],\
+            "edges":[{"start_node_id":"a","end_node_id":"b",\
+            "provenance":{"geometry_origin":"fitted","support_ids":["mesh"]}}]}
+            """.utf8),
+            provenance: frozen.provenance,
+            isFrozen: true
+        )
+        XCTAssertTrue(ScannerExportEligibility.isEligible(
+            snapshot: measuredScene, project: catalog,
+            saveState: .clean, phase: .frozen
+        ))
+        let staleManifestRevision = ScannerProjectSummary(
+            id: catalog.id, name: catalog.name, updatedAt: catalog.updatedAt,
+            sceneRevision: sourceCheckpoint.durableRevision, state: catalog.state
+        )
+        XCTAssertFalse(ScannerExportEligibility.isEligible(
+            snapshot: measuredScene, project: staleManifestRevision,
+            saveState: .clean, phase: .frozen
+        ))
+
+        await MainActor.run { workspace.showLibrary() }
+        let resumed = try HSSProjectRuntime(
+            projectID: projectID, captureID: UUID(), sourceIsSynthetic: true,
+            trustedRoot: libraryRoot, openMode: .openExisting
+        )
+        let cursor = try await resumed.replayCommittedSource()
+        XCTAssertEqual(cursor.captureID, captureID)
+        XCTAssertEqual(cursor.lastEventSequence, 10)
+        XCTAssertEqual(cursor.acceptedSceneRevision, 4)
+        XCTAssertEqual(cursor.durableRevision, 2)
+        try await resumed.setEpoch(
+            CaptureEpochControl(
+                sessionEpoch: 3, relationshipState: .unresolved,
+                projectFromWorld: matrix().map(Double.init), transformRevision: 1
+            ), eventSequence: cursor.lastEventSequence + 1, monotonicTime: 11
+        )
+        let resumedCheckpoint = try await resumed.checkpoint()
+        XCTAssertEqual(resumedCheckpoint.durableRevision, 3)
+        await MainActor.run { workspace.openProject(id: projectID) }
+        for _ in 0..<200 {
+            if await MainActor.run(body: { workspace.phase == .frozen }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let reopened = await MainActor.run {
+            (workspace.latestSnapshot?.revision,
+             workspace.localProjects.first(where: { $0.id == projectID })?.sceneRevision,
+             workspace.canExportProjectArchive)
+        }
+        XCTAssertEqual(reopened.0, 5)
+        XCTAssertEqual(reopened.1, 5)
+        XCTAssertTrue(reopened.2)
+    }
+
     private func metadata(projectID: UUID, synthetic: Bool) -> Data {
         let hex = projectID.hssDirectoryName
         let sourceKind = synthetic ? "true" : "false"

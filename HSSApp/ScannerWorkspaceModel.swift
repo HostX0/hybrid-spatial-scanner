@@ -109,6 +109,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     private var selectedCatalogEntry: WorkspaceCatalogEntry?
     private var pendingEvents: [SequencedNativeEvent] = []
     private var nextEventSequence: UInt64 = 1
+    private var lastDurableEventTime: TimeInterval = 0
     private var drainScheduled = false
     private var freezeRequested = false
     private var saveRequested = false
@@ -221,6 +222,9 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 )
                 // Store creation already persists empty project metadata. The
                 // first source checkpoint is valid only after source events.
+                guard captureCoordinator.prepareForProject(lastCommittedEpoch: 0, hasRetainedSource: false) else {
+                    throw HSSBridgeError.invalidValue("Capture epoch identity is unavailable for this project.")
+                }
                 let entry = WorkspaceCatalogEntry(
                     id: projectID, captureID: captureID, name: displayName,
                     updatedAt: Date(), sceneRevision: 0, state: .draft,
@@ -237,6 +241,8 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 )
                 observedProvenance = sourceIsSynthetic ? [.syntheticTest] : []
                 nextEventSequence = 1
+                lastDurableEventTime = 0
+                acceptedEpochProjectTransforms.removeAll()
                 keyframeSelector.reset()
                 captureAccounting = .zero
                 didReportDepthKeyframeCapacity = false
@@ -294,13 +300,13 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                     trustedRoot: stageRoot,
                     openMode: .openExisting
                 )
-                _ = try await candidate!.replayCommittedSource()
+                let stagedReplay = try await candidate!.replayCommittedSource()
                 try await candidate!.drain()
                 candidate = nil
                 let provenance: Set<ScannerSceneProvenance> = metadata.sourceIsSynthetic
                     ? [.syntheticTest, .importedReplay] : [.importedReplay]
                 let entry = WorkspaceCatalogEntry(
-                    id: metadata.projectID, captureID: UUID(),
+                    id: metadata.projectID, captureID: stagedReplay.captureID,
                     name: "Imported \(metadata.projectID.uuidString.prefix(8))", updatedAt: Date(),
                     sceneRevision: 0,
                     state: .frozen, sourceIsSynthetic: metadata.sourceIsSynthetic
@@ -310,7 +316,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                     validate: {
                         let runtime = try HSSProjectRuntime(
                             projectID: metadata.projectID,
-                            captureID: UUID(),
+                            captureID: stagedReplay.captureID,
                             sourceIsSynthetic: metadata.sourceIsSynthetic,
                             trustedRoot: trustedRoot,
                             openMode: .openExisting
@@ -318,24 +324,37 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                         let replay = try await runtime.replayCommittedSource()
                         try await runtime.drain()
                         let snapshot = try await runtime.snapshot(provenance: provenance, frozen: true)
+                        guard replay.captureID == stagedReplay.captureID,
+                              replay.lastEventSequence == stagedReplay.lastEventSequence,
+                              replay.lastEventSequence < UInt64.max - 1,
+                              captureCoordinator.prepareForProject(
+                                lastCommittedEpoch: replay.highestSessionEpoch,
+                                hasRetainedSource: replay.durableEventCount > 0
+                              ) else {
+                            throw HSSBridgeError.invalidValue("Imported source changed or its capture identity is exhausted.")
+                        }
                         return (runtime, replay, snapshot)
                     },
                     publish: { adopted in
                         var published = entry
-                        published.sceneRevision = adopted.1.durableRevision
+                        published.captureID = adopted.1.captureID
+                        published.sceneRevision = adopted.2.revision
                         try publishCatalogEntry(published)
                     }
                 )
                 try? FileManager.default.removeItem(at: stageRoot)
                 var adoptedEntry = entry
-                adoptedEntry.sceneRevision = adopted.1.durableRevision
+                adoptedEntry.captureID = adopted.1.captureID
+                adoptedEntry.sceneRevision = adopted.2.revision
                 self.runtime = adopted.0
                 selectedCatalogEntry = adoptedEntry
                 selectedProjectID = entry.id
                 assignSelectedName(adoptedEntry.name)
                 latestSnapshot = adopted.2
                 observedProvenance = provenance
-                nextEventSequence = max(1, adopted.2.revision + 1)
+                nextEventSequence = adopted.1.lastEventSequence + 1
+                lastDurableEventTime = adopted.1.lastMonotonicTime
+                acceptedEpochProjectTransforms.removeAll()
                 resetTargetSelection()
                 saveState = .clean
                 exportState = .idle
@@ -350,6 +369,14 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
 
     func startCapture() {
         guard runtime != nil, selectedProjectID != nil, !captureCoordinator.isSessionRunning else { return }
+        guard ProcessInfo.processInfo.systemUptime >= lastDurableEventTime else {
+            fail(
+                title: String(localized: "Capture time is not yet monotonic"),
+                message: String(localized: "The retained source time is ahead of this device clock. Start a new local project or retry after the monotonic clock catches up."),
+                recovery: .returnToProjectList
+            )
+            return
+        }
         guard !resourcePauseLatched else {
             showResourcePauseIssue(checkpointSucceeded: resourceCheckpointSucceeded)
             return
@@ -495,19 +522,32 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                     trustedRoot: trustedRoot,
                     openMode: .openExisting
                 )
-                _ = try await candidate.replayCommittedSource()
+                let replay = try await candidate.replayCommittedSource()
                 try await candidate.drain()
                 let provenance: Set<ScannerSceneProvenance> = entry.sourceIsSynthetic
                     ? [.syntheticTest, .importedReplay]
                     : [.importedReplay]
                 let snapshot = try await candidate.snapshot(provenance: provenance, frozen: true)
+                guard replay.lastEventSequence < UInt64.max - 1,
+                      captureCoordinator.prepareForProject(
+                        lastCommittedEpoch: replay.highestSessionEpoch,
+                        hasRetainedSource: replay.durableEventCount > 0
+                      ) else {
+                    throw HSSBridgeError.invalidValue("Recovered capture identity is exhausted.")
+                }
+                var reconciledEntry = entry
+                reconciledEntry.captureID = replay.captureID
+                reconciledEntry.sceneRevision = snapshot.revision
+                if reconciledEntry != entry { try publishCatalogEntry(reconciledEntry) }
                 runtime = candidate
-                selectedCatalogEntry = entry
+                selectedCatalogEntry = reconciledEntry
                 selectedProjectID = entry.id
                 assignSelectedName(entry.name)
                 latestSnapshot = snapshot
                 observedProvenance = provenance
-                nextEventSequence = max(1, snapshot.revision + 1)
+                nextEventSequence = replay.lastEventSequence + 1
+                lastDurableEventTime = replay.lastMonotonicTime
+                acceptedEpochProjectTransforms.removeAll()
                 resetTargetSelection()
                 saveState = .clean
                 exportState = .idle

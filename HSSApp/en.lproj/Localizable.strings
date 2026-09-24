@@ -121,3 +121,5 @@
 "Resource monitoring could not verify safe metric capture." = "Resource monitoring could not verify safe metric capture.";
 "Resource monitoring paused capture" = "Resource monitoring paused capture";
 "Retained source remains local. Retry saving, then review the project." = "Retained source remains local. Retry saving, then review the project.";
+"Capture time is not yet monotonic" = "Capture time is not yet monotonic";
+"The retained source time is ahead of this device clock. Start a new local project or retry after the monotonic clock catches up." = "The retained source time is ahead of this device clock. Start a new local project or retry after the monotonic clock catches up.";

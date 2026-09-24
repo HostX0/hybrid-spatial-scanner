@@ -97,6 +97,22 @@ typedef struct HSSProjectReplayResult {
   uint32_t used_previous_manifest;
 } HSSProjectReplayResult;
 
+/* Verified durable resume position. The caller initializes abi_version and
+ * struct_size before the query. An empty metadata-only draft has zero counts,
+ * sequence, time and scene revision, and has_capture_id=0. This is distinct
+ * from replay's failed_event_sequence, which is only failure diagnostics. */
+typedef struct HSSProjectResumeCursor {
+  uint32_t abi_version, struct_size;
+  uint64_t durable_revision;
+  uint64_t durable_event_count;
+  uint64_t last_event_sequence;
+  uint64_t accepted_scene_revision;
+  double last_monotonic_time_s;
+  HSSId capture_id;
+  uint32_t highest_session_epoch;
+  uint32_t has_capture_id;
+} HSSProjectResumeCursor;
+
 typedef struct HSSProjectCommandRecord {
   uint32_t abi_version, struct_size;
   HSSProjectEventContext context;
@@ -192,6 +208,12 @@ HSSStatus hss_project_store_checkpoint(HSSProjectStore* store,
 HSSStatus hss_project_store_replay(HSSProjectStore* store,
                                    HSSEngine* engine,
                                    HSSProjectReplayResult* result);
+
+/* Revalidates the committed manifest and complete source stream. Pending
+ * records are excluded; call after successful replay and before admitting
+ * new events. A changed/corrupt on-disk stream fails closed. */
+HSSStatus hss_project_store_get_resume_cursor(HSSProjectStore* store,
+                                               HSSProjectResumeCursor* cursor);
 
 #ifdef __cplusplus
 }
