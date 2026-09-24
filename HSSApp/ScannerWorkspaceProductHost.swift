@@ -1,4 +1,5 @@
 import ARKit
+import HSSContracts
 import SceneKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -89,7 +90,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
         let selectedProject = workspace.selectedProjectID.flatMap { selectedID in
             workspace.localProjects.first(where: { $0.id == selectedID })
         }
-        let reviewData = workspace.latestSnapshot.flatMap(ScannerAcceptedPlanDecoder.decode)
+        let reviewData = workspace.latestSnapshot.flatMap { ScannerAcceptedPlanDecoder.decode($0, language: locale.language.languageCode?.identifier == "ar" ? .arabic : .english) }
         let isReferenceScene = reviewData?.isSynthetic == true
             || workspace.latestSnapshot?.provenance.contains(.syntheticTest) == true
         return ScannerWorkspacePresentation(
@@ -304,7 +305,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             )
         }
         if workspace.latestSnapshot?.provenance.contains(.syntheticTest) == true
-            || workspace.latestSnapshot.flatMap(ScannerAcceptedPlanDecoder.decode)?.isSynthetic == true {
+            || workspace.latestSnapshot.flatMap({ ScannerAcceptedPlanDecoder.decode($0, language: locale.language.languageCode?.identifier == "ar" ? .arabic : .english) })?.isSynthetic == true {
             visible.append(
                 ScannerWorkspacePresentation.Issue(
                     id: UUID(),
@@ -359,13 +360,22 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
     }
 }
 
+enum ScannerProjectImportContentTypes {
+    // A .hsscan extension resolves to a dynamic data type on iOS. The native
+    // archive parser and project validator check the selected bytes.
+    static let accepted: [UTType] = [.data]
+}
+
 private struct ScannerProjectImportPicker: UIViewControllerRepresentable {
     let completed: (URL?) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(completed: completed) }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.zip], asCopy: false)
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: ScannerProjectImportContentTypes.accepted,
+            asCopy: false
+        )
         picker.allowsMultipleSelection = false
         picker.delegate = context.coordinator
         return picker
@@ -662,79 +672,78 @@ enum ScannerMeshSceneBuilder {
     }
 }
 
-private enum ScannerAcceptedPlanDecoder {
-    private struct Scene: Decodable {
+enum ScannerAcceptedPlanDecoder {
+    private struct PlanDocument: Decodable {
+        let sceneRevision: String
         let sourceIsSynthetic: Bool
-        let basis: Basis
-        let nodes: [Node]
-        let edges: [Edge]
-        let regions: [Region]
-
+        let boundaryState: String
+        let validity: String
+        let height: Height
+        let fragments: [Fragment]
+        let area: Area
         enum CodingKeys: String, CodingKey {
+            case sceneRevision = "scene_revision"
             case sourceIsSynthetic = "source_is_synthetic"
-            case basis, nodes, edges, regions
+            case boundaryState = "boundary_state"
+            case validity, height, fragments, area
         }
     }
-
-    private struct Basis: Decodable {
-        let floorOrigin: [Double]
-        let floorU: [Double]
-        let floorV: [Double]
-
+    private struct Height: Decodable {
+        let referenceState: String
+        enum CodingKeys: String, CodingKey { case referenceState = "reference_state" }
+    }
+    private struct Fragment: Decodable {
+        let id: String
+        let state: String
+        let geometryOrigin: String
+        let segment: [[Double]]?
+        let sourceRevision: String
         enum CodingKeys: String, CodingKey {
-            case floorOrigin = "floor_origin_m"
-            case floorU = "floor_u"
-            case floorV = "floor_v"
+            case id, state
+            case geometryOrigin = "geometry_origin"
+            case segment = "segment_m"
+            case sourceRevision = "source_revision"
         }
     }
-
-    private struct Node: Decodable {
-        let id: UUID
-        let position: [Double]
-        let provenance: Provenance
-
-        enum CodingKeys: String, CodingKey {
-            case id, position = "position_m", provenance
-        }
-    }
-
-    private struct Edge: Decodable {
-        let id: UUID
-        let start: UUID
-        let end: UUID
-        let provenance: Provenance
-
-        enum CodingKeys: String, CodingKey {
-            case id, start = "start_node_id"
-            case end = "end_node_id"
-            case provenance
-        }
-    }
-
-    private struct Region: Decodable {
-        let id: UUID
+    private struct Area: Decodable {
+        let availability: String
         let areaMetresSquared: Double?
-        let areaPolicy: String
-        let view: String
-        let cutHeightMetres: Double
-        let provenance: Provenance
-
         enum CodingKeys: String, CodingKey {
-            case id
+            case availability
             case areaMetresSquared = "area_m2"
-            case areaPolicy = "area_policy"
-            case view
-            case cutHeightMetres = "cut_height_m"
-            case provenance
         }
     }
-
-    private struct Provenance: Decodable {
-        let origin: String
-
-        enum CodingKeys: String, CodingKey { case origin = "geometry_origin" }
+    private struct AnnotationDocument: Decodable {
+        let sceneRevision: String
+        let annotations: [Annotation]
+        enum CodingKeys: String, CodingKey {
+            case sceneRevision = "scene_revision"
+            case annotations
+        }
     }
-
+    private struct Annotation: Decodable {
+        let id: String
+        let kind: String
+        let evidenceSource: String
+        let sourceRevision: String
+        let anchors: [Anchor]
+        let availability: String
+        let metricValue: Double?
+        enum CodingKeys: String, CodingKey {
+            case id, kind, anchors, availability
+            case evidenceSource = "evidence_source"
+            case sourceRevision = "source_revision"
+            case metricValue = "metric_value"
+        }
+    }
+    private struct Anchor: Decodable {
+        let geometryID: String
+        let position: [Double]
+        enum CodingKeys: String, CodingKey {
+            case geometryID = "geometry_id"
+            case position = "position_m"
+        }
+    }
     struct ReviewData {
         let plan: ScannerWorkspacePresentation.Plan
         let measurements: [ScannerWorkspacePresentation.Measurement]
@@ -742,92 +751,123 @@ private enum ScannerAcceptedPlanDecoder {
         let isSynthetic: Bool
     }
 
-    static func decode(_ snapshot: ScannerSceneSnapshot) -> ReviewData? {
-        guard let scene = try? JSONDecoder().decode(Scene.self, from: snapshot.sceneJSON),
-              let origin = vector(scene.basis.floorOrigin),
-              let u = vector(scene.basis.floorU),
-              let v = vector(scene.basis.floorV),
-              approximatelyUnit(u), approximatelyUnit(v),
-              abs(simd_dot(u, v)) < 0.001 else { return nil }
-
-        let coordinates = Dictionary(uniqueKeysWithValues: scene.nodes.compactMap { node in
-            vector(node.position).map {
-                (node.id, CGPoint(
-                    x: CGFloat(simd_dot($0 - origin, u)),
-                    y: CGFloat(simd_dot($0 - origin, v))
-                ))
-            }
-        })
-        let linePairs = scene.edges.compactMap { edge -> (UUID, CGPoint, CGPoint, ScannerWorkspacePresentation.Measurement.Evidence)? in
-            guard let start = coordinates[edge.start], let end = coordinates[edge.end] else { return nil }
-            return (edge.id, start, end, evidence(for: edge.provenance.origin))
+    static func decode(
+        _ snapshot: ScannerSceneSnapshot,
+        language: ProvenancePresentationLanguage = .english
+    ) -> ReviewData? {
+        guard let semantic = snapshot.planAnnotation,
+              semantic.sceneRevision == snapshot.revision,
+              semantic.planAvailable,
+              let planBytes = semantic.planJSON,
+              let plan = try? JSONDecoder().decode(PlanDocument.self, from: planBytes),
+              plan.sceneRevision == String(snapshot.revision),
+              semantic.isSynthetic == plan.sourceIsSynthetic else { return nil }
+        let annotations: [Annotation]
+        if semantic.annotationLayoutAvailable,
+           let data = semantic.annotationJSON,
+           let document = try? JSONDecoder().decode(AnnotationDocument.self, from: data),
+           document.sceneRevision == plan.sceneRevision {
+            annotations = document.annotations
+        } else {
+            annotations = []
         }
-        let observed = linePairs.filter { $0.3 != .unknown && $0.3 != .inferred }.map { [$0.1, $0.2] }
-        let unknown = linePairs.filter { $0.3 == .unknown || $0.3 == .inferred }.map { [$0.1, $0.2] }
-        let points = linePairs.flatMap { [$0.1, $0.2] }
-        guard let first = points.first else { return nil }
-        let bounds = points.dropFirst().reduce(CGRect(origin: first, size: .zero)) { partial, point in
-            partial.union(CGRect(origin: point, size: .zero))
+        let segments: [(Fragment, CGPoint, CGPoint)] = plan.fragments.compactMap { fragment in
+            guard fragment.sourceRevision == plan.sceneRevision,
+                  let segment = fragment.segment, segment.count == 2,
+                  segment[0].count == 2, segment[1].count == 2,
+                  segment.flatMap({ $0 }).allSatisfy(\.isFinite) else { return nil }
+            return (fragment, CGPoint(x: segment[0][0], y: segment[0][1]),
+                    CGPoint(x: segment[1][0], y: segment[1][1]))
         }
-        let dimensions = linePairs.enumerated().compactMap { index, edge -> ScannerWorkspacePresentation.Measurement? in
-            let length = hypot(edge.2.x - edge.1.x, edge.2.y - edge.1.y)
-            guard length.isFinite, length > 0 else { return nil }
-            return ScannerWorkspacePresentation.Measurement(
-                id: edge.0,
-                label: "\(String(localized: "Boundary")) \(index + 1)",
-                value: lengthMetres(length),
-                evidence: edge.3,
-                detail: nil
-            )
+        let isMeasured: (Fragment) -> Bool = {
+            $0.state == "supported" && ["observed", "fitted", "user_measured"].contains($0.geometryOrigin)
         }
-        let annotations = linePairs.compactMap { edge -> ScannerWorkspacePresentation.DimensionAnnotation? in
-            let length = hypot(edge.2.x - edge.1.x, edge.2.y - edge.1.y)
-            guard length.isFinite, length > 0 else { return nil }
-            return ScannerWorkspacePresentation.DimensionAnnotation(
-                id: edge.0,
-                startMetres: edge.1,
-                endMetres: edge.2,
-                label: lengthMetres(length),
-                evidence: edge.3
-            )
+        let lines = segments.filter { isMeasured($0.0) }.map { [$0.1, $0.2] }
+        let unknownLines = segments.filter { !isMeasured($0.0) }.map { [$0.1, $0.2] }
+        let points = segments.flatMap { [$0.1, $0.2] }
+        let bounds = points.dropFirst().reduce(points.first.map { CGRect(origin: $0, size: .zero) }) { partial, point in
+            partial?.union(CGRect(origin: point, size: .zero))
         }
-        let areaMeasurements = scene.regions.map { region in
-            let isKnown = region.areaMetresSquared.map { $0.isFinite && $0 >= 0 } ?? false
-            return ScannerWorkspacePresentation.Measurement(
-                id: region.id,
-                label: region.view == "architectural_cut"
-                    ? String(localized: "Architectural cut area")
-                    : String(localized: "Floor footprint area"),
-                value: isKnown ? areaMetresSquared(region.areaMetresSquared!) : nil,
-                evidence: isKnown ? evidence(for: region.provenance.origin) : .unknown,
-                detail: regionDetail(region)
-            )
+        let boundFragments = Dictionary(uniqueKeysWithValues: segments.map { ($0.0.id, $0.0) })
+        var measurements: [ScannerWorkspacePresentation.Measurement] = []
+        var dimensions: [ScannerWorkspacePresentation.DimensionAnnotation] = []
+        for (index, annotation) in annotations.enumerated() {
+            guard (plan.validity == "ready" || plan.validity == "provisional"),
+                  (semantic.planAvailability == HSS_PLAN_AVAILABILITY_READY ||
+                   semantic.planAvailability == HSS_PLAN_AVAILABILITY_PROVISIONAL),
+                  annotation.kind == "length", annotation.sourceRevision == plan.sceneRevision,
+                  annotation.anchors.count == 2,
+                  let fragment = boundFragments[annotation.anchors[0].geometryID],
+                  annotation.anchors[1].geometryID == fragment.id,
+                  isMeasured(fragment),
+                  fragment.geometryOrigin == annotation.evidenceSource,
+                  let value = annotation.metricValue, value.isFinite, value > 0,
+                  annotation.availability != "unavailable",
+                  annotation.anchors.allSatisfy({ $0.position.count == 2 && $0.position.allSatisfy(\.isFinite) }),
+                  let id = UUID(uuidString: annotation.id) else { continue }
+            let evidence = evidence(for: annotation.evidenceSource)
+            let start = CGPoint(x: annotation.anchors[0].position[0], y: annotation.anchors[0].position[1])
+            let end = CGPoint(x: annotation.anchors[1].position[0], y: annotation.anchors[1].position[1])
+            let valueText = lengthMetres(value)
+            measurements.append(.init(
+                id: id,
+                label: localized("Boundary \(index + 1)", "حدّ \(index + 1)", language),
+                value: valueText,
+                evidence: evidence,
+                detail: localized("Length bound to accepted revision \(plan.sceneRevision)",
+                                  "طول مرتبط بالمراجعة المقبولة \(plan.sceneRevision)", language)
+            ))
+            dimensions.append(.init(id: id, startMetres: start, endMetres: end,
+                                    label: valueText, evidence: evidence))
         }
-        let measurements = dimensions + areaMeasurements
+        let areaKnown = semantic.areaAvailability == HSS_PLAN_AVAILABILITY_READY
+            && plan.area.availability == "ready"
+            && plan.validity == "ready"
+            && semantic.areaMetresSquared != nil
+            && semantic.areaMetresSquared == plan.area.areaMetresSquared
+        let areaDetail: String
+        if areaKnown {
+            areaDetail = localized("Area from accepted semantic plan", "المساحة من المخطط الدلالي المقبول", language)
+        } else if plan.height.referenceState == "floor_unknown" {
+            areaDetail = localized("Floor reference unknown; section projection is provisional. Area unavailable.",
+                                   "مرجع الأرضية غير معروف؛ إسقاط المقطع أولي. المساحة غير متاحة.", language)
+        } else if plan.boundaryState != "closed_accepted" {
+            areaDetail = localized("Boundary is open or unresolved. Area unavailable.",
+                                   "الحدّ مفتوح أو غير محسوم. المساحة غير متاحة.", language)
+        } else {
+            areaDetail = localized("Architectural cut is provisional; finished floor area is unverified.",
+                                   "المقطع المعماري أولي؛ مساحة الأرضية النهائية غير متحققة.", language)
+        }
+        measurements.append(.init(
+            id: UUID(uuidString: "00000000-0000-4000-8000-000000000031")!,
+            label: localized("Architectural cut area", "مساحة المقطع المعماري", language),
+            value: areaKnown ? areaMetresSquared(semantic.areaMetresSquared!) : nil,
+            evidence: .unknown,
+            detail: areaDetail
+        ))
         return ReviewData(
-            plan: ScannerWorkspacePresentation.Plan(
-                polylinesMetres: observed,
-                unknownPolylinesMetres: unknown,
-                dimensionAnnotations: annotations,
-                boundsMetres: bounds.insetBy(dx: -0.05, dy: -0.05)
-            ),
+            plan: .init(polylinesMetres: lines, unknownPolylinesMetres: unknownLines,
+                        dimensionAnnotations: dimensions,
+                        boundsMetres: bounds?.insetBy(dx: -0.05, dy: -0.05)),
             measurements: measurements,
-            provenanceFields: measurements.map(provenanceField),
-            isSynthetic: scene.sourceIsSynthetic
+            provenanceFields: measurements.map {
+                ProvenanceFieldPresentation(
+                    id: $0.id,
+                    label: ProvenanceCopy(english: "Accepted plan field", arabic: "حقل مخطط مقبول"),
+                    formattedValue: $0.value.map { ProvenanceCopy(english: $0, arabic: $0) },
+                    kind: provenanceKind(for: $0.evidence)
+                )
+            },
+            isSynthetic: plan.sourceIsSynthetic
         )
     }
 
-    private static func vector(_ values: [Double]) -> SIMD3<Double>? {
-        guard values.count == 3, values.allSatisfy(\.isFinite) else { return nil }
-        return SIMD3(values[0], values[1], values[2])
+    private static func localized(_ english: String, _ arabic: String,
+                                  _ language: ProvenancePresentationLanguage) -> String {
+        language == .arabic ? arabic : english
     }
-
-    private static func approximatelyUnit(_ vector: SIMD3<Double>) -> Bool {
-        abs(simd_length(vector) - 1) < 0.001
-    }
-
-    private static func evidence(for origin: String) -> ScannerWorkspacePresentation.Measurement.Evidence {
-        switch origin {
+    private static func evidence(for source: String) -> ScannerWorkspacePresentation.Measurement.Evidence {
+        switch source {
         case "observed": .observed
         case "fitted": .fitted
         case "user_measured": .userMeasured
@@ -835,18 +875,6 @@ private enum ScannerAcceptedPlanDecoder {
         default: .unknown
         }
     }
-
-    private static func provenanceField(
-        _ measurement: ScannerWorkspacePresentation.Measurement
-    ) -> ProvenanceFieldPresentation {
-        ProvenanceFieldPresentation(
-            id: measurement.id,
-            label: ProvenanceCopy(english: "Accepted plan field", arabic: "حقل مخطط مقبول"),
-            formattedValue: measurement.value.map { ProvenanceCopy(english: $0, arabic: $0) },
-            kind: provenanceKind(for: measurement.evidence)
-        )
-    }
-
     private static func provenanceKind(
         for evidence: ScannerWorkspacePresentation.Measurement.Evidence
     ) -> ProvenanceKind {
@@ -858,34 +886,14 @@ private enum ScannerAcceptedPlanDecoder {
         case .unknown: .unknown
         }
     }
-
-    private static func lengthMetres(_ value: CGFloat) -> String {
-        let measurement = Measurement(value: Double(value), unit: UnitLength.meters)
-        return measurement.formatted(
-            .measurement(
-                width: .abbreviated,
-                usage: .asProvided,
-                numberFormatStyle: .number.precision(.fractionLength(0...2))
-            )
-        )
+    private static func lengthMetres(_ value: Double) -> String {
+        Measurement(value: value, unit: UnitLength.meters).formatted(
+            .measurement(width: .abbreviated, usage: .asProvided,
+                         numberFormatStyle: .number.precision(.fractionLength(0...2))))
     }
-
     private static func areaMetresSquared(_ value: Double) -> String {
-        let measurement = Measurement(value: value, unit: UnitArea.squareMeters)
-        return measurement.formatted(
-            .measurement(
-                width: .abbreviated,
-                usage: .asProvided,
-                numberFormatStyle: .number.precision(.fractionLength(0...2))
-            )
-        )
-    }
-
-    private static func regionDetail(_ region: Region) -> String {
-        let policy = region.areaPolicy == "net_fixed_obstructions"
-            ? String(localized: "Net fixed obstructions")
-            : String(localized: "Finished internal face")
-        let cut = lengthMetres(CGFloat(region.cutHeightMetres))
-        return "\(policy) · \(String(localized: "Cut")) \(cut)"
+        Measurement(value: value, unit: UnitArea.squareMeters).formatted(
+            .measurement(width: .abbreviated, usage: .asProvided,
+                         numberFormatStyle: .number.precision(.fractionLength(0...2))))
     }
 }

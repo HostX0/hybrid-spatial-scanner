@@ -803,7 +803,7 @@ private struct ScannerMeasurementRow: View {
                     .foregroundStyle(ScannerProductTheme.muted)
             }
             Spacer()
-            Text(measurement.value ?? "Unknown")
+            Text(measurement.value ?? String(localized: "Unknown"))
                 .font(.body.monospacedDigit().weight(.semibold))
                 .foregroundStyle(measurement.value == nil ? ScannerProductTheme.warning : .white)
         }

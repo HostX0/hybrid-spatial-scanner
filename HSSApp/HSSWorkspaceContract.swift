@@ -52,6 +52,8 @@ struct ScannerSceneSnapshot: Equatable, Sendable {
     let reviewTriangleInclusion: [UInt8]
     let dynamicMaskSummary: ScannerDynamicMaskSummary?
     let sceneJSON: Data
+    /// Value-owned B-031/B-032 view from the same accepted core revision.
+    let planAnnotation: ScannerPlanAnnotationSnapshot?
     let provenance: Set<ScannerSceneProvenance>
     let isFrozen: Bool
 
@@ -62,6 +64,7 @@ struct ScannerSceneSnapshot: Equatable, Sendable {
         reviewTriangleInclusion: [UInt8] = [],
         dynamicMaskSummary: ScannerDynamicMaskSummary? = nil,
         sceneJSON: Data,
+        planAnnotation: ScannerPlanAnnotationSnapshot? = nil,
         provenance: Set<ScannerSceneProvenance>,
         isFrozen: Bool
     ) {
@@ -71,9 +74,25 @@ struct ScannerSceneSnapshot: Equatable, Sendable {
         self.reviewTriangleInclusion = reviewTriangleInclusion
         self.dynamicMaskSummary = dynamicMaskSummary
         self.sceneJSON = sceneJSON
+        self.planAnnotation = planAnnotation
         self.provenance = provenance
         self.isFrozen = isFrozen
     }
+}
+
+struct ScannerPlanAnnotationSnapshot: Equatable, Sendable {
+    let sceneRevision: UInt64
+    let planAvailable: Bool
+    let annotationLayoutAvailable: Bool
+    let referenceState: UInt32
+    let boundaryState: UInt32
+    let planAvailability: UInt32
+    let areaAvailability: UInt32
+    let areaMetresSquared: Double?
+    let cutHeightMetres: Double
+    let isSynthetic: Bool
+    let planJSON: Data?
+    let annotationJSON: Data?
 }
 
 struct ScannerDynamicMaskSummary: Equatable, Sendable {
