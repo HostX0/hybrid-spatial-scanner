@@ -21,7 +21,9 @@ void check(bool condition, const std::string &message) {
 Target pending(uint64_t revision = 7U) {
   return {.id = "tap-1", .scene_revision = revision,
           .state = TargetState::kPending,
-          .provenance = TargetProvenance::kPendingNoDepth};
+          .provenance = TargetProvenance::kPendingNoDepth,
+          .project_position_m = std::nullopt,
+          .support_ids = {}};
 }
 
 Target confirmed(std::string id, uint64_t revision = 7U) {
