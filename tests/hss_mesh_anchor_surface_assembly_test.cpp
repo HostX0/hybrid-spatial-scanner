@@ -102,9 +102,11 @@ Fixture make_fixture(size_t round, bool fail_last_fit = false) {
 
   for (size_t face = 0; face < 5U; ++face) {
     const size_t ti = first_triangle[face];
-    f.cuts.fragments.push_back(
-        {ti, f.prepared.local_triangles[ti],
-         f.prepared.metric_plan.components[face].surface_key});
+    hss::mesh_anchor_cut::Fragment fragment;
+    fragment.source_triangle_index = ti;
+    fragment.local_triangle = f.prepared.local_triangles[ti];
+    fragment.surface_key = f.prepared.metric_plan.components[face].surface_key;
+    f.cuts.fragments.push_back(std::move(fragment));
   }
   return f;
 }
