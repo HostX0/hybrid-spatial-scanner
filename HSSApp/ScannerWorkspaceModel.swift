@@ -1,8 +1,35 @@
 import ARKit
 import Combine
 import Foundation
+import HSSContracts
 import UIKit
 import simd
+
+/// Maps one capture session's source clock into the durable project's ordered
+/// time axis. The offset is fixed by the first event; only delivery inversions
+/// are clamped. This time is an ordering key, not elapsed time across sessions.
+struct ProjectCaptureClock {
+    private static let maximumDeliverySkew: TimeInterval = 1
+    private(set) var lastTime: TimeInterval
+    private var offset: TimeInterval?
+
+    init(lastDurableTime: TimeInterval) {
+        lastTime = lastDurableTime
+    }
+
+    mutating func projectTime(for sourceTime: TimeInterval) -> TimeInterval? {
+        guard sourceTime.isFinite, sourceTime >= 0,
+              lastTime.isFinite, lastTime >= 0 else { return nil }
+        let candidateOffset = offset ?? max(0, lastTime - sourceTime)
+        let shifted = sourceTime + candidateOffset
+        guard shifted.isFinite,
+              shifted >= lastTime - Self.maximumDeliverySkew else { return nil }
+        let mapped = max(lastTime, shifted)
+        offset = candidateOffset
+        lastTime = mapped
+        return mapped
+    }
+}
 
 @MainActor
 final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
@@ -103,14 +130,23 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     private let trustedRoot: URL
     private let catalogURL: URL
     private let sourceIsSynthetic: Bool
+    private let resourceMonitor = ScannerIOSResourceMonitor()
     private var runtime: HSSProjectRuntime?
     private var selectedCatalogEntry: WorkspaceCatalogEntry?
     private var pendingEvents: [SequencedNativeEvent] = []
     private var nextEventSequence: UInt64 = 1
+    private var lastDurableEventTime: TimeInterval = 0
+    private var captureClock: ProjectCaptureClock?
     private var drainScheduled = false
     private var freezeRequested = false
     private var saveRequested = false
     private var saveAfterFreeze = false
+    private var resourceSamplingInProgress = false
+    private var resourcePauseInProgress = false
+    private var resourcePauseLatched = false
+    private var resourceCheckpointSucceeded = false
+    private var resourceMetricIntakeBlocked = false
+    private var resourceConservingMessage: String?
     private var isAssigningSelectedName = false
     private var observedProvenance: Set<ScannerSceneProvenance> = []
     private var didReportDepthKeyframeCapacity = false
@@ -150,6 +186,25 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
             .sink { [weak self] _ in
                 Task { @MainActor in self?.applicationEnteredBackground() }
+            }
+            .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.sampleResourcesDuringCapture() }
+            }
+            .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.resourceMonitor.noteMemoryWarning()
+                    self?.sampleResourcesDuringCapture()
+                }
+            }
+            .store(in: &cancellables)
+        Timer.publish(every: 5, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.sampleResourcesDuringCapture() }
             }
             .store(in: &cancellables)
     }
@@ -192,7 +247,11 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                     trustedRoot: trustedRoot,
                     openMode: .create
                 )
-                _ = try await candidate.checkpoint()
+                // Store creation already persists empty project metadata. The
+                // first source checkpoint is valid only after source events.
+                guard captureCoordinator.prepareForProject(lastCommittedEpoch: 0, hasRetainedSource: false) else {
+                    throw HSSBridgeError.invalidValue("Capture epoch identity is unavailable for this project.")
+                }
                 let entry = WorkspaceCatalogEntry(
                     id: projectID, captureID: captureID, name: displayName,
                     updatedAt: Date(), sceneRevision: 0, state: .draft,
@@ -209,6 +268,8 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 )
                 observedProvenance = sourceIsSynthetic ? [.syntheticTest] : []
                 nextEventSequence = 1
+                lastDurableEventTime = 0
+                acceptedEpochProjectTransforms.removeAll()
                 keyframeSelector.reset()
                 captureAccounting = .zero
                 didReportDepthKeyframeCapacity = false
@@ -266,13 +327,13 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                     trustedRoot: stageRoot,
                     openMode: .openExisting
                 )
-                _ = try await candidate!.replayCommittedSource()
+                let stagedReplay = try await candidate!.replayCommittedSource()
                 try await candidate!.drain()
                 candidate = nil
                 let provenance: Set<ScannerSceneProvenance> = metadata.sourceIsSynthetic
                     ? [.syntheticTest, .importedReplay] : [.importedReplay]
                 let entry = WorkspaceCatalogEntry(
-                    id: metadata.projectID, captureID: UUID(),
+                    id: metadata.projectID, captureID: stagedReplay.captureID,
                     name: "Imported \(metadata.projectID.uuidString.prefix(8))", updatedAt: Date(),
                     sceneRevision: 0,
                     state: .frozen, sourceIsSynthetic: metadata.sourceIsSynthetic
@@ -282,7 +343,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                     validate: {
                         let runtime = try HSSProjectRuntime(
                             projectID: metadata.projectID,
-                            captureID: UUID(),
+                            captureID: stagedReplay.captureID,
                             sourceIsSynthetic: metadata.sourceIsSynthetic,
                             trustedRoot: trustedRoot,
                             openMode: .openExisting
@@ -290,24 +351,37 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                         let replay = try await runtime.replayCommittedSource()
                         try await runtime.drain()
                         let snapshot = try await runtime.snapshot(provenance: provenance, frozen: true)
+                        guard replay.captureID == stagedReplay.captureID,
+                              replay.lastEventSequence == stagedReplay.lastEventSequence,
+                              replay.lastEventSequence < UInt64.max - 1,
+                              captureCoordinator.prepareForProject(
+                                lastCommittedEpoch: replay.highestSessionEpoch,
+                                hasRetainedSource: replay.durableEventCount > 0
+                              ) else {
+                            throw HSSBridgeError.invalidValue("Imported source changed or its capture identity is exhausted.")
+                        }
                         return (runtime, replay, snapshot)
                     },
                     publish: { adopted in
                         var published = entry
-                        published.sceneRevision = adopted.1.durableRevision
+                        published.captureID = adopted.1.captureID
+                        published.sceneRevision = adopted.2.revision
                         try publishCatalogEntry(published)
                     }
                 )
                 try? FileManager.default.removeItem(at: stageRoot)
                 var adoptedEntry = entry
-                adoptedEntry.sceneRevision = adopted.1.durableRevision
+                adoptedEntry.captureID = adopted.1.captureID
+                adoptedEntry.sceneRevision = adopted.2.revision
                 self.runtime = adopted.0
                 selectedCatalogEntry = adoptedEntry
                 selectedProjectID = entry.id
                 assignSelectedName(adoptedEntry.name)
                 latestSnapshot = adopted.2
                 observedProvenance = provenance
-                nextEventSequence = max(1, adopted.2.revision + 1)
+                nextEventSequence = adopted.1.lastEventSequence + 1
+                lastDurableEventTime = adopted.1.lastMonotonicTime
+                acceptedEpochProjectTransforms.removeAll()
                 resetTargetSelection()
                 saveState = .clean
                 exportState = .idle
@@ -322,6 +396,10 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
 
     func startCapture() {
         guard runtime != nil, selectedProjectID != nil, !captureCoordinator.isSessionRunning else { return }
+        guard !resourcePauseLatched else {
+            showResourcePauseIssue(checkpointSucceeded: resourceCheckpointSucceeded)
+            return
+        }
         currentIssue = nil
         exportState = .idle
         projectArchiveExportState = .idle
@@ -361,6 +439,10 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
 
     func saveSelectedProject() {
         guard runtime != nil, selectedProjectID != nil else { return }
+        if resourcePauseInProgress {
+            saveRequested = true
+            return
+        }
         if captureCoordinator.isSessionRunning {
             saveAfterFreeze = true
             stopCapture()
@@ -459,19 +541,32 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                     trustedRoot: trustedRoot,
                     openMode: .openExisting
                 )
-                _ = try await candidate.replayCommittedSource()
+                let replay = try await candidate.replayCommittedSource()
                 try await candidate.drain()
                 let provenance: Set<ScannerSceneProvenance> = entry.sourceIsSynthetic
                     ? [.syntheticTest, .importedReplay]
                     : [.importedReplay]
                 let snapshot = try await candidate.snapshot(provenance: provenance, frozen: true)
+                guard replay.lastEventSequence < UInt64.max - 1,
+                      captureCoordinator.prepareForProject(
+                        lastCommittedEpoch: replay.highestSessionEpoch,
+                        hasRetainedSource: replay.durableEventCount > 0
+                      ) else {
+                    throw HSSBridgeError.invalidValue("Recovered capture identity is exhausted.")
+                }
+                var reconciledEntry = entry
+                reconciledEntry.captureID = replay.captureID
+                reconciledEntry.sceneRevision = snapshot.revision
+                if reconciledEntry != entry { try publishCatalogEntry(reconciledEntry) }
                 runtime = candidate
-                selectedCatalogEntry = entry
+                selectedCatalogEntry = reconciledEntry
                 selectedProjectID = entry.id
                 assignSelectedName(entry.name)
                 latestSnapshot = snapshot
                 observedProvenance = provenance
-                nextEventSequence = max(1, snapshot.revision + 1)
+                nextEventSequence = replay.lastEventSequence + 1
+                lastDurableEventTime = replay.lastMonotonicTime
+                acceptedEpochProjectTransforms.removeAll()
                 resetTargetSelection()
                 saveState = .clean
                 exportState = .idle
@@ -593,23 +688,219 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     private func beginCaptureSession() {
-        captureCoordinator.startSession()
-        switch captureCoordinator.phase {
-        case .fallback(let reason), .blocked(let reason):
-            captureCoordinator.stopSession()
-            phase = .captureUnsupported(reason)
-        case .failed(let reason):
-            phase = .failed(reason)
-        default:
-            break
+        guard let runtime, !resourceSamplingInProgress else { return }
+        resourceSamplingInProgress = true
+        let reading = resourceMonitor.read(storageDirectory: trustedRoot)
+        Task { [weak self] in
+            guard let self else { return }
+            defer { resourceSamplingInProgress = false }
+            do {
+                let decision = try await runtime.observeResource(reading)
+                if decision.requestCheckpoint || !decision.acceptMetricObservations {
+                    await handleResourcePause(decision, runtime: runtime)
+                    return
+                }
+                guard !resourcePauseLatched,
+                      selectedProjectID == runtime.projectID,
+                      phase == .startingCapture else { return }
+                captureClock = ProjectCaptureClock(lastDurableTime: lastDurableEventTime)
+                captureCoordinator.startSession()
+                switch captureCoordinator.phase {
+                case .fallback(let reason), .blocked(let reason):
+                    captureCoordinator.stopSession()
+                    phase = .captureUnsupported(reason)
+                case .failed(let reason):
+                    phase = .failed(reason)
+                default:
+                    break
+                }
+            } catch {
+                resourceMetricIntakeBlocked = true
+                resourcePauseLatched = true
+                await checkpointAfterResourceInputFailure(runtime, error: error)
+            }
         }
     }
 
+    private func sampleResourcesDuringCapture() {
+        guard let runtime, captureCoordinator.isSessionRunning,
+              !resourceSamplingInProgress, !resourcePauseLatched else { return }
+        resourceSamplingInProgress = true
+        let reading = resourceMonitor.read(storageDirectory: trustedRoot)
+        if reading.hasUnsafeMeasuredPressure {
+            // Stop fresh metric intake before yielding to the serial native
+            // actor. The ARSession stop barrier still delivers protected
+            // lifecycle events and lets previously queued source drain.
+            resourceMetricIntakeBlocked = true
+            captureCoordinator.stopSession()
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            defer { resourceSamplingInProgress = false }
+            do {
+                if reading.hasUnsafeMeasuredPressure {
+                    try await awaitCaptureAndQueueDrain()
+                }
+                let decision = try await runtime.observeResource(reading)
+                if decision.requestCheckpoint || !decision.acceptMetricObservations {
+                    await handleResourcePause(decision, runtime: runtime)
+                } else if decision.mode == UInt32(HSS_RESOURCE_MODE_CONSERVING) {
+                    let message = resourceMessage(for: decision.reason)
+                    resourceConservingMessage = message
+                    phase = .captureLimited(message)
+                    currentIssue = ScannerWorkspaceIssue(
+                        id: UUID(),
+                        title: String(localized: "Resource pressure limits capture"),
+                        message: message,
+                        recoveryAction: .stopCaptureAndSaveDraft
+                    )
+                } else {
+                    resourceConservingMessage = nil
+                    if captureCoordinator.isSessionRunning { phase = .capturing }
+                }
+            } catch {
+                resourceMetricIntakeBlocked = true
+                resourcePauseLatched = true
+                if captureCoordinator.isSessionRunning { captureCoordinator.stopSession() }
+                await checkpointAfterResourceInputFailure(runtime, error: error)
+            }
+        }
+    }
+
+    private func awaitCaptureAndQueueDrain() async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 15
+        while captureCoordinator.isSessionRunning || drainScheduled || !pendingEvents.isEmpty {
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                throw HSSBridgeError.invalidValue("Capture stop or queued source drain timed out.")
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    private func handleResourcePause(
+        _ decision: ScannerResourceDecision,
+        runtime: HSSProjectRuntime
+    ) async {
+        resourceMetricIntakeBlocked = true
+        resourcePauseLatched = true
+        resourcePauseInProgress = true
+        resourceConservingMessage = nil
+        if captureCoordinator.isSessionRunning { captureCoordinator.stopSession() }
+        phase = .captureLimited(resourceMessage(for: decision.reason))
+        do {
+            try await awaitCaptureAndQueueDrain()
+            guard decision.requestCheckpoint else {
+                throw HSSBridgeError.invalidValue("Metric capture stopped without a core checkpoint request.")
+            }
+            let outcome = try await runtime.completeResourceCheckpoint()
+            if let checkpoint = outcome.checkpoint {
+                try await publishResourceCheckpoint(checkpoint, runtime: runtime)
+                resourceCheckpointSucceeded = true
+                showResourcePauseIssue(checkpointSucceeded: true)
+            } else {
+                resourceCheckpointSucceeded = false
+                saveState = .failed(outcome.failure ?? String(localized: "The local checkpoint failed."))
+                showResourcePauseIssue(checkpointSucceeded: false)
+            }
+        } catch {
+            resourceCheckpointSucceeded = false
+            saveState = .failed(describe(error))
+            showResourceInputFailure(error)
+        }
+        resourcePauseInProgress = false
+        saveRequested = false
+    }
+
+    private func publishResourceCheckpoint(
+        _ checkpoint: HSSProjectCheckpoint,
+        runtime: HSSProjectRuntime
+    ) async throws {
+        guard var entry = selectedCatalogEntry else { throw HSSBridgeError.closed }
+        let snapshot = try await runtime.snapshot(provenance: observedProvenance, frozen: true)
+        // Store durable revision counts checkpoints; scene revision counts
+        // accepted edits. The verified manifest is independent of scene count.
+        guard checkpoint.durableRevision > 0, checkpoint.durableEventCount > 0 else {
+            throw HSSBridgeError.invalidValue("The store did not report a durable source manifest.")
+        }
+        entry.updatedAt = Date()
+        entry.sceneRevision = snapshot.revision
+        entry.state = .frozen
+        try publishCatalogEntry(entry)
+        selectedCatalogEntry = entry
+        latestSnapshot = snapshot
+        saveState = .saved(entry.updatedAt)
+        phase = .frozen
+        reloadProjects()
+    }
+
+    private func checkpointAfterResourceInputFailure(
+        _ runtime: HSSProjectRuntime,
+        error: Error
+    ) async {
+        resourcePauseInProgress = true
+        do {
+            try await awaitCaptureAndQueueDrain()
+            try await runtime.drain()
+            let checkpoint = try await runtime.checkpoint()
+            try await publishResourceCheckpoint(checkpoint, runtime: runtime)
+            resourceCheckpointSucceeded = true
+        } catch {
+            resourceCheckpointSucceeded = false
+            saveState = .failed(describe(error))
+        }
+        resourcePauseInProgress = false
+        showResourceInputFailure(error)
+    }
+
+    private func resourceMessage(for reason: UInt32) -> String {
+        switch reason {
+        case UInt32(HSS_RESOURCE_REASON_THERMAL_CRITICAL):
+            String(localized: "Device heat stopped metric capture. Retained source is being saved locally.")
+        case UInt32(HSS_RESOURCE_REASON_STORAGE_STOP):
+            String(localized: "Free storage is too low for safe capture. Retained source is being saved locally.")
+        case UInt32(HSS_RESOURCE_REASON_THERMAL_FAIR), UInt32(HSS_RESOURCE_REASON_THERMAL_SERIOUS):
+            String(localized: "Device heat is limiting optional preview work. Metric validation remains active.")
+        case UInt32(HSS_RESOURCE_REASON_STORAGE_WARNING):
+            String(localized: "Local storage is low. Optional preview work is reduced while metric validation remains active.")
+        case UInt32(HSS_RESOURCE_REASON_MEMORY_WARNING):
+            String(localized: "iOS reported a memory warning. Optional preview work is reduced; memory recovery cannot be verified.")
+        default:
+            String(localized: "Resource monitoring paused metric capture to protect retained source.")
+        }
+    }
+
+    private func showResourcePauseIssue(checkpointSucceeded: Bool) {
+        phase = .frozen
+        currentIssue = ScannerWorkspaceIssue(
+            id: UUID(),
+            title: String(localized: "Metric capture remains paused"),
+            message: checkpointSucceeded
+                ? String(localized: "Accepted source was saved locally. Resource recovery cannot be fully verified on this device; review this project and return to the library. Start a new capture only after resolving device heat or storage pressure.")
+                : String(localized: "The local checkpoint failed. Metric capture remains paused; retry saving this project."),
+            recoveryAction: checkpointSucceeded ? .returnToProjectList : .retrySave
+        )
+    }
+
+    private func showResourceInputFailure(_ error: Error) {
+        phase = .failed(String(localized: "Resource monitoring could not verify safe metric capture."))
+        currentIssue = ScannerWorkspaceIssue(
+            id: UUID(),
+            title: String(localized: "Resource monitoring paused capture"),
+            message: "\(String(localized: "Retained source remains local. Retry saving, then review the project.")) \(describe(error))",
+            recoveryAction: .retrySave
+        )
+    }
+
     private func capturePhaseChanged(_ capturePhase: CaptureSessionPhase) {
+        if resourcePauseLatched { return }
         switch capturePhase {
         case .captureReady:
-            phase = .capturing
-            currentIssue = nil
+            if let resourceConservingMessage {
+                phase = .captureLimited(resourceConservingMessage)
+            } else {
+                phase = .capturing
+                currentIssue = nil
+            }
         case .limited(let reason):
             phase = .captureLimited(reason)
             currentIssue = ScannerWorkspaceIssue(
@@ -652,6 +943,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     private func receive(_ frame: NormalizedSceneDepthFrame) {
+        guard !resourceMetricIntakeBlocked else { return }
         let retained = keyframeSelector.shouldRetain(frame)
         captureAccounting = keyframeSelector.accounting
         guard retained else {
@@ -670,12 +962,14 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     private func enqueueTargetFrame(_ frame: NormalizedSceneDepthFrame) {
+        guard !resourceMetricIntakeBlocked else { return }
         queuedTargetSourceFrames.append(frame.identity)
         if queuedTargetSourceFrames.count > 16 { queuedTargetSourceFrames.removeFirst() }
         enqueue(.frame(frame))
     }
 
     private func receive(_ event: OwnedMeshAnchorEvent) {
+        if resourceMetricIntakeBlocked && event.kind != .remove { return }
         enqueue(.mesh(event))
     }
 
@@ -735,23 +1029,35 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             var acceptedFrames: [SceneDepthFrameIdentity] = []
             while !pendingEvents.isEmpty {
                 let next = pendingEvents.removeFirst()
+                let sourceTime: TimeInterval
                 switch next.event {
-                case .epoch(let control, let monotonicTime):
-                    try await runtime.setEpoch(control, eventSequence: next.sequence, monotonicTime: monotonicTime)
+                case .epoch(_, let time), .planReference(_, _, _, let time): sourceTime = time
+                case .frame(let frame): sourceTime = frame.identity.monotonicTimestamp
+                case .mesh(let event): sourceTime = event.monotonicTimestamp
+                }
+                guard var clock = captureClock,
+                      let projectTime = clock.projectTime(for: sourceTime) else {
+                    throw HSSBridgeError.invalidValue("Capture source time could not be mapped to the project log.")
+                }
+                switch next.event {
+                case .epoch(let control, _):
+                    try await runtime.setEpoch(control, eventSequence: next.sequence, monotonicTime: projectTime)
                 case .frame(let frame):
-                    try await runtime.submitFrame(frame, eventSequence: next.sequence)
+                    try await runtime.submitFrame(frame, eventSequence: next.sequence, projectTime: projectTime)
                     observedProvenance.insert(.capturedSceneDepth)
                     acceptedFrames.append(frame.identity)
                 case .mesh(let event):
-                    try await runtime.submitMeshEvent(event, eventSequence: next.sequence)
+                    try await runtime.submitMeshEvent(event, eventSequence: next.sequence, projectTime: projectTime)
                     observedProvenance.insert(.capturedARKitMesh)
-                case .planReference(let matrix, let cutHeightMetres, let epoch, let monotonicTime):
+                case .planReference(let matrix, let cutHeightMetres, let epoch, _):
                     try await runtime.setPlanReference(
                         projectFromFloor: matrix, cutHeightMetres: cutHeightMetres,
                         sessionEpoch: epoch, eventSequence: next.sequence,
-                        monotonicTime: monotonicTime
+                        monotonicTime: projectTime
                     )
                 }
+                captureClock = clock
+                lastDurableEventTime = projectTime
             }
             latestSnapshot = try await runtime.snapshot(provenance: observedProvenance, frozen: false)
             for identity in acceptedFrames {
@@ -783,6 +1089,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     private func scheduleFreeze() {
+        guard !resourcePauseInProgress else { return }
         freezeRequested = false
         Task { [weak self] in
             guard let self, let runtime else { return }
@@ -832,6 +1139,10 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                     : nil
                 reloadProjects()
                 phase = .frozen
+                if resourcePauseLatched {
+                    resourceCheckpointSucceeded = true
+                    showResourcePauseIssue(checkpointSucceeded: true)
+                }
             } catch {
                 saveState = .failed(describe(error))
                 fail(title: "Project was not saved", message: describe(error), recovery: .retrySave)

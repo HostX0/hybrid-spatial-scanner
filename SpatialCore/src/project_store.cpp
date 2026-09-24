@@ -138,6 +138,7 @@ struct MeshState {
   uint64_t generation{0};
   uint64_t revision{0};
   bool live{false};
+  bool operator==(const MeshState &) const = default;
 };
 
 struct StreamState {
@@ -866,15 +867,31 @@ hss_project_store_checkpoint(HSSProjectStore *store,
   try {
     if (store == nullptr || result == nullptr)
       return HSS_INVALID_ARGUMENT;
-    if (store->pending.empty())
-      return HSS_NOT_READY;
-    HSSStatus status = store_status(store->durable->checkpoint(store->pending));
-    if (status != HSS_OK)
-      return status;
-    const auto recovered = store->durable->recover();
-    status = store_status(recovered.status);
-    if (status != HSS_OK)
-      return status;
+    hss::storage::RecoveryResult recovered;
+    HSSStatus status;
+    if (store->pending.empty()) {
+      // Revalidate the on-disk manifest and source stream. Project metadata
+      // alone is not a checkpoint, but an existing committed source manifest
+      // can be reported idempotently without creating an empty revision.
+      StreamState validated;
+      status = scan_committed(store, &recovered, &validated);
+      if (status != HSS_OK)
+        return status;
+      if (recovered.revision == 0U || recovered.records.empty())
+        return HSS_NOT_READY;
+      if (recovered.revision != store->durable_revision ||
+          validated.last_sequence != store->state.last_sequence ||
+          validated.last_scene_revision != store->state.last_scene_revision)
+        return HSS_PROJECT_STORE_CORRUPT;
+    } else {
+      status = store_status(store->durable->checkpoint(store->pending));
+      if (status != HSS_OK)
+        return status;
+      recovered = store->durable->recover();
+      status = store_status(recovered.status);
+      if (status != HSS_OK)
+        return status;
+    }
     uint64_t durable_bytes = 0U;
     for (const auto &record : recovered.records) {
       if (!add_fits(durable_bytes, record.payload_length, &durable_bytes))
@@ -1190,6 +1207,54 @@ extern "C" HSSStatus hss_project_store_replay(HSSProjectStore *store,
     }
     result->failed_event_sequence = 0U;
     result->engine_status = HSS_OK;
+    return HSS_OK;
+  } catch (const std::bad_alloc &) {
+    return HSS_RESOURCE_LIMIT;
+  } catch (...) {
+    return HSS_INTERNAL_ERROR;
+  }
+}
+
+extern "C" HSSStatus
+hss_project_store_get_resume_cursor(HSSProjectStore *store,
+                                    HSSProjectResumeCursor *cursor) {
+  try {
+    if (store == nullptr || cursor == nullptr ||
+        cursor->struct_size != sizeof(*cursor))
+      return HSS_INVALID_ARGUMENT;
+    if (cursor->abi_version != HSS_PROJECT_STORE_ABI_VERSION)
+      return HSS_UNSUPPORTED_VERSION;
+    if (!store->pending.empty())
+      return HSS_NOT_READY;
+    hss::storage::RecoveryResult recovered;
+    StreamState verified;
+    const HSSStatus status = scan_committed(store, &recovered, &verified);
+    if (status != HSS_OK)
+      return status;
+    if (recovered.revision != store->durable_revision ||
+        verified.have_event != store->state.have_event ||
+        verified.capture_id != store->state.capture_id ||
+        verified.last_sequence != store->state.last_sequence ||
+        verified.last_time != store->state.last_time ||
+        verified.last_scene_revision != store->state.last_scene_revision ||
+        verified.epoch_revisions != store->state.epoch_revisions ||
+        verified.meshes != store->state.meshes)
+      return HSS_PROJECT_STORE_CORRUPT;
+    HSSProjectResumeCursor result{};
+    result.abi_version = HSS_PROJECT_STORE_ABI_VERSION;
+    result.struct_size = sizeof(result);
+    result.durable_revision = recovered.revision;
+    result.durable_event_count = recovered.records.size();
+    result.last_event_sequence = verified.last_sequence;
+    result.accepted_scene_revision = verified.last_scene_revision;
+    result.last_monotonic_time_s = verified.last_time;
+    result.highest_session_epoch = verified.epoch_revisions.empty()
+                                       ? 0U
+                                       : verified.epoch_revisions.rbegin()->first;
+    result.has_capture_id = verified.have_event ? 1U : 0U;
+    if (verified.have_event)
+      result.capture_id = c_id(verified.capture_id);
+    *cursor = result;
     return HSS_OK;
   } catch (const std::bad_alloc &) {
     return HSS_RESOURCE_LIMIT;

@@ -233,6 +233,27 @@ final class EpochRelocalizationPolicy: @unchecked Sendable {
         self.degeneracyAreaToleranceSquareMeters = degeneracyAreaToleranceSquareMeters
     }
 
+    /// A reopened project must allocate new epoch IDs above every durable
+    /// epoch. This resets only in-memory session policy, not retained source.
+    func prepareForProject(lastCommittedEpoch: UInt32) -> Bool {
+        guard lastCommittedEpoch < UInt32.max else { return false }
+        lock.lock()
+        defer { lock.unlock() }
+        nextEpoch = UInt64(lastCommittedEpoch) + 1
+        currentEpoch = nil
+        precisionAvailable = false
+        continuityIncidentOpen = false
+        sessionActive = false
+        lastPolicyEventSequence = nil
+        lastRelationshipProposalSequence = nil
+        lastObservationSequenceByEpoch.removeAll()
+        epochRecords.removeAll()
+        relationships.removeAll()
+        counters = .init()
+        lastTransitionReason = nil
+        return true
+    }
+
     func apply(_ event: EpochPolicyEvent, sequence: UInt64) -> EpochPolicyEventDecision {
         lock.lock()
         defer { lock.unlock() }

@@ -162,6 +162,32 @@ final class EpochRelocalizationTests: XCTestCase {
         XCTAssertEqual(coordinator.epochRelocalization.lastTransitionReason, .sessionRestart)
     }
 
+    @MainActor
+    func testRecoveredProjectUsesFreshUnresolvedEpochAboveDurableNamespace() {
+        let driver = EpochStubSessionDriver()
+        var controls: [CaptureEpochControl] = []
+        let coordinator = ARSessionCoordinator(
+            readinessProvider: CaptureReadinessProvider(platform: EpochStubPlatform()),
+            permissionRequester: EpochStubPermissionRequester(),
+            supportProvider: EpochStubSupportProvider(),
+            sessionDriver: driver,
+            epochControlSink: { controls.append($0) }
+        )
+        XCTAssertTrue(coordinator.prepareForProject(lastCommittedEpoch: 8, hasRetainedSource: true))
+        coordinator.startSession()
+        XCTAssertEqual(controls.map(\.sessionEpoch), [9])
+        XCTAssertEqual(controls.map(\.relationshipState), [.unresolved])
+        driver.send(.tracking(.normal))
+        XCTAssertEqual(controls.count, 1, "A resumed AR world origin is not automatically the retained origin.")
+        coordinator.stopSession()
+        XCTAssertTrue(coordinator.prepareForProject(lastCommittedEpoch: 0, hasRetainedSource: false))
+        controls.removeAll()
+        coordinator.startSession()
+        driver.send(.tracking(.normal))
+        XCTAssertEqual(controls.map(\.sessionEpoch), [1, 1])
+        XCTAssertEqual(controls.map(\.relationshipState), [.unresolved, .accepted])
+    }
+
     private func twoEpochPolicy() -> EpochRelocalizationPolicy {
         let policy = EpochRelocalizationPolicy()
         _ = accepted(policy.apply(.sessionRunAccepted, sequence: 0))
