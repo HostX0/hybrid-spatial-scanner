@@ -20,7 +20,6 @@ def main():
 
     root = pathlib.Path(__file__).resolve().parents[1]
     test = root / "tests" / "hss_mesh_anchor_surface_assembly_test.cpp"
-    plane_fit = root / "SpatialCore" / "src" / "robust_plane_fit.cpp"
     include = root / "SpatialCore" / "include"
     public_include = root / "include"
 
@@ -39,7 +38,6 @@ def main():
             "-I",
             str(public_include),
             str(test),
-            str(plane_fit),
             "-o",
             str(exe),
         ]
