@@ -641,3 +641,5 @@ add_test(NAME hss_resource_runtime_integration
   COMMAND hss_resource_runtime_integration_test
 )
 endif()
+
+include(cmake/HSSMeshPipelineTests.cmake)
