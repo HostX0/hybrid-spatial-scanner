@@ -129,6 +129,9 @@ static void test_fail_closed_contracts() {
 
 static void test_empty_epoch_and_entity_arrays() {
   auto e=entities::Result{};
+  e.nodes_json = "[]";
+  e.edges_json = "[]";
+  e.surfaces_json = "[]";
   auto in=input_fixture(); in.epochs.clear(); in.scene_revision=0; in.source_is_synthetic=true;
   auto r=snap::assemble(e,in);
   CHECK(r.status==snap::Status::kOk);
