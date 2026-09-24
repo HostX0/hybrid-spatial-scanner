@@ -757,9 +757,10 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     ) async throws {
         guard var entry = selectedCatalogEntry else { throw HSSBridgeError.closed }
         let snapshot = try await runtime.snapshot(provenance: observedProvenance, frozen: true)
-        guard checkpoint.durableRevision == snapshot.revision ||
-                (checkpoint.durableEventCount == 0 && snapshot.revision == 0) else {
-            throw HSSBridgeError.invalidValue("The resource checkpoint and accepted snapshot disagree.")
+        // Store durable revision counts checkpoints; scene revision counts
+        // accepted edits. The verified manifest is independent of scene count.
+        guard checkpoint.durableRevision > 0, checkpoint.durableEventCount > 0 else {
+            throw HSSBridgeError.invalidValue("The store did not report a durable source manifest.")
         }
         entry.updatedAt = Date()
         entry.sceneRevision = snapshot.revision

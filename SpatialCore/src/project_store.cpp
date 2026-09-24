@@ -866,15 +866,31 @@ hss_project_store_checkpoint(HSSProjectStore *store,
   try {
     if (store == nullptr || result == nullptr)
       return HSS_INVALID_ARGUMENT;
-    if (store->pending.empty())
-      return HSS_NOT_READY;
-    HSSStatus status = store_status(store->durable->checkpoint(store->pending));
-    if (status != HSS_OK)
-      return status;
-    const auto recovered = store->durable->recover();
-    status = store_status(recovered.status);
-    if (status != HSS_OK)
-      return status;
+    hss::storage::RecoveryResult recovered;
+    HSSStatus status;
+    if (store->pending.empty()) {
+      // Revalidate the on-disk manifest and source stream. Project metadata
+      // alone is not a checkpoint, but an existing committed source manifest
+      // can be reported idempotently without creating an empty revision.
+      StreamState validated;
+      status = scan_committed(store, &recovered, &validated);
+      if (status != HSS_OK)
+        return status;
+      if (recovered.revision == 0U || recovered.records.empty())
+        return HSS_NOT_READY;
+      if (recovered.revision != store->durable_revision ||
+          validated.last_sequence != store->state.last_sequence ||
+          validated.last_scene_revision != store->state.last_scene_revision)
+        return HSS_PROJECT_STORE_CORRUPT;
+    } else {
+      status = store_status(store->durable->checkpoint(store->pending));
+      if (status != HSS_OK)
+        return status;
+      recovered = store->durable->recover();
+      status = store_status(recovered.status);
+      if (status != HSS_OK)
+        return status;
+    }
     uint64_t durable_bytes = 0U;
     for (const auto &record : recovered.records) {
       if (!add_fits(durable_bytes, record.payload_length, &durable_bytes))

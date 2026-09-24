@@ -210,6 +210,10 @@ void run() {
   auto create = config(root_path, HSS_PROJECT_STORE_CREATE_NEW);
   check(hss_project_store_create(&create, &store) == HSS_OK && store,
         "create project");
+  HSSProjectCheckpointResult empty_checkpoint{};
+  check(hss_project_store_checkpoint(store, &empty_checkpoint) == HSS_NOT_READY &&
+            empty_checkpoint.durable_revision == 0,
+        "metadata-only empty draft is not a durable source checkpoint");
   append_epoch(store, 1, 1, 1, 1);
   std::array<uint8_t, 16> depth{};
   for (size_t i = 0; i < 4; ++i) {
@@ -237,8 +241,14 @@ void run() {
         "append frame");
   HSSProjectCheckpointResult checkpoint{};
   check(hss_project_store_checkpoint(store, &checkpoint) == HSS_OK &&
-            checkpoint.durable_revision == 1,
-        "first checkpoint");
+            checkpoint.durable_revision == 1 &&
+            checkpoint.durable_event_count == 2,
+        "two accepted events have one durable checkpoint revision");
+  HSSProjectCheckpointResult unchanged_checkpoint{};
+  check(hss_project_store_checkpoint(store, &unchanged_checkpoint) == HSS_OK &&
+            unchanged_checkpoint.durable_revision == 1 &&
+            unchanged_checkpoint.durable_event_count == 2,
+        "no-pending checkpoint revalidates the committed two-event manifest");
   append_epoch(store, 3, 3, 2, 0);
   const std::array<float, 9> vertices{0, 0, 0, 1, 0, 0, 0, 1, 0};
   const std::array<uint32_t, 3> indices{0, 1, 2};
@@ -320,6 +330,11 @@ void run() {
   HSSProjectReplayResult replay{};
   check(hss_project_store_replay(store, &engine, &replay) == HSS_OK,
         "replay committed project");
+  unchanged_checkpoint = {};
+  check(hss_project_store_checkpoint(store, &unchanged_checkpoint) == HSS_OK &&
+            unchanged_checkpoint.durable_revision == 2 &&
+            unchanged_checkpoint.durable_event_count == 8,
+        "reopened no-pending checkpoint verifies the recovered manifest");
   check(replay.applied_event_count == 8 && engine.revision == 7,
         "all events replay with exact revisions");
   check(engine.applied ==

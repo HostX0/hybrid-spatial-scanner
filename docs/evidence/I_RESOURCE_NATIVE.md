@@ -29,3 +29,21 @@ Physical iPhone thermal transitions, actual memory warnings, low-storage,
 background/protected-data behavior, and ARSession stop-barrier ordering remain
 device verification work. Simulator tests prove bridge and persistence paths,
 not real sensor timing.
+
+## Checkpoint-domain correction
+
+The store's durable revision counts committed manifests, while engine scene
+revision counts accepted source changes. Native resource handling no longer
+compares them. A no-pending checkpoint now revalidates the on-disk manifest
+and committed source stream and confirms they match the store's in-memory
+accepted sequence/revision. Metadata-only projects still return
+`HSS_NOT_READY`; no native cache can turn that into success.
+
+Focused ASan/UBSan host `ctest` in
+`/tmp/hss-i-resource-native-host-fix`: `hss_project_store` and
+`hss_resource_runtime_integration` both passed (2/2). The store test covers
+two accepted events in one durable manifest, idempotent no-pending validation,
+reopen validation, and empty-draft rejection. Focused named iPhone 17 Pro
+simulator `xcodebuild test` then passed the three affected resource tests
+(3/3), including two events/one manifest followed by a pressure checkpoint,
+and metadata-only checkpoint failure acknowledgement.

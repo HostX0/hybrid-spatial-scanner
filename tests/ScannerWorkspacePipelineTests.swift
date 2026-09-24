@@ -116,10 +116,19 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
                 projectFromWorld: matrix().map(Double.init), transformRevision: 1
             ), eventSequence: 1, monotonicTime: 1
         )
+        try await runtime.setEpoch(
+            CaptureEpochControl(
+                sessionEpoch: 1, relationshipState: .accepted,
+                projectFromWorld: matrix().map(Double.init), transformRevision: 2
+            ), eventSequence: 2, monotonicTime: 2
+        )
         let verified = try await runtime.checkpoint()
         XCTAssertEqual(verified.durableRevision, 1)
+        XCTAssertEqual(verified.durableEventCount, 2)
+        let sceneRevision = try await runtime.stats().scene_revision
+        XCTAssertEqual(sceneRevision, 2)
         let unsafe = try await runtime.observeResource(.init(
-            monotonicTime: 2, thermalState: 3,
+            monotonicTime: 3, thermalState: 3,
             memoryPressure: nil, freeStorageBytes: 2 * 1024 * 1024 * 1024
         ))
         XCTAssertTrue(unsafe.requestCheckpoint)

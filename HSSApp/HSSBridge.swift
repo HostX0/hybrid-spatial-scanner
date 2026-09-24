@@ -362,7 +362,6 @@ actor HSSProjectRuntime {
     private var storeAddress: UInt?
     private var nextResourceSequence: UInt64 = 1
     private var lastResourceTime: TimeInterval = 0
-    private var lastVerifiedCheckpoint: HSSProjectCheckpoint?
     let projectID: UUID
     let captureID: UUID
     let sourceIsSynthetic: Bool
@@ -499,21 +498,10 @@ actor HSSProjectRuntime {
         var failure: String?
         do {
             try drain()
-            let verifiedCheckpoint: HSSProjectCheckpoint
-            do {
-                verifiedCheckpoint = try checkpoint()
-            } catch HSSBridgeError.native(let status) where status == HSS_NOT_READY {
-                // No new source record exists. A previously verified manifest
-                // for this exact accepted revision remains the durable result.
-                let currentRevision = try stats().scene_revision
-                guard let verified = lastVerifiedCheckpoint,
-                      verified.durableRevision == currentRevision else {
-                    throw HSSBridgeError.native(status)
-                }
-                verifiedCheckpoint = verified
-            }
-            guard verifiedCheckpoint.durableRevision != 0 || verifiedCheckpoint.durableEventCount == 0 else {
-                throw HSSBridgeError.invalidValue("The store did not report a durable accepted revision.")
+            let verifiedCheckpoint = try checkpoint()
+            guard verifiedCheckpoint.durableRevision > 0,
+                  verifiedCheckpoint.durableEventCount > 0 else {
+                throw HSSBridgeError.invalidValue("The store did not report a durable source manifest.")
             }
             saved = verifiedCheckpoint
         } catch {
@@ -833,7 +821,6 @@ actor HSSProjectRuntime {
             durableEventCount: result.durable_event_count,
             durableBytes: result.durable_bytes
         )
-        lastVerifiedCheckpoint = checkpoint
         return checkpoint
     }
 
@@ -842,11 +829,6 @@ actor HSSProjectRuntime {
         var result = HSSProjectReplayResult()
         let status = hss_project_store_replay(store, engine, &result)
         guard status == HSS_OK else { throw HSSBridgeError.native(status) }
-        lastVerifiedCheckpoint = HSSProjectCheckpoint(
-            durableRevision: result.durable_revision,
-            durableEventCount: result.durable_event_count,
-            durableBytes: 0 // Replay does not expose the durable byte count.
-        )
         return HSSProjectReplay(
             durableRevision: result.durable_revision,
             durableEventCount: result.durable_event_count,
