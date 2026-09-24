@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "task": "Reconcile deterministic mesh stack with current main and register missing CTest suites",
+  "schema_version": 2,
+  "task": "Reconcile deterministic mesh stack with current main, register the required CTest suites, audit exact linkage, and fail closed if required regression sources disappear",
   "repository": "HostX0/hybrid-spatial-scanner",
   "source": {
     "main": "4cae5a0aaf5b28827f6c96b54d2ec9dbea42ef25",
@@ -12,17 +12,18 @@
   },
   "merge_observation": {
     "mergeable": true,
-    "rebaseable": true,
-    "mergeable_state": "unstable",
+    "draft": true,
     "merged_to_main": false
   },
   "cmake": {
     "current_main_blob_before_registration": "3631977c845ff9155776e0ebba495bea4b0e250b",
     "root_blob_after_registration": "068385bd79424dc0b70f0df13ed5b00baa254f09",
     "registration_commit": "b21f12073a96af253b662b966bcb49a022a4ca16",
-    "registration_module_blob": "bb7c283235378031467d61bc70a10a650d032f9b",
+    "registration_hardening_commit": "82726799ca208db8d4b094c3596e2b5896f1d0c7",
+    "registration_module_blob": "21137534e70252ab096db7edc03cfda1cba3ae5e",
     "root_diff_additions": 2,
-    "root_diff_deletions": 0
+    "root_diff_deletions": 0,
+    "missing_required_source_policy": "fatal_configure_error"
   },
   "registered_tests": [
     "hss_mesh_patch_components",
@@ -38,30 +39,61 @@
     "hss_mesh_anchor_scene_entities",
     "hss_mesh_anchor_scene_snapshot"
   ],
-  "links_spatial_core": [
-    "hss_mesh_anchor_project_batch",
-    "hss_mesh_anchor_reconstruction_plan",
-    "hss_mesh_anchor_cut_fragments",
-    "hss_mesh_anchor_scene_snapshot"
-  ],
-  "isolated_stub_test": "hss_mesh_anchor_surface_assembly",
+  "linkage_audit": {
+    "links_spatial_core": [
+      "hss_mesh_anchor_project_batch",
+      "hss_mesh_anchor_reconstruction_plan",
+      "hss_mesh_anchor_cut_fragments",
+      "hss_mesh_anchor_scene_snapshot"
+    ],
+    "header_defined_without_required_noninline_repository_link": [
+      "hss_mesh_patch_components",
+      "hss_mesh_patch_runtime_plan",
+      "hss_mesh_patch_surface_binding",
+      "hss_mesh_anchor_patch_plan",
+      "hss_mesh_event_payload",
+      "hss_mesh_anchor_scene_graph",
+      "hss_mesh_anchor_scene_entities"
+    ],
+    "isolated_stub_test": "hss_mesh_anchor_surface_assembly",
+    "isolated_stub_reason": "The regression defines its own deterministic hss::plane_fit::fit; linking SpatialCore or hss_robust_plane_fit would duplicate the symbol and invalidate the intended test boundary.",
+    "mismatch_found": false
+  },
   "registration_harness": {
     "exact_module_blob_verified": true,
-    "configure": "pass",
-    "build": "pass",
-    "ctest_discovered": 12,
-    "placeholder_pass": 12,
-    "placeholder_fail": 0,
-    "scope": "CMake registration mechanics only; placeholder translation units, not real mesh tests"
+    "cmake_version": "3.31.6",
+    "gcc_version": "14.2.0",
+    "clang_version": "17.0.0",
+    "gcc": {
+      "configure": "pass",
+      "build": "pass",
+      "ctest_discovered": 12,
+      "placeholder_pass": 12,
+      "placeholder_fail": 0
+    },
+    "clang": {
+      "configure": "pass",
+      "build": "pass",
+      "ctest_discovered": 12,
+      "placeholder_pass": 12,
+      "placeholder_fail": 0
+    },
+    "negative_missing_source": {
+      "removed_placeholder": "tests/hss_mesh_anchor_scene_snapshot_test.cpp",
+      "configure_exit": 1,
+      "generation_stopped": true,
+      "diagnostic": "Required HSS mesh pipeline test source is missing: tests/hss_mesh_anchor_scene_snapshot_test.cpp"
+    },
+    "scope": "CMake registration/link-option mechanics only; placeholder translation units, not real mesh tests"
   },
   "hosted_actions": {
-    "head": "6bf570a3fffb890750acf7eee48172f92ba27100",
+    "head_observed": "ab3ba05a2e788cd194a283f08d8420af6af8be22",
     "manually_rerun": false,
     "runs": [
       {
-        "workflow": "Plane fit exact scoring",
-        "run_id": 35978260979,
-        "job_id": 107563762489,
+        "workflow": "Anchor patch exact branch verification",
+        "run_id": 35978493265,
+        "job_id": 107564515757,
         "conclusion": "failure",
         "steps": 0,
         "runner_id": 0,
@@ -69,9 +101,9 @@
         "requested_label": "ubuntu-24.04"
       },
       {
-        "workflow": "Anchor patch exact branch verification",
-        "run_id": 35978260931,
-        "job_id": 107563762157,
+        "workflow": "Plane fit exact scoring",
+        "run_id": 35978493092,
+        "job_id": 107564513937,
         "conclusion": "failure",
         "steps": 0,
         "runner_id": 0,
@@ -81,6 +113,11 @@
     ],
     "interpretation": "No checkout/compiler/verifier/CMake/CTest/sanitizer step executed; hosting cause remains unverified."
   },
+  "primary_references": [
+    "https://cmake.org/cmake/help/latest/command/message.html",
+    "https://cmake.org/cmake/help/latest/command/add_test.html",
+    "https://cmake.org/cmake/help/latest/command/enable_testing.html"
+  ],
   "remaining_required_commands": [
     "cmake -S . -B build -DHSS_BUILD_TESTS=ON -DHSS_ENABLE_SANITIZERS=ON",
     "cmake --build build --parallel",
