@@ -5,6 +5,32 @@ import HSSContracts
 import UIKit
 import simd
 
+/// Maps one capture session's source clock into the durable project's ordered
+/// time axis. The offset is fixed by the first event; only delivery inversions
+/// are clamped. This time is an ordering key, not elapsed time across sessions.
+struct ProjectCaptureClock {
+    private static let maximumDeliverySkew: TimeInterval = 1
+    private(set) var lastTime: TimeInterval
+    private var offset: TimeInterval?
+
+    init(lastDurableTime: TimeInterval) {
+        lastTime = lastDurableTime
+    }
+
+    mutating func projectTime(for sourceTime: TimeInterval) -> TimeInterval? {
+        guard sourceTime.isFinite, sourceTime >= 0,
+              lastTime.isFinite, lastTime >= 0 else { return nil }
+        let candidateOffset = offset ?? max(0, lastTime - sourceTime)
+        let shifted = sourceTime + candidateOffset
+        guard shifted.isFinite,
+              shifted >= lastTime - Self.maximumDeliverySkew else { return nil }
+        let mapped = max(lastTime, shifted)
+        offset = candidateOffset
+        lastTime = mapped
+        return mapped
+    }
+}
+
 @MainActor
 final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     @Published private(set) var localProjects: [ScannerProjectSummary] = []
@@ -110,6 +136,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     private var pendingEvents: [SequencedNativeEvent] = []
     private var nextEventSequence: UInt64 = 1
     private var lastDurableEventTime: TimeInterval = 0
+    private var captureClock: ProjectCaptureClock?
     private var drainScheduled = false
     private var freezeRequested = false
     private var saveRequested = false
@@ -369,14 +396,6 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
 
     func startCapture() {
         guard runtime != nil, selectedProjectID != nil, !captureCoordinator.isSessionRunning else { return }
-        guard ProcessInfo.processInfo.systemUptime >= lastDurableEventTime else {
-            fail(
-                title: String(localized: "Capture time is not yet monotonic"),
-                message: String(localized: "The retained source time is ahead of this device clock. Start a new local project or retry after the monotonic clock catches up."),
-                recovery: .returnToProjectList
-            )
-            return
-        }
         guard !resourcePauseLatched else {
             showResourcePauseIssue(checkpointSucceeded: resourceCheckpointSucceeded)
             return
@@ -684,6 +703,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 guard !resourcePauseLatched,
                       selectedProjectID == runtime.projectID,
                       phase == .startingCapture else { return }
+                captureClock = ProjectCaptureClock(lastDurableTime: lastDurableEventTime)
                 captureCoordinator.startSession()
                 switch captureCoordinator.phase {
                 case .fallback(let reason), .blocked(let reason):
@@ -1009,23 +1029,35 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             var acceptedFrames: [SceneDepthFrameIdentity] = []
             while !pendingEvents.isEmpty {
                 let next = pendingEvents.removeFirst()
+                let sourceTime: TimeInterval
                 switch next.event {
-                case .epoch(let control, let monotonicTime):
-                    try await runtime.setEpoch(control, eventSequence: next.sequence, monotonicTime: monotonicTime)
+                case .epoch(_, let time), .planReference(_, _, _, let time): sourceTime = time
+                case .frame(let frame): sourceTime = frame.identity.monotonicTimestamp
+                case .mesh(let event): sourceTime = event.monotonicTimestamp
+                }
+                guard var clock = captureClock,
+                      let projectTime = clock.projectTime(for: sourceTime) else {
+                    throw HSSBridgeError.invalidValue("Capture source time could not be mapped to the project log.")
+                }
+                switch next.event {
+                case .epoch(let control, _):
+                    try await runtime.setEpoch(control, eventSequence: next.sequence, monotonicTime: projectTime)
                 case .frame(let frame):
-                    try await runtime.submitFrame(frame, eventSequence: next.sequence)
+                    try await runtime.submitFrame(frame, eventSequence: next.sequence, projectTime: projectTime)
                     observedProvenance.insert(.capturedSceneDepth)
                     acceptedFrames.append(frame.identity)
                 case .mesh(let event):
-                    try await runtime.submitMeshEvent(event, eventSequence: next.sequence)
+                    try await runtime.submitMeshEvent(event, eventSequence: next.sequence, projectTime: projectTime)
                     observedProvenance.insert(.capturedARKitMesh)
-                case .planReference(let matrix, let cutHeightMetres, let epoch, let monotonicTime):
+                case .planReference(let matrix, let cutHeightMetres, let epoch, _):
                     try await runtime.setPlanReference(
                         projectFromFloor: matrix, cutHeightMetres: cutHeightMetres,
                         sessionEpoch: epoch, eventSequence: next.sequence,
-                        monotonicTime: monotonicTime
+                        monotonicTime: projectTime
                     )
                 }
+                captureClock = clock
+                lastDurableEventTime = projectTime
             }
             latestSnapshot = try await runtime.snapshot(provenance: observedProvenance, frozen: false)
             for identity in acceptedFrames {

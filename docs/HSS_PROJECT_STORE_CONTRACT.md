@@ -58,6 +58,17 @@ the query to the just-replayed engine and use the retained capture ID with a
 fresh epoch above the durable namespace; a new AR world origin stays unresolved
 until a separately accepted relationship exists.
 
+The iOS workspace maps each new capture session's source uptime to a project
+log time when appending records. The first event fixes a constant offset if a
+reboot put device uptime behind the resume cursor. Small delivery inversions
+are clamped to the last appended time; a larger reversal fails capture rather
+than hiding a second clock reset. The log time preserves within-session
+intervals where events arrive in timestamp order, but its boundary between
+sessions is only an ordering boundary, not measured elapsed time. Source frame
+and mesh identities stay in the capture pipeline; the native frame timestamp
+and event context share the mapped project time required by this ABI. Epoch
+acceptance remains independent of this mapping and never follows from time.
+
 Replay submits every command disposition to the engine processor and compares
 its exact result bytes and revision boundary to the journal. For conflict,
 rejected, and pending-exclusion records it also compares the immutable scene

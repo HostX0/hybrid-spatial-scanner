@@ -556,8 +556,11 @@ actor HSSProjectRuntime {
         guard storeStatus == HSS_OK else { throw HSSBridgeError.native(storeStatus) }
     }
 
-    func submitFrame(_ normalized: NormalizedSceneDepthFrame, eventSequence: UInt64) throws {
+    func submitFrame(_ normalized: NormalizedSceneDepthFrame, eventSequence: UInt64, projectTime: TimeInterval) throws {
         guard let engine, let store else { throw HSSBridgeError.closed }
+        guard projectTime.isFinite, projectTime >= 0 else {
+            throw HSSBridgeError.invalidValue("Project frame time is invalid.")
+        }
         guard normalized.identity.sessionEpoch <= UInt64(UInt32.max),
               normalized.intrinsics.depthWidth <= Int(UInt32.max),
               normalized.intrinsics.depthHeight <= Int(UInt32.max) else {
@@ -578,7 +581,9 @@ actor HSSProjectRuntime {
         frame.event_sequence = eventSequence
         frame.session_epoch = UInt32(normalized.identity.sessionEpoch)
         frame.tracking_state = 0
-        frame.timestamp_s = normalized.identity.monotonicTimestamp
+        // The frame identity keeps ARKit's source timestamp for selection and
+        // age checks. The native frame/store pair uses the project log clock.
+        frame.timestamp_s = projectTime
         frame.T_world_camera = try Self.nativeMatrix(normalized.worldFromCamera.map(Double.init))
         frame.depth_intrinsics = HSSIntrinsics(
             fx: Double(normalized.intrinsics.fx), fy: Double(normalized.intrinsics.fy),
@@ -618,8 +623,11 @@ actor HSSProjectRuntime {
         guard storeStatus == HSS_OK else { throw HSSBridgeError.native(storeStatus) }
     }
 
-    func submitMeshEvent(_ event: OwnedMeshAnchorEvent, eventSequence: UInt64) throws {
+    func submitMeshEvent(_ event: OwnedMeshAnchorEvent, eventSequence: UInt64, projectTime: TimeInterval) throws {
         guard let engine, let store else { throw HSSBridgeError.closed }
+        guard projectTime.isFinite, projectTime >= 0 else {
+            throw HSSBridgeError.invalidValue("Project mesh time is invalid.")
+        }
         guard event.sessionEpoch <= UInt64(UInt32.max) else {
             throw HSSBridgeError.invalidValue("Mesh epoch exceeds the C ABI range.")
         }
@@ -664,7 +672,7 @@ actor HSSProjectRuntime {
         let acceptedRevision = try completeAcceptedEvent(after: beforeRevision)
         var context = Self.eventContext(
             captureID: captureID, eventSequence: eventSequence,
-            sessionEpoch: UInt32(event.sessionEpoch), monotonicTime: event.monotonicTimestamp,
+            sessionEpoch: UInt32(event.sessionEpoch), monotonicTime: projectTime,
             acceptedSceneRevision: acceptedRevision
         )
         var receipt = HSSProjectStoreReceipt()

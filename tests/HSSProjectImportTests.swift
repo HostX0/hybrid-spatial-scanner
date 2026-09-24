@@ -341,7 +341,7 @@ final class HSSProjectImportTests: XCTestCase {
                 localBoundsMax: SIMD3(1, 0, 0)
             )
         )
-        try await runtime.submitMeshEvent(mesh, eventSequence: 3)
+        try await runtime.submitMeshEvent(mesh, eventSequence: 3, projectTime: 3)
         let checkpoint = try await runtime.checkpoint()
         XCTAssertEqual(checkpoint.durableEventCount, 3)
         return (

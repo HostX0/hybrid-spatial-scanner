@@ -3,6 +3,96 @@ import UniformTypeIdentifiers
 @testable import HybridSpatialScanner
 
 final class ScannerWorkspacePipelineTests: XCTestCase {
+    func testRebootedSourceClockPreservesSessionIntervals() throws {
+        var clock = ProjectCaptureClock(lastDurableTime: 86_400)
+        let epoch = try XCTUnwrap(clock.projectTime(for: 12))
+        let depth = try XCTUnwrap(clock.projectTime(for: 12.25))
+        let mesh = try XCTUnwrap(clock.projectTime(for: 12.5))
+        XCTAssertEqual([epoch, depth, mesh], [86_400, 86_400.25, 86_400.5])
+        XCTAssertNil(clock.projectTime(for: .infinity))
+        XCTAssertNil(clock.projectTime(for: 0), "A second clock reset within one session must fail closed.")
+        XCTAssertEqual(clock.lastTime, 86_400.5)
+        var nextSession = ProjectCaptureClock(lastDurableTime: clock.lastTime)
+        XCTAssertEqual(nextSession.projectTime(for: 2), 86_400.5)
+        XCTAssertEqual(nextSession.projectTime(for: 3), 86_401.5)
+    }
+
+    func testMixedEpochDepthMeshDeliveryIsNondecreasing() throws {
+        var clock = ProjectCaptureClock(lastDurableTime: 50)
+        let sources: [(String, UInt64, UInt64, Double)] = [
+            ("epoch", 7, 101, 4.0),
+            ("depth", 7, 102, 4.2),
+            ("mesh", 7, 103, 4.1),
+            ("epoch", 8, 104, 4.3),
+            ("mesh", 8, 105, 4.35),
+            ("depth", 8, 106, 4.6),
+        ]
+        let mapped = try sources.map { try XCTUnwrap(clock.projectTime(for: $0.3)) }
+        XCTAssertEqual(mapped, [50, 50.2, 50.2, 50.3, 50.35, 50.6])
+        XCTAssertEqual(sources.map { $0.1 }, [7, 7, 7, 8, 8, 8])
+        XCTAssertEqual(sources.map { $0.2 }, [101, 102, 103, 104, 105, 106])
+    }
+
+    func testRebootedEpochFrameAndMeshAppendAndReplay() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hss-reboot-clock-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID()
+        let captureID = UUID()
+        let runtime = try HSSProjectRuntime(
+            projectID: projectID, captureID: captureID, sourceIsSynthetic: true,
+            trustedRoot: root, openMode: .create
+        )
+        let transform = matrix().map(Double.init)
+        try await runtime.setEpoch(
+            CaptureEpochControl(sessionEpoch: 1, relationshipState: .unresolved,
+                                projectFromWorld: transform, transformRevision: 1),
+            eventSequence: 1, monotonicTime: 100_000
+        )
+        var clock = ProjectCaptureClock(lastDurableTime: 100_000)
+        let newEpoch = CaptureEpochControl(
+            sessionEpoch: 2, relationshipState: .unresolved,
+            projectFromWorld: transform, transformRevision: 1
+        )
+        try await runtime.setEpoch(newEpoch, eventSequence: 2,
+                                   monotonicTime: try XCTUnwrap(clock.projectTime(for: 5)))
+        // This identity transform is an explicit synthetic relationship in the
+        // test; the production coordinator still owns the acceptance gate.
+        try await runtime.setEpoch(
+            CaptureEpochControl(sessionEpoch: 2, relationshipState: .accepted,
+                                projectFromWorld: transform, transformRevision: 2),
+            eventSequence: 3, monotonicTime: try XCTUnwrap(clock.projectTime(for: 5.1))
+        )
+        let depth = frame(identity: SceneDepthFrameIdentity(
+            sessionEpoch: 2, sequence: 1, monotonicTimestamp: 5.2
+        ))
+        try await runtime.submitFrame(depth, eventSequence: 4,
+                                      projectTime: try XCTUnwrap(clock.projectTime(for: 5.2)))
+        XCTAssertEqual(depth.identity.monotonicTimestamp, 5.2)
+        let mesh = OwnedMeshAnchorEvent(
+            kind: .add, anchorID: UUID(), anchorRevision: 1, generation: 1,
+            sessionEpoch: 2, sequence: 2, monotonicTimestamp: 5.15,
+            worldFromAnchor: matrix(),
+            payload: MeshAnchorPayload(
+                vertices: [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 1, 0)],
+                normals: [], triangleIndices: [0, 1, 2], classifications: [],
+                localBoundsMin: SIMD3(0, 0, 0), localBoundsMax: SIMD3(1, 1, 0)
+            )
+        )
+        try await runtime.submitMeshEvent(mesh, eventSequence: 5,
+                                          projectTime: try XCTUnwrap(clock.projectTime(for: 5.15)))
+        XCTAssertEqual(mesh.monotonicTimestamp, 5.15)
+        _ = try await runtime.checkpoint()
+        let reopened = try HSSProjectRuntime(
+            projectID: projectID, captureID: captureID, sourceIsSynthetic: true,
+            trustedRoot: root, openMode: .openExisting
+        )
+        let replay = try await reopened.replayCommittedSource()
+        XCTAssertEqual(replay.highestSessionEpoch, 2)
+        XCTAssertEqual(replay.lastEventSequence, 5)
+        XCTAssertEqual(replay.lastMonotonicTime, 100_000.2, accuracy: 0.000_001)
+    }
+
     func testEmptyDraftCreatesAndReopensBeforeAnySourceEvent() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("hss-empty-draft-\(UUID().uuidString)", isDirectory: true)
@@ -463,7 +553,10 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
         width: Int = 8,
         height: Int = 6,
         pose: [Float]? = nil,
-        mask: [UInt8]? = nil
+        mask: [UInt8]? = nil,
+        identity: SceneDepthFrameIdentity = SceneDepthFrameIdentity(
+            sessionEpoch: 1, sequence: 1, monotonicTimestamp: 1
+        )
     ) -> NormalizedSceneDepthFrame {
         let sampleCount = width * height
         let selectedMask = mask ?? [UInt8](repeating: 1, count: sampleCount)
@@ -474,7 +567,7 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
             planes: [PixelPlaneLayout(width: width, height: height, bytesPerRow: width * 4)]
         )
         return NormalizedSceneDepthFrame(
-            identity: SceneDepthFrameIdentity(sessionEpoch: 1, sequence: 1, monotonicTimestamp: 1),
+            identity: identity,
             intrinsics: ScaledSceneDepthIntrinsics(
                 fx: 4, fy: 4, cx: 4, cy: 3,
                 calibrationImageWidth: width, calibrationImageHeight: height,
@@ -545,7 +638,7 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
                 localBoundsMax: SIMD3(1, 2, 0)
             )
         )
-        try await runtime.submitMeshEvent(mesh, eventSequence: 3)
+        try await runtime.submitMeshEvent(mesh, eventSequence: 3, projectTime: 3)
         let checkpoint = try await runtime.checkpoint()
         XCTAssertEqual(checkpoint.durableEventCount, 3)
         return try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
