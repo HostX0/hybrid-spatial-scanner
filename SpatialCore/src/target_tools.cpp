@@ -50,7 +50,10 @@ bool valid_face_evidence(const RibFaceEvidence &evidence,
 }
 
 ToolResult result(Status status, const Target &target) {
-  return {.status = status, .target = target};
+  return {.status = status,
+          .target = target,
+          .requested_face = std::nullopt,
+          .command_may_be_created = false};
 }
 
 } // namespace
@@ -62,7 +65,9 @@ ToolResult prepare_target(const Target &target, uint64_t current_scene_revision)
     return result(Status::kStaleTarget, target);
   if (target.state == TargetState::kPending)
     return result(Status::kPendingTarget, target);
-  return {.status = Status::kReady, .target = target,
+  return {.status = Status::kReady,
+          .target = target,
+          .requested_face = std::nullopt,
           .command_may_be_created = true};
 }
 
@@ -90,7 +95,9 @@ ToolResult evaluate_tool(
         !face_target_ids.insert(candidate->target.id).second)
       return result(Status::kInvalidEvidence, parent);
   }
-  return {.status = Status::kReady, .target = parent,
+  return {.status = Status::kReady,
+          .target = parent,
+          .requested_face = std::nullopt,
           .command_may_be_created = true};
 }
 
