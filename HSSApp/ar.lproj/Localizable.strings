@@ -107,3 +107,17 @@
 "Target assistance" = "مساعدة الهدف";
 "Target selection is not available in this capture runtime." = "اختيار الهدف غير متاح في بيئة الالتقاط هذه.";
 "A supported depth target is required before protrusion guidance or an overlay can be shown." = "يلزم هدف عمق مدعوم قبل عرض إرشاد البروز أو طبقة التراكب.";
+"Resource pressure limits capture" = "ضغط الموارد يحدّ من الالتقاط";
+"The local checkpoint failed." = "فشل حفظ نقطة التحقق المحلية.";
+"Device heat stopped metric capture. Retained source is being saved locally." = "أوقفت حرارة الجهاز الالتقاط المتري. يجري حفظ البيانات المصدرية المحتفظ بها محليًا.";
+"Free storage is too low for safe capture. Retained source is being saved locally." = "مساحة التخزين الحرة منخفضة جدًا للالتقاط الآمن. يجري حفظ البيانات المصدرية المحتفظ بها محليًا.";
+"Device heat is limiting optional preview work. Metric validation remains active." = "تحدّ حرارة الجهاز من المعاينة الاختيارية. يبقى التحقق المتري فعالًا.";
+"Local storage is low. Optional preview work is reduced while metric validation remains active." = "التخزين المحلي منخفض. خُفّضت المعاينة الاختيارية مع بقاء التحقق المتري فعالًا.";
+"iOS reported a memory warning. Optional preview work is reduced; memory recovery cannot be verified." = "أبلغ iOS عن تحذير للذاكرة. خُفّضت المعاينة الاختيارية ولا يمكن التحقق من تعافي الذاكرة.";
+"Resource monitoring paused metric capture to protect retained source." = "أوقفت مراقبة الموارد الالتقاط المتري لحماية البيانات المصدرية المحتفظ بها.";
+"Metric capture remains paused" = "لا يزال الالتقاط المتري متوقفًا";
+"Accepted source was saved locally. Resource recovery cannot be fully verified on this device; review this project and return to the library. Start a new capture only after resolving device heat or storage pressure." = "حُفظت البيانات المصدرية المقبولة محليًا. لا يمكن التحقق تمامًا من تعافي الموارد على هذا الجهاز؛ راجع المشروع ثم عد إلى المكتبة. ابدأ التقاطًا جديدًا فقط بعد معالجة حرارة الجهاز أو ضغط التخزين.";
+"The local checkpoint failed. Metric capture remains paused; retry saving this project." = "فشل حفظ نقطة التحقق المحلية. لا يزال الالتقاط المتري متوقفًا؛ أعد محاولة حفظ هذا المشروع.";
+"Resource monitoring could not verify safe metric capture." = "لم تتمكن مراقبة الموارد من التحقق من سلامة الالتقاط المتري.";
+"Resource monitoring paused capture" = "أوقفت مراقبة الموارد الالتقاط";
+"Retained source remains local. Retry saving, then review the project." = "تبقى البيانات المصدرية المحتفظ بها محلية. أعد محاولة الحفظ ثم راجع المشروع.";

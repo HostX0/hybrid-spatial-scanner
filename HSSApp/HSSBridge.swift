@@ -256,6 +256,48 @@ struct HSSProjectReplay: Equatable, Sendable {
     let usedPreviousManifest: Bool
 }
 
+struct ScannerResourceDecision: Equatable, Sendable {
+    let lastAcceptedSequence: UInt64
+    let lastAcceptedTime: TimeInterval
+    let mode: UInt32
+    let pressure: UInt32
+    let reason: UInt32
+    let monitoringComplete: Bool
+    let inputFault: Bool
+    let reducePreviewQuality: Bool
+    let acceptMetricObservations: Bool
+    let requestCheckpoint: Bool
+    let pauseCapture: Bool
+    let retainExistingSources: Bool
+
+    init(_ native: HSSResourceDecision) throws {
+        guard native.abi_version == HSS_ABI_VERSION,
+              native.struct_size == MemoryLayout<HSSResourceDecision>.size,
+              native.validity_checks_enabled == 1,
+              native.retain_existing_sources == 1 else {
+            throw HSSBridgeError.invalidValue("Resource decision violated the native retention or validity contract.")
+        }
+        lastAcceptedSequence = native.last_accepted_sample_sequence
+        lastAcceptedTime = native.last_accepted_sample_time_s
+        mode = native.mode
+        pressure = native.pressure
+        reason = native.reason
+        monitoringComplete = native.monitoring_complete == 1
+        inputFault = native.input_fault == 1
+        reducePreviewQuality = native.reduce_preview_quality == 1
+        acceptMetricObservations = native.accept_metric_observations == 1
+        requestCheckpoint = native.request_checkpoint == 1
+        pauseCapture = native.pause_capture == 1
+        retainExistingSources = native.retain_existing_sources == 1
+    }
+}
+
+struct ScannerResourceCheckpointOutcome: Sendable {
+    let decision: ScannerResourceDecision
+    let checkpoint: HSSProjectCheckpoint?
+    let failure: String?
+}
+
 /// The durable representation of a scene-edit processor journal outcome. The
 /// command and result are preserved byte-for-byte; only an applied command may
 /// advance the native scene revision.
@@ -318,6 +360,9 @@ struct HSSCommandJournalEntry: Sendable {
 actor HSSProjectRuntime {
     private var engineAddress: UInt?
     private var storeAddress: UInt?
+    private var nextResourceSequence: UInt64 = 1
+    private var lastResourceTime: TimeInterval = 0
+    private var lastVerifiedCheckpoint: HSSProjectCheckpoint?
     let projectID: UUID
     let captureID: UUID
     let sourceIsSynthetic: Bool
@@ -403,6 +448,91 @@ actor HSSProjectRuntime {
 
     private var engine: OpaquePointer? { engineAddress.flatMap(OpaquePointer.init(bitPattern:)) }
     private var store: OpaquePointer? { storeAddress.flatMap(OpaquePointer.init(bitPattern:)) }
+
+    func observeResource(_ reading: ScannerResourceReading) throws -> ScannerResourceDecision {
+        guard let engine else { throw HSSBridgeError.closed }
+        guard reading.monotonicTime.isFinite, reading.monotonicTime >= 0,
+              nextResourceSequence < UInt64.max,
+              reading.thermalState.map({ $0 <= HSS_RESOURCE_THERMAL_CRITICAL }) ?? true,
+              reading.memoryPressure.map({ $0 <= HSS_RESOURCE_MEMORY_CRITICAL }) ?? true else {
+            throw HSSBridgeError.invalidValue("Resource reading is invalid or its sequence is exhausted.")
+        }
+        var sample = HSSResourceSample()
+        sample.abi_version = HSS_ABI_VERSION
+        sample.struct_size = UInt32(MemoryLayout<HSSResourceSample>.size)
+        sample.sequence = nextResourceSequence
+        sample.monotonic_time_s = max(reading.monotonicTime, lastResourceTime)
+        sample.thermal_status = reading.thermalState == nil
+            ? UInt32(HSS_RESOURCE_MEASUREMENT_UNMEASURED) : UInt32(HSS_RESOURCE_MEASUREMENT_MEASURED)
+        sample.thermal_state = reading.thermalState ?? UInt32(HSS_RESOURCE_THERMAL_NOMINAL)
+        sample.memory_status = reading.memoryPressure == nil
+            ? UInt32(HSS_RESOURCE_MEASUREMENT_UNMEASURED) : UInt32(HSS_RESOURCE_MEASUREMENT_MEASURED)
+        sample.memory_pressure = reading.memoryPressure ?? UInt32(HSS_RESOURCE_MEMORY_NOMINAL)
+        sample.storage_status = reading.freeStorageBytes == nil
+            ? UInt32(HSS_RESOURCE_MEASUREMENT_UNMEASURED) : UInt32(HSS_RESOURCE_MEASUREMENT_MEASURED)
+        sample.free_storage_bytes = reading.freeStorageBytes ?? 0
+        nextResourceSequence += 1
+        lastResourceTime = sample.monotonic_time_s
+        var native = HSSResourceDecision()
+        let status = hss_engine_observe_resource_sample(engine, &sample, &native)
+        guard status == HSS_OK else { throw HSSBridgeError.native(status) }
+        return try ScannerResourceDecision(native)
+    }
+
+    func resourceDecision() throws -> ScannerResourceDecision {
+        guard let engine else { throw HSSBridgeError.closed }
+        var native = HSSResourceDecision()
+        let status = hss_engine_get_resource_decision(engine, &native)
+        guard status == HSS_OK else { throw HSSBridgeError.native(status) }
+        return try ScannerResourceDecision(native)
+    }
+
+    /// Runs the actual B-038 store checkpoint before the B-041 acknowledgement.
+    /// This actor method has no suspension point between drain and handshake.
+    func completeResourceCheckpoint() throws -> ScannerResourceCheckpointOutcome {
+        guard let engine else { throw HSSBridgeError.closed }
+        let before = try resourceDecision()
+        guard before.requestCheckpoint else {
+            throw HSSBridgeError.invalidValue("The core did not request a resource checkpoint.")
+        }
+        var saved: HSSProjectCheckpoint?
+        var failure: String?
+        do {
+            try drain()
+            let verifiedCheckpoint: HSSProjectCheckpoint
+            do {
+                verifiedCheckpoint = try checkpoint()
+            } catch HSSBridgeError.native(let status) where status == HSS_NOT_READY {
+                // No new source record exists. A previously verified manifest
+                // for this exact accepted revision remains the durable result.
+                let currentRevision = try stats().scene_revision
+                guard let verified = lastVerifiedCheckpoint,
+                      verified.durableRevision == currentRevision else {
+                    throw HSSBridgeError.native(status)
+                }
+                verifiedCheckpoint = verified
+            }
+            guard verifiedCheckpoint.durableRevision != 0 || verifiedCheckpoint.durableEventCount == 0 else {
+                throw HSSBridgeError.invalidValue("The store did not report a durable accepted revision.")
+            }
+            saved = verifiedCheckpoint
+        } catch {
+            failure = String(describing: error)
+        }
+        var native = HSSResourceDecision()
+        let status = hss_engine_acknowledge_resource_checkpoint(
+            engine,
+            saved == nil ? UInt32(HSS_RESOURCE_CHECKPOINT_FAILED)
+                         : UInt32(HSS_RESOURCE_CHECKPOINT_SUCCEEDED),
+            &native
+        )
+        guard status == HSS_OK else { throw HSSBridgeError.native(status) }
+        return ScannerResourceCheckpointOutcome(
+            decision: try ScannerResourceDecision(native),
+            checkpoint: saved,
+            failure: failure
+        )
+    }
 
     func setEpoch(_ control: CaptureEpochControl, eventSequence: UInt64, monotonicTime: TimeInterval) throws {
         guard let engine, let store else { throw HSSBridgeError.closed }
@@ -698,11 +828,13 @@ actor HSSProjectRuntime {
         guard status == HSS_OK, result.durability_state == 1 else {
             throw HSSBridgeError.native(status == HSS_OK ? HSSStatus(HSS_INTERNAL_ERROR) : status)
         }
-        return HSSProjectCheckpoint(
+        let checkpoint = HSSProjectCheckpoint(
             durableRevision: result.durable_revision,
             durableEventCount: result.durable_event_count,
             durableBytes: result.durable_bytes
         )
+        lastVerifiedCheckpoint = checkpoint
+        return checkpoint
     }
 
     func replayCommittedSource() throws -> HSSProjectReplay {
@@ -710,6 +842,11 @@ actor HSSProjectRuntime {
         var result = HSSProjectReplayResult()
         let status = hss_project_store_replay(store, engine, &result)
         guard status == HSS_OK else { throw HSSBridgeError.native(status) }
+        lastVerifiedCheckpoint = HSSProjectCheckpoint(
+            durableRevision: result.durable_revision,
+            durableEventCount: result.durable_event_count,
+            durableBytes: 0 // Replay does not expose the durable byte count.
+        )
         return HSSProjectReplay(
             durableRevision: result.durable_revision,
             durableEventCount: result.durable_event_count,

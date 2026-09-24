@@ -3,6 +3,122 @@ import UniformTypeIdentifiers
 @testable import HybridSpatialScanner
 
 final class ScannerWorkspacePipelineTests: XCTestCase {
+    func testNativeResourceCheckpointAndUnmeasuredRecoveryStayPaused() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hss-resource-native-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtime = try HSSProjectRuntime(
+            projectID: UUID(), captureID: UUID(), sourceIsSynthetic: true,
+            trustedRoot: root, openMode: .create
+        )
+        let identity = matrix().map(Double.init)
+        try await runtime.setEpoch(
+            CaptureEpochControl(
+                sessionEpoch: 1, relationshipState: .unresolved,
+                projectFromWorld: identity, transformRevision: 1
+            ), eventSequence: 1, monotonicTime: 1
+        )
+        try await runtime.setEpoch(
+            CaptureEpochControl(
+                sessionEpoch: 1, relationshipState: .accepted,
+                projectFromWorld: identity, transformRevision: 2
+            ), eventSequence: 2, monotonicTime: 2
+        )
+        let nominal = ScannerResourceReading(
+            monotonicTime: 1, thermalState: 0,
+            memoryPressure: nil, freeStorageBytes: 2 * 1024 * 1024 * 1024
+        )
+        let initial = try await runtime.observeResource(nominal)
+        XCTAssertEqual(initial.lastAcceptedSequence, 1)
+        XCTAssertFalse(initial.monitoringComplete, "No memory-warning event is not a nominal measurement.")
+        XCTAssertTrue(initial.acceptMetricObservations)
+
+        let unsafe = try await runtime.observeResource(.init(
+            monotonicTime: 2, thermalState: 3,
+            memoryPressure: nil, freeStorageBytes: 2 * 1024 * 1024 * 1024
+        ))
+        XCTAssertEqual(unsafe.lastAcceptedSequence, 2)
+        XCTAssertTrue(unsafe.requestCheckpoint)
+        XCTAssertFalse(unsafe.acceptMetricObservations)
+        XCTAssertTrue(unsafe.retainExistingSources)
+        let outcome = try await runtime.completeResourceCheckpoint()
+        XCTAssertNotNil(outcome.checkpoint, "The actual local store checkpoint precedes acknowledgement.")
+        XCTAssertNil(outcome.failure)
+        XCTAssertTrue(outcome.decision.pauseCapture)
+        XCTAssertFalse(outcome.decision.requestCheckpoint)
+
+        for time in 3...6 {
+            let recovery = try await runtime.observeResource(.init(
+                monotonicTime: Double(time), thermalState: 0,
+                memoryPressure: nil, freeStorageBytes: 2 * 1024 * 1024 * 1024
+            ))
+            XCTAssertTrue(recovery.pauseCapture)
+            XCTAssertFalse(recovery.monitoringComplete)
+        }
+    }
+
+    func testResourceWarningDoesNotInventNominalMemory() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hss-resource-reading-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        await MainActor.run {
+            let monitor = ScannerIOSResourceMonitor()
+            XCTAssertNil(monitor.read(storageDirectory: root).memoryPressure)
+            monitor.noteMemoryWarning()
+            XCTAssertEqual(monitor.read(storageDirectory: root).memoryPressure, 1)
+        }
+    }
+
+    func testResourceCheckpointCanReuseVerifiedUnchangedRevision() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hss-resource-durable-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtime = try HSSProjectRuntime(
+            projectID: UUID(), captureID: UUID(), sourceIsSynthetic: true,
+            trustedRoot: root, openMode: .create
+        )
+        try await runtime.setEpoch(
+            CaptureEpochControl(
+                sessionEpoch: 1, relationshipState: .unresolved,
+                projectFromWorld: matrix().map(Double.init), transformRevision: 1
+            ), eventSequence: 1, monotonicTime: 1
+        )
+        let verified = try await runtime.checkpoint()
+        XCTAssertEqual(verified.durableRevision, 1)
+        let unsafe = try await runtime.observeResource(.init(
+            monotonicTime: 2, thermalState: 3,
+            memoryPressure: nil, freeStorageBytes: 2 * 1024 * 1024 * 1024
+        ))
+        XCTAssertTrue(unsafe.requestCheckpoint)
+        let outcome = try await runtime.completeResourceCheckpoint()
+        XCTAssertEqual(outcome.checkpoint, verified)
+        XCTAssertNil(outcome.failure)
+        XCTAssertTrue(outcome.decision.pauseCapture)
+    }
+
+    func testResourceCheckpointFailureIsAcknowledgedOnlyAfterAttempt() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hss-resource-empty-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtime = try HSSProjectRuntime(
+            projectID: UUID(), captureID: UUID(), sourceIsSynthetic: true,
+            trustedRoot: root, openMode: .create
+        )
+        _ = try await runtime.observeResource(.init(
+            monotonicTime: 1, thermalState: 3,
+            memoryPressure: nil, freeStorageBytes: 2 * 1024 * 1024 * 1024
+        ))
+        let outcome = try await runtime.completeResourceCheckpoint()
+        XCTAssertNil(outcome.checkpoint)
+        XCTAssertNotNil(outcome.failure)
+        XCTAssertTrue(outcome.decision.pauseCapture)
+        XCTAssertFalse(outcome.decision.requestCheckpoint)
+    }
+
     func testHSSCANFileIsSelectableForValidatedImport() throws {
         let type = try XCTUnwrap(UTType(filenameExtension: "hsscan"))
         XCTAssertTrue(ScannerProjectImportContentTypes.accepted.contains {
