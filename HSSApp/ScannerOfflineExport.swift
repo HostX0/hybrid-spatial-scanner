@@ -35,6 +35,7 @@ struct ScannerOfflineArtifactSet: Sendable {
         "scene.obj",
         "scene.mtl",
         "scene.provenance.json",
+        "semantic.provenance.json",
     ]
 
     init(files: [String: Data]) throws {
@@ -154,6 +155,7 @@ enum ScannerOfflineExporter {
             verticesXYZ: vertexData,
             triangleIndices: indexData
         )
+        let semanticProvenance = try semanticProvenance(snapshot)
         let set = try ScannerOfflineArtifactSet(files: [
             "plan.pdf": artifacts.pdfData,
             "plan.svg": artifacts.svgData,
@@ -163,6 +165,7 @@ enum ScannerOfflineExporter {
             "scene.obj": artifacts.objData,
             "scene.mtl": artifacts.mtlData,
             "scene.provenance.json": artifacts.objManifestData,
+            "semantic.provenance.json": semanticProvenance,
         ])
         return try ScannerOfflineExportStore.publish(
             set,
@@ -170,6 +173,41 @@ enum ScannerOfflineExporter {
             sceneRevision: snapshot.revision,
             trustedRoot: trustedRoot
         )
+    }
+
+    /// Frozen derived interpretation accompanies the measured exporters; it
+    /// never supplies geometry to their PDF, SVG, DXF, or OBJ inputs.
+    private static func semanticProvenance(_ snapshot: ScannerSceneSnapshot) throws -> Data {
+        let semantic = snapshot.planAnnotation
+        guard snapshot.isFrozen,
+              semantic == nil || semantic?.sceneRevision == snapshot.revision else {
+            throw ScannerOfflineExportError.ineligibleRevision
+        }
+        let plan = try semantic?.planJSON.map { try JSONSerialization.jsonObject(with: $0) }
+        let annotations = try semantic?.annotationJSON.map { try JSONSerialization.jsonObject(with: $0) }
+        if let semantic {
+            guard semantic.planAvailable == (plan != nil),
+                  semantic.annotationLayoutAvailable == (annotations != nil),
+                  plan == nil || (plan as? [String: Any])?["scene_revision"] as? String == String(snapshot.revision),
+                  annotations == nil || (annotations as? [String: Any])?["scene_revision"] as? String == String(snapshot.revision) else {
+                throw ScannerOfflineExportError.ineligibleRevision
+            }
+        }
+        let record: [String: Any] = [
+            "scene_revision": String(snapshot.revision),
+            "authority": "derived_plan_annotation_snapshot",
+            "measured_scene_authority": "scene.provenance.json",
+            "plan_available": semantic?.planAvailable ?? false,
+            "annotation_layout_available": semantic?.annotationLayoutAvailable ?? false,
+            "reference_state": semantic?.referenceState as Any? ?? NSNull(),
+            "boundary_state": semantic?.boundaryState as Any? ?? NSNull(),
+            "plan_availability": semantic?.planAvailability as Any? ?? NSNull(),
+            "area_availability": semantic?.areaAvailability as Any? ?? NSNull(),
+            "area_m2": semantic?.areaMetresSquared as Any? ?? NSNull(),
+            "plan": plan ?? NSNull(),
+            "annotations": annotations ?? NSNull(),
+        ]
+        return try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
     }
 }
 

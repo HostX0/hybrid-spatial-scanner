@@ -1,7 +1,46 @@
 import XCTest
+import UniformTypeIdentifiers
 @testable import HybridSpatialScanner
 
 final class ScannerWorkspacePipelineTests: XCTestCase {
+    func testHSSCANFileIsSelectableForValidatedImport() throws {
+        let type = try XCTUnwrap(UTType(filenameExtension: "hsscan"))
+        XCTAssertTrue(ScannerProjectImportContentTypes.accepted.contains {
+            type.conforms(to: $0)
+        })
+    }
+
+    func testDuplicateSemanticFragmentIDSuppressesReview() {
+        let fragmentID = UUID().uuidString.lowercased()
+        let fragment = """
+        {"id":"\(fragmentID)","state":"supported","geometry_origin":"fitted",\
+        "segment_m":[[0,0],[1,0]],"source_revision":"7"}
+        """
+        func snapshot(_ fragments: String) -> ScannerSceneSnapshot {
+            let plan = """
+            {"scene_revision":"7","source_is_synthetic":false,"boundary_state":"open",\
+            "validity":"unavailable","height":{"reference_state":"floor_unknown"},\
+            "fragments":[\(fragments)],"area":{"availability":"unavailable","area_m2":null}}
+            """
+            return ScannerSceneSnapshot(
+                revision: 7,
+                verticesMetres: [],
+                triangleIndices: [],
+                sceneJSON: Data("{}".utf8),
+                planAnnotation: ScannerPlanAnnotationSnapshot(
+                    sceneRevision: 7, planAvailable: true, annotationLayoutAvailable: false,
+                    referenceState: 1, boundaryState: 1, planAvailability: 2,
+                    areaAvailability: 2, areaMetresSquared: nil, cutHeightMetres: 1.2,
+                    isSynthetic: false, planJSON: Data(plan.utf8), annotationJSON: nil
+                ),
+                provenance: [],
+                isFrozen: true
+            )
+        }
+        XCTAssertNotNil(ScannerAcceptedPlanDecoder.decode(snapshot(fragment)))
+        XCTAssertNil(ScannerAcceptedPlanDecoder.decode(snapshot("\(fragment),\(fragment)")))
+    }
+
     func testSyntheticProjectCheckpointReopenAndReplay() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("hss-workspace-tests-\(UUID().uuidString)", isDirectory: true)
@@ -16,6 +55,42 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
         XCTAssertEqual(createdSnapshot.revision, 3)
         XCTAssertEqual(createdSnapshot.verticesMetres.count, 3)
         XCTAssertEqual(createdSnapshot.triangleIndices, [0, 1, 2])
+        let provisional = try XCTUnwrap(createdSnapshot.planAnnotation)
+        XCTAssertEqual(provisional.sceneRevision, 3)
+        XCTAssertTrue(provisional.planAvailable)
+        XCTAssertEqual(provisional.referenceState, 1, "The floor remains unknown until confirmed.")
+        XCTAssertNil(provisional.areaMetresSquared)
+        XCTAssertNotNil(provisional.planJSON)
+        XCTAssertNotNil(provisional.annotationJSON)
+        let review = try XCTUnwrap(ScannerAcceptedPlanDecoder.decode(createdSnapshot, language: .arabic))
+        XCTAssertEqual(review.plan.dimensionAnnotations.count, 0,
+                       "An unavailable plan suppresses the B-032 numeric length.")
+        XCTAssertNil(review.measurements.last?.value)
+        XCTAssertTrue(review.measurements.last?.detail?.contains("غير معروف") == true)
+        let exported = try ScannerOfflineExporter.export(
+            snapshot: createdSnapshot, projectID: projectID, trustedRoot: root
+        )
+        let semanticManifest = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(contentsOf: exported.appendingPathComponent("semantic.provenance.json"))
+        ) as? [String: Any])
+        XCTAssertEqual(semanticManifest["scene_revision"] as? String, "3")
+        XCTAssertEqual(semanticManifest["plan_available"] as? Bool, true)
+        XCTAssertTrue(semanticManifest["area_m2"] is NSNull)
+        XCTAssertNotNil(semanticManifest["plan"] as? [String: Any])
+        XCTAssertNotNil(semanticManifest["annotations"] as? [String: Any])
+        let stale = ScannerSceneSnapshot(
+            revision: createdSnapshot.revision + 1,
+            verticesMetres: createdSnapshot.verticesMetres,
+            triangleIndices: createdSnapshot.triangleIndices,
+            sceneJSON: createdSnapshot.sceneJSON,
+            planAnnotation: createdSnapshot.planAnnotation,
+            provenance: createdSnapshot.provenance,
+            isFrozen: true
+        )
+        XCTAssertNil(ScannerAcceptedPlanDecoder.decode(stale))
+        XCTAssertThrowsError(try ScannerOfflineExporter.export(
+            snapshot: stale, projectID: projectID, trustedRoot: root
+        ))
 
         let reopened = try HSSProjectRuntime(
             projectID: projectID,
@@ -34,6 +109,20 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
         XCTAssertEqual(replayedSnapshot.verticesMetres, createdSnapshot.verticesMetres)
         XCTAssertEqual(replayedSnapshot.triangleIndices, createdSnapshot.triangleIndices)
         XCTAssertTrue(replayedSnapshot.isFrozen)
+        XCTAssertEqual(replayedSnapshot.planAnnotation, createdSnapshot.planAnnotation)
+        try await reopened.setPlanReference(
+            projectFromFloor: matrix().map(Double.init),
+            cutHeightMetres: 1.2,
+            sessionEpoch: 1,
+            eventSequence: 4,
+            monotonicTime: 4
+        )
+        let confirmed = try await reopened.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(confirmed.revision, 4)
+        XCTAssertEqual(confirmed.planAnnotation?.referenceState, 0)
+        XCTAssertNil(confirmed.planAnnotation?.areaMetresSquared,
+                     "A confirmed floor does not establish finished-room area.")
+        XCTAssertEqual(createdSnapshot.planAnnotation?.sceneRevision, 3)
     }
 
     func testKeyframeSelectorRejectsStationaryRepeatAndAcceptsUsefulMotion() {
@@ -188,6 +277,13 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
         )
         XCTAssertTrue(planManifest.contains("unknown-edge"))
         XCTAssertTrue(planManifest.contains("\"has_explicit_segment\":false"))
+        let semantic = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(contentsOf: destination.appendingPathComponent("semantic.provenance.json"))
+        ) as? [String: Any])
+        XCTAssertEqual(semantic["scene_revision"] as? String, "7")
+        XCTAssertEqual(semantic["authority"] as? String, "derived_plan_annotation_snapshot")
+        XCTAssertEqual(semantic["measured_scene_authority"] as? String, "scene.provenance.json")
+        XCTAssertTrue(semantic["area_m2"] is NSNull)
         let dxfManifest = try String(
             contentsOf: destination.appendingPathComponent("dxf.provenance.json"),
             encoding: .utf8
@@ -286,12 +382,12 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
             monotonicTimestamp: 3,
             worldFromAnchor: matrix(),
             payload: MeshAnchorPayload(
-                vertices: [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 0, -1)],
+                vertices: [SIMD3(0, 0, 0), SIMD3(1, 2, 0), SIMD3(0, 2, -1)],
                 normals: [],
                 triangleIndices: [0, 1, 2],
                 classifications: [],
                 localBoundsMin: SIMD3(0, 0, -1),
-                localBoundsMax: SIMD3(1, 0, 0)
+                localBoundsMax: SIMD3(1, 2, 0)
             )
         )
         try await runtime.submitMeshEvent(mesh, eventSequence: 3)

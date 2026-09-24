@@ -50,6 +50,65 @@ public final class HSSSnapshotLease {
         return bytes
     }
 
+    private func semanticJSON(
+        _ copy: (OpaquePointer, UnsafeMutablePointer<UInt8>?, UInt64, UnsafeMutablePointer<UInt64>) -> HSSStatus
+    ) throws -> Data {
+        var required: UInt64 = 0
+        let query = copy(handle, nil, 0, &required)
+        guard query == HSS_BUFFER_TOO_SMALL || (query == HSS_OK && required == 0),
+              required <= UInt64(Int.max) else {
+            throw HSSBridgeError.native(query)
+        }
+        var bytes = Data(repeating: 0, count: Int(required))
+        let status = bytes.withUnsafeMutableBytes { raw in
+            copy(handle, raw.bindMemory(to: UInt8.self).baseAddress, UInt64(raw.count), &required)
+        }
+        guard status == HSS_OK else { throw HSSBridgeError.native(status) }
+        return bytes
+    }
+
+    private func planAnnotationSnapshot(revision: UInt64) throws -> ScannerPlanAnnotationSnapshot {
+        var summary = HSSPlanAnnotationSummary()
+        let status = hss_snapshot_get_plan_annotation_summary(handle, &summary)
+        guard status == HSS_OK else { throw HSSBridgeError.native(status) }
+        guard summary.scene_revision == revision,
+              summary.abi_version == HSS_ABI_VERSION,
+              summary.struct_size == MemoryLayout<HSSPlanAnnotationSummary>.size,
+              summary.plan_available <= 1,
+              summary.annotation_layout_available <= 1,
+              summary.has_area <= 1,
+              summary.source_is_synthetic <= 1,
+              summary.has_area == 0 ||
+                (summary.plan_available == 1 && summary.area_availability == HSS_PLAN_AVAILABILITY_READY
+                 && summary.area_m2.isFinite && summary.area_m2 >= 0) else {
+            throw HSSBridgeError.invalidValue("Plan summary does not match its accepted revision or availability.")
+        }
+        let plan = summary.plan_available == 1
+            ? try semanticJSON(hss_snapshot_copy_plan_json) : nil
+        let annotations = summary.annotation_layout_available == 1
+            ? try semanticJSON(hss_snapshot_copy_annotation_json) : nil
+        for data in [plan, annotations].compactMap({ $0 }) {
+            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  root["scene_revision"] as? String == String(revision) else {
+                throw HSSBridgeError.invalidValue("Plan or annotation JSON does not match the acquired revision.")
+            }
+        }
+        return ScannerPlanAnnotationSnapshot(
+            sceneRevision: revision,
+            planAvailable: summary.plan_available == 1,
+            annotationLayoutAvailable: summary.annotation_layout_available == 1,
+            referenceState: summary.reference_state,
+            boundaryState: summary.boundary_state,
+            planAvailability: summary.plan_availability,
+            areaAvailability: summary.area_availability,
+            areaMetresSquared: summary.has_area == 1 ? summary.area_m2 : nil,
+            cutHeightMetres: summary.cut_height_m,
+            isSynthetic: summary.source_is_synthetic == 1,
+            planJSON: plan,
+            annotationJSON: annotations
+        )
+    }
+
     func sceneSnapshot(
         provenance: Set<ScannerSceneProvenance>,
         isFrozen: Bool
@@ -128,6 +187,7 @@ public final class HSSSnapshotLease {
                 staleExclusionCount: nativeMaskSummary.stale_exclusion_count
             ),
             sceneJSON: try sceneJSON(),
+            planAnnotation: try planAnnotationSnapshot(revision: counts.scene_revision),
             provenance: provenance,
             isFrozen: isFrozen
         )
