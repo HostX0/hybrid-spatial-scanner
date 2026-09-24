@@ -1,0 +1,91 @@
+{
+  "evidence_id": "ENG-MESH-PATCH-SURFACE-BINDING-01",
+  "date": "2026-09-23",
+  "status": "dependency-ready-not-production-integrated",
+  "main_observed": "598b43d4901f2c5f1e5886d80fea6373ddf737a0",
+  "base_head": "8fbff87dda7bd6fdfd89b5499f2a78a6f0e8f481",
+  "source_identities": {
+    "live_reconstruction_blob": "883465c0b83f6a37f7402daf625c981c11c685ca",
+    "mesh_patch_components_blob": "953864104afbd6f850ef9dfd104b5faf63334860",
+    "mesh_patch_runtime_plan_blob": "1624c20cf896598a7ae34f5f7dcbbe6aef248e37",
+    "robust_plane_fit_header_blob": "35735ffc667c45357bef2023c28875ff46219dd1"
+  },
+  "implementation": {
+    "path": "SpatialCore/include/hss/mesh_patch_surface_binding.hpp",
+    "public_abi_changed": false,
+    "scene_schema_changed": false,
+    "thresholds_changed": false,
+    "external_runtime_dependencies_added": 0,
+    "production_runtime_wired": false,
+    "preserves_per_triangle_component_mapping": true,
+    "degenerate_triangles_remain_unbound": true,
+    "surface_key_basis": "support identity plus canonical indexed triangle suffix",
+    "plan_integrity_checks": [
+      "component index bounds",
+      "triangle counts",
+      "degenerate count",
+      "strict canonical component order and uniqueness",
+      "selected vertex and fit sample count equality"
+    ]
+  },
+  "regressions": {
+    "triangle_order_permutations": 32,
+    "protrusion_chain_surface_count": 5,
+    "same_face_triangles_share_key": true,
+    "different_faces_keep_distinct_keys": true,
+    "degenerate_triangle_binding": "none",
+    "empty_support_binding": "none",
+    "malformed_plan_fails_closed": true,
+    "upstream_resource_failure_preserved": true
+  },
+  "verification": [
+    {
+      "command": "python3 -m py_compile tools/verify_mesh_patch_surface_binding.py",
+      "python": "3.13.5",
+      "result": "pass"
+    },
+    {
+      "compiler": "g++ 14.2.0",
+      "mode": "C++20 O2 warnings-as-errors",
+      "result": "pass"
+    },
+    {
+      "compiler": "clang++ 17.0.0",
+      "mode": "C++20 O2 warnings-as-errors",
+      "result": "pass"
+    },
+    {
+      "compiler": "clang++ 17.0.0",
+      "mode": "C++20 ASan+UBSan warnings-as-errors",
+      "result": "pass-no-diagnostics"
+    }
+  ],
+  "verification_scope_note": "Targeted Linux host compilation of the new binding layer against a minimal contract-compatible local stub of the authenticated PR #5 Plan/ComponentPlan/status/canonical-suffix/weighted-sample types. The private repository was not materialized, grouping was not reimplemented, and this is not full CTest or Apple-platform evidence.",
+  "research": [
+    {
+      "source": "Apple ARMeshGeometry",
+      "url": "https://developer.apple.com/documentation/arkit/armeshgeometry",
+      "decision": "retain indexed per-face identity through later topology attribution"
+    },
+    {
+      "source": "Open3D TriangleMesh.cluster_connected_triangles",
+      "url": "https://www.open3d.org/docs/latest/python_api/open3d.geometry.TriangleMesh.html",
+      "decision": "retain explicit per-triangle component assignment"
+    },
+    {
+      "source": "PCL RegionGrowing",
+      "url": "https://pointclouds.org/documentation/classpcl_1_1_region_growing.html",
+      "decision": "keep connectivity attribution separate from smoothness/residual controls"
+    }
+  ],
+  "not_run": [
+    "production live_reconstruction integration",
+    "full repository CMake/CTest",
+    "Xcode/iOS build",
+    "simulator",
+    "physical iPhone LiDAR/ARKit",
+    "Metal/device thermal and memory profiling",
+    "real-room metrology",
+    "competitor comparison"
+  ]
+}

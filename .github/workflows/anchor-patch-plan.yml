@@ -1,0 +1,44 @@
+name: Anchor patch exact branch verification
+
+on:
+  pull_request:
+    paths:
+      - 'SpatialCore/include/hss/mesh_patch_components.hpp'
+      - 'SpatialCore/include/hss/mesh_patch_runtime_plan.hpp'
+      - 'SpatialCore/include/hss/mesh_patch_surface_binding.hpp'
+      - 'SpatialCore/include/hss/mesh_anchor_patch_plan.hpp'
+      - 'SpatialCore/include/hss/robust_plane_fit.hpp'
+      - 'tests/hss_mesh_anchor_patch_plan_test.cpp'
+      - 'tools/verify_mesh_anchor_patch_plan.py'
+      - '.github/workflows/anchor-patch-plan.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: anchor-patch-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-branch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact pull-request source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Record exact source identity
+        run: |
+          git rev-parse HEAD
+          g++ --version | head -n 1
+          clang++ --version | head -n 1
+          python3 --version
+      - name: GCC C++20 regression
+        run: python3 tools/verify_mesh_anchor_patch_plan.py --cxx g++
+      - name: Clang C++20 regression
+        run: python3 tools/verify_mesh_anchor_patch_plan.py --cxx clang++
+      - name: Clang ASan and UBSan regression
+        run: python3 tools/verify_mesh_anchor_patch_plan.py --cxx clang++ --sanitize

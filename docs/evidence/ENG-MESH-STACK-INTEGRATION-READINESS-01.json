@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "task": "Stack integration readiness audit for deterministic mesh reconstruction work",
+  "repository": "HostX0/hybrid-spatial-scanner",
+  "observed": {
+    "main": {
+      "sha": "4cae5a0aaf5b28827f6c96b54d2ec9dbea42ef25",
+      "subject": "Fix HSSCAN archive export names",
+      "cmake_blob": "3631977c845ff9155776e0ebba495bea4b0e250b"
+    },
+    "stack": {
+      "top_pr": 16,
+      "head": "45453570f42c1d6669191d149835c127bb41e654",
+      "branch": "hss/deterministic-scene-snapshot",
+      "merge_base": "598b43d4901f2c5f1e5886d80fea6373ddf737a0",
+      "ahead_of_main": 56,
+      "behind_main": 13,
+      "cmake_blob": "1be556891f6af99fc92dfa07aaddf5dd788ed947",
+      "cmake_equals_merge_base": true
+    },
+    "pull_request_actions_runs": {
+      "count": 3,
+      "exact_source_runner_cause": "unverified",
+      "latest_stack_hosted_result": "none"
+    }
+  },
+  "findings": [
+    {
+      "id": "IR-01",
+      "severity": "blocker",
+      "statement": "The stack is 56 commits ahead and 13 commits behind current main."
+    },
+    {
+      "id": "IR-02",
+      "severity": "blocker",
+      "statement": "The stack CMakeLists.txt is byte-identical to the merge-base copy while current main has a newer CMakeLists.txt."
+    },
+    {
+      "id": "IR-03",
+      "severity": "blocker",
+      "statement": "Twelve deterministic mesh pipeline C++ test sources exist on the stack but are not registered by its CMakeLists.txt."
+    },
+    {
+      "id": "IR-04",
+      "severity": "blocker",
+      "statement": "PRs #4-#16 are not wired into production live_reconstruction.cpp."
+    },
+    {
+      "id": "IR-05",
+      "severity": "infrastructure",
+      "statement": "Observed hosted exact-source verification did not execute useful compile/test steps; the cause remains unverified."
+    }
+  ],
+  "unregistered_mesh_tests": [
+    "tests/hss_mesh_patch_components_test.cpp",
+    "tests/hss_mesh_patch_runtime_plan_test.cpp",
+    "tests/hss_mesh_patch_surface_binding_test.cpp",
+    "tests/hss_mesh_anchor_patch_plan_test.cpp",
+    "tests/hss_mesh_event_payload_test.cpp",
+    "tests/hss_mesh_anchor_project_batch_test.cpp",
+    "tests/hss_mesh_anchor_reconstruction_plan_test.cpp",
+    "tests/hss_mesh_anchor_cut_fragments_test.cpp",
+    "tests/hss_mesh_anchor_surface_assembly_test.cpp",
+    "tests/hss_mesh_anchor_scene_graph_test.cpp",
+    "tests/hss_mesh_anchor_scene_entities_test.cpp",
+    "tests/hss_mesh_anchor_scene_snapshot_test.cpp"
+  ],
+  "current_main_cmake_features_that_must_survive": [
+    "ZLIB package requirement and native archive-import test linkage",
+    "HSS_ENABLE_PLAN_ANNOTATION_RUNTIME compile definition",
+    "hss_dynamic_evidence_verifier library/test",
+    "hss_golden_suite test registration",
+    "hss_native_project_import_test",
+    "hss_plan_annotation_runtime_test",
+    "current live-reconstruction and dynamic-runtime integration tests"
+  ],
+  "acceptance_commands": [
+    "cmake -S . -B build -DHSS_BUILD_TESTS=ON -DHSS_ENABLE_SANITIZERS=ON",
+    "cmake --build build --parallel",
+    "ctest --test-dir build -N",
+    "ctest --test-dir build --output-on-failure"
+  ],
+  "not_claimed": [
+    "full repository CMake/CTest pass",
+    "hosted exact-branch compile pass",
+    "production live reconstruction integration",
+    "Xcode or simulator validation",
+    "physical iPhone LiDAR/Metal validation",
+    "thermal or real-room metrology"
+  ]
+}

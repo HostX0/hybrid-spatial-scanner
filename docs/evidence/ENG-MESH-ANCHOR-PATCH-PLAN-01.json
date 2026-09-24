@@ -1,0 +1,93 @@
+{
+  "evidence_id": "ENG-MESH-ANCHOR-PATCH-PLAN-01",
+  "date": "2026-09-23",
+  "status": "dependency-ready-not-production-integrated",
+  "live_main": "ab747c36ea0cd46260895268984276f9853fb847",
+  "stack_base_pr": 6,
+  "stack_base_head": "f5c1571c8e19cb7bf14662e29345c6d5edcc1aac",
+  "stack_vs_main": {
+    "status": "diverged",
+    "ahead_by": 12,
+    "behind_by": 2,
+    "merge_base": "598b43d4901f2c5f1e5886d80fea6373ddf737a0"
+  },
+  "source_blobs": {
+    "mesh_patch_components": "953864104afbd6f850ef9dfd104b5faf63334860",
+    "mesh_patch_runtime_plan": "1624c20cf896598a7ae34f5f7dcbbe6aef248e37",
+    "mesh_patch_surface_binding": "fd90893f883800ff28e17b2c22fcf47ed431bfe6",
+    "robust_plane_fit_header": "35735ffc667c45357bef2023c28875ff46219dd1"
+  },
+  "implementation": {
+    "path": "SpatialCore/include/hss/mesh_anchor_patch_plan.hpp",
+    "complete_anchor_local_batch": true,
+    "stable_identity_uses_global_vertex_base": false,
+    "raw_triangle_rebase_checked_for_uint32_overflow": true,
+    "degenerate_metric_binding": "none",
+    "raw_degenerate_retention_if_indices_valid": true,
+    "public_abi_changed": false,
+    "scene_schema_changed": false,
+    "thresholds_changed": false,
+    "external_runtime_dependencies_added": 0,
+    "production_runtime_wired": false
+  },
+  "regressions": {
+    "checks_per_execution": 786,
+    "final_executions": 3,
+    "total_checks_passed": 2358,
+    "total_checks_failed": 0,
+    "triangle_order_permutations_per_fixture": 32,
+    "protrusion_chain_surface_count": 5,
+    "noisy_wall_component_count": 1,
+    "noisy_wall_selected_samples": 96,
+    "shallow_crease_degrees": [0.2, 0.5],
+    "disconnected_parallel_offset_m": 0.02,
+    "nonzero_global_vertex_base_tested": 1000,
+    "overflow_fails_closed": true
+  },
+  "verification": [
+    {
+      "command": "python3 -m py_compile tools/verify_mesh_anchor_patch_plan.py",
+      "python": "3.13.5",
+      "result": "pass"
+    },
+    {
+      "command": "python3 tools/verify_mesh_anchor_patch_plan.py --cxx g++",
+      "compiler": "GCC 14.2.0",
+      "result": "pass-786-of-786"
+    },
+    {
+      "command": "python3 tools/verify_mesh_anchor_patch_plan.py --cxx clang++",
+      "compiler": "Clang 17.0.0",
+      "result": "pass-786-of-786"
+    },
+    {
+      "command": "python3 tools/verify_mesh_anchor_patch_plan.py --cxx clang++ --sanitize",
+      "compiler": "Clang 17.0.0",
+      "mode": "ASan+UBSan",
+      "result": "pass-786-of-786-no-diagnostics"
+    }
+  ],
+  "local_sha256": {
+    "SpatialCore/include/hss/mesh_anchor_patch_plan.hpp": "4643ce1ee3aa94355c96b095dca8213d552fdc9fc72554499459dfd8623bb7d8",
+    "tests/hss_mesh_anchor_patch_plan_test.cpp": "c96752403cacde345df5e68e3586a026cf4e9a976c66b0ed45e600c760e29b62",
+    "tools/verify_mesh_anchor_patch_plan.py": "797916c33dba588e8ffd69438178b529ae66e0141133745c2675d0f7ed97eaf7"
+  },
+  "verification_scope_note": "The private repository could not be materialized because github.com DNS resolution failed in the connected container. The new files were tested against contract-compatible local transcriptions of authenticated PR #6 dependency headers; this is not full repository CMake/CTest evidence.",
+  "research": [
+    "Apple ARMeshGeometry",
+    "Apple ARGeometrySource",
+    "Open3D TriangleMesh.cluster_connected_triangles",
+    "PCL Region Growing segmentation",
+    "D14-D17 normative project contracts"
+  ],
+  "not_run": [
+    "production live_reconstruction integration",
+    "full repository CMake/CTest",
+    "Xcode/iOS build",
+    "simulator",
+    "physical iPhone LiDAR/ARKit",
+    "Metal/device thermal and memory profiling",
+    "real-room metrology",
+    "competitor comparison"
+  ]
+}

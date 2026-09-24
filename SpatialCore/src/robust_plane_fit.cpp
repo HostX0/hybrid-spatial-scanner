@@ -494,23 +494,47 @@ Result fit(const std::vector<WeightedSample> &samples, const Options &options) {
     }
     if (candidate.inliers.size() < options.min_support_samples)
       continue;
-    const SupportFacts facts = support_facts(samples, candidate.inliers);
-    if (facts.distinct_points < options.min_distinct_support_points ||
-        facts.diversity_groups < options.min_diversity_groups) {
+    // Distinct support cannot exceed sample count. This bound cannot prune a
+    // winner under better_candidate's lexicographic ordering, even when many
+    // observations share coordinates. Keep all residual evaluation and random
+    // sampling unchanged; this is not probabilistic RANSAC early termination.
+    if (best && candidate.inliers.size() < best->distinct_points)
       continue;
+    if (best && candidate.inliers == best->inliers) {
+      // Exact ordered support gives identical support facts and covariance.
+      // Reuse only these support-dependent values, never the hypothesis plane
+      // or its residuals. Keeping just the current best bounds cache memory.
+      candidate.distinct_points = best->distinct_points;
+      candidate.diversity_groups = best->diversity_groups;
+      candidate.minor_variance = best->minor_variance;
+    } else {
+      const SupportFacts facts = support_facts(samples, candidate.inliers);
+      if (facts.distinct_points < options.min_distinct_support_points ||
+          facts.diversity_groups < options.min_diversity_groups) {
+        continue;
+      }
+      candidate.distinct_points = facts.distinct_points;
+      candidate.diversity_groups = facts.diversity_groups;
+      // Only a strictly worse prefix may bypass the extent calculation. A tie
+      // still needs extent, residual median and the canonical plane tie-break.
+      if (best &&
+          std::tuple{candidate.distinct_points, candidate.inliers.size(),
+                     candidate.diversity_groups} <
+              std::tuple{best->distinct_points, best->inliers.size(),
+                         best->diversity_groups}) {
+        continue;
+      }
+      CovarianceFit unweighted_fit;
+      const Status extent_status = covariance_fit(
+          samples, candidate.inliers, options, false, &unweighted_fit);
+      if (extent_status != Status::kOk) {
+        encountered_numerical_failure |=
+            extent_status == Status::kNumericalFailure;
+        encountered_rank_deficiency |= extent_status == Status::kRankDeficient;
+        continue;
+      }
+      candidate.minor_variance = unweighted_fit.minor_variance;
     }
-    CovarianceFit unweighted_fit;
-    const Status extent_status = covariance_fit(
-        samples, candidate.inliers, options, false, &unweighted_fit);
-    if (extent_status != Status::kOk) {
-      encountered_numerical_failure |=
-          extent_status == Status::kNumericalFailure;
-      encountered_rank_deficiency |= extent_status == Status::kRankDeficient;
-      continue;
-    }
-    candidate.distinct_points = facts.distinct_points;
-    candidate.diversity_groups = facts.diversity_groups;
-    candidate.minor_variance = unweighted_fit.minor_variance;
     candidate.median_residual = median(std::move(inlier_residuals));
     if (!best || better_candidate(candidate, *best))
       best = std::move(candidate);

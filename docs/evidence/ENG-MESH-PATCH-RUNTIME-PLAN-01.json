@@ -1,0 +1,84 @@
+{
+  "evidence_id": "ENG-MESH-PATCH-RUNTIME-PLAN-01",
+  "date": "2026-09-23",
+  "status": "dependency-ready-not-production-integrated",
+  "base_head": "0435f54e1d8642ccf86c50ff41a4d0df9f9b5b8a",
+  "main_observed": "598b43d4901f2c5f1e5886d80fea6373ddf737a0",
+  "source_identities": {
+    "live_reconstruction_blob": "883465c0b83f6a37f7402daf625c981c11c685ca",
+    "mesh_patch_components_blob": "953864104afbd6f850ef9dfd104b5faf63334860",
+    "robust_plane_fit_header_blob": "35735ffc667c45357bef2023c28875ff46219dd1"
+  },
+  "implementation": {
+    "path": "SpatialCore/include/hss/mesh_patch_runtime_plan.hpp",
+    "public_abi_changed": false,
+    "scene_schema_changed": false,
+    "thresholds_changed": false,
+    "external_runtime_dependencies_added": 0,
+    "production_runtime_wired": false,
+    "preserves_per_triangle_component_mapping": true,
+    "prepares_bounded_project_coordinate_fit_samples": true,
+    "identity_basis": "support identity plus canonical indexed triangle suffix"
+  },
+  "regressions": {
+    "triangle_order_permutations_per_applicable_fixture": 32,
+    "noisy_0_10_mm_wall_components": 1,
+    "stable_sample_count_for_large_wall": 96,
+    "crease_0_20_deg_components": 2,
+    "crease_0_50_deg_components": 2,
+    "protrusion_chain_components": 5,
+    "disconnected_and_offset_parallel_preserved": true,
+    "degenerate_triangle_mapping": "npos",
+    "invalid_geometry_fails_closed": true,
+    "invalid_options_fail_closed": true
+  },
+  "verification": [
+    {
+      "command": "python3 -m py_compile tools/verify_mesh_patch_runtime_plan.py",
+      "result": "pass"
+    },
+    {
+      "compiler": "g++ 14.2.0",
+      "mode": "C++20 O2 warnings-as-errors",
+      "result": "pass"
+    },
+    {
+      "compiler": "clang++ 17.0.0",
+      "mode": "C++20 O2 warnings-as-errors",
+      "result": "pass"
+    },
+    {
+      "compiler": "clang++ 17.0.0",
+      "mode": "C++20 ASan+UBSan warnings-as-errors",
+      "result": "pass-no-diagnostics"
+    }
+  ],
+  "verification_scope_note": "Targeted Linux host compilation against a local transcription of the authenticated PR #4 dependency interfaces/behavior; not a materialized private-repository checkout or full CTest build, and local dependency blob identities were not asserted equal to GitHub blobs.",
+  "research": [
+    {
+      "source": "Apple ARMeshGeometry",
+      "url": "https://developer.apple.com/documentation/arkit/armeshgeometry",
+      "decision": "retain indexed anchor-local triangle identity and face evidence"
+    },
+    {
+      "source": "Open3D TriangleMesh.cluster_connected_triangles",
+      "url": "https://www.open3d.org/docs/latest/python_api/open3d.geometry.TriangleMesh.html",
+      "decision": "retain explicit per-triangle connected-component assignment"
+    },
+    {
+      "source": "PCL RegionGrowing",
+      "url": "https://pointclouds.org/documentation/classpcl_1_1_region_growing.html",
+      "decision": "do not collapse connectivity, smoothness and residual evidence into one widened scalar threshold"
+    }
+  ],
+  "not_run": [
+    "production live_reconstruction integration",
+    "full repository CMake/CTest",
+    "Xcode/iOS build for this change",
+    "simulator",
+    "physical iPhone LiDAR/ARKit",
+    "Metal/device thermal and memory profiling",
+    "real-room metrology",
+    "competitor comparison"
+  ]
+}

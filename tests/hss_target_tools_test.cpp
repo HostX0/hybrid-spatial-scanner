@@ -84,6 +84,24 @@ void test_protrusion_requests_missing_faces_in_order() {
         "all independently supported faces make an intent command eligible");
 }
 
+void test_reused_face_target_is_rejected() {
+  const Target parent = confirmed("parent");
+  std::array<std::optional<RibFaceEvidence>, 3U> evidence{
+      face(RibFace::kFirstReturn, "shared-face"),
+      face(RibFace::kFront, "shared-face"),
+      face(RibFace::kSecondReturn, "return-b")};
+  auto result = evaluate_tool(Tool::kMarkProtrusion, parent, 7U, evidence);
+  check(result.status == Status::kInvalidEvidence &&
+            !result.command_may_be_created,
+        "one target cannot prove two distinct protrusion faces");
+  evidence[1] = face(RibFace::kFront, "front");
+  evidence[2] = face(RibFace::kSecondReturn, "front");
+  result = evaluate_tool(Tool::kMarkProtrusion, parent, 7U, evidence);
+  check(result.status == Status::kInvalidEvidence &&
+            !result.command_may_be_created,
+        "duplicate evidence identity is rejected regardless of face position");
+}
+
 void test_invalid_evidence_does_not_retarget() {
   const Target parent = confirmed("parent");
   std::array<std::optional<RibFaceEvidence>, 3U> evidence{
@@ -103,6 +121,7 @@ int main() {
   test_pending_tap_is_preserved_without_geometry();
   test_revision_and_provenance_preconditions();
   test_protrusion_requests_missing_faces_in_order();
+  test_reused_face_target_is_rejected();
   test_invalid_evidence_does_not_retarget();
   return failures == 0 ? 0 : 1;
 }

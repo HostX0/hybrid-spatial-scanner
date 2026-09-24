@@ -77,6 +77,8 @@ ToolResult evaluate_tool(
 
   constexpr std::array<RibFace, 3U> kRequiredFaces{
       RibFace::kFirstReturn, RibFace::kFront, RibFace::kSecondReturn};
+  std::unordered_set<std::string_view> face_target_ids;
+  face_target_ids.reserve(kRequiredFaces.size());
   for (size_t index = 0U; index < kRequiredFaces.size(); ++index) {
     const std::optional<RibFaceEvidence> &candidate = evidence[index];
     if (!candidate || candidate->face != kRequiredFaces[index]) {
@@ -84,7 +86,8 @@ ToolResult evaluate_tool(
               .target = parent,
               .requested_face = kRequiredFaces[index]};
     }
-    if (!valid_face_evidence(*candidate, parent, current_scene_revision))
+    if (!valid_face_evidence(*candidate, parent, current_scene_revision) ||
+        !face_target_ids.insert(candidate->target.id).second)
       return result(Status::kInvalidEvidence, parent);
   }
   return {.status = Status::kReady, .target = parent,

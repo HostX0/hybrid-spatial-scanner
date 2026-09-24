@@ -1,0 +1,43 @@
+name: Plane fit exact scoring
+
+on:
+  pull_request:
+    paths:
+      - 'SpatialCore/src/robust_plane_fit.cpp'
+      - 'SpatialCore/include/hss/robust_plane_fit.hpp'
+      - 'tests/hss_robust_plane_fit_test.cpp'
+      - 'tests/hss_plane_fit_scoring_probe.cpp'
+      - 'tools/verify_plane_fit_scoring.py'
+      - '.github/workflows/plane-fit-scoring.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'SpatialCore/src/robust_plane_fit.cpp'
+      - 'SpatialCore/include/hss/robust_plane_fit.hpp'
+      - 'tests/hss_robust_plane_fit_test.cpp'
+      - 'tests/hss_plane_fit_scoring_probe.cpp'
+      - 'tools/verify_plane_fit_scoring.py'
+      - '.github/workflows/plane-fit-scoring.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plane-fit-scoring-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-parity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Read source and pinned baseline history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: GCC exact parity and existing unit regressions
+        run: python3 tools/verify_plane_fit_scoring.py --cxx g++ --skip-benchmarks
+      - name: Clang ASan and UBSan exact parity and existing unit regressions
+        run: python3 tools/verify_plane_fit_scoring.py --cxx clang++ --sanitize
