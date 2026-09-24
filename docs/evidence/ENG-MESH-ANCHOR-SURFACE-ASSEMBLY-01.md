@@ -31,6 +31,7 @@ D14-D17 remain authoritative: raw evidence and calibrated frames are retained, s
 - consumes a completed `mesh_anchor_reconstruction::Prepared` and a successful `mesh_anchor_cut::Result`;
 - requires the same support identity across the anchor metric plan and cut result;
 - validates strict canonical component ordering, unique support-scoped stable surface keys, component triangle counts, component-map bounds, the 96-sample live cap, and exact selected-index / fit-sample cardinality;
+- validates surface-key scope without allocating temporary prefix strings;
 - cross-checks every cut fragment's source triangle and local triangle against the finalized `component_of_triangle` mapping before exposing its surface attribution;
 - rejects duplicate cut attribution for one source triangle and fragments whose stable key disagrees with the finalized component;
 - preserves deterministic component order and cut-fragment indexes from the already deterministic PR #12 result;
@@ -70,7 +71,7 @@ python3 --version
 # Python 3.13.5
 ```
 
-Targeted compilation against the exact new helper/test bytes and contract-compatible local stubs of the authenticated PR #11 / PR #12 data shapes plus the exact `robust_plane_fit.hpp` public shape:
+Targeted compilation against the exact final new helper/test bytes and contract-compatible local stubs of the authenticated PR #11 / PR #12 data shapes plus the exact `robust_plane_fit.hpp` public shape:
 
 ```text
 g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror \
@@ -103,7 +104,7 @@ Total final compiled assertions across the three C++ runs: 3,621 passed, 0 faile
 
 The connected container still cannot clone/materialize the complete private repository. Therefore this round did **not** execute full repository CMake/CTest or link the exact `robust_plane_fit.cpp` implementation. The plane fitter was represented by a deterministic test stub that records and validates the options passed by the new assembly layer and exercises fit-success / fit-failure propagation. Robust fitting itself remains covered by its separate production tests/evidence, including PR #1; this round does not upgrade that evidence.
 
-The checked-in verifier is written for the real repository and compiles the new test with the actual `SpatialCore/src/robust_plane_fit.cpp` once an exact checkout/runner is available. It was syntax-checked here, but not executed against the inaccessible full checkout.
+The checked-in verifier intentionally compiles this glue-level regression without `robust_plane_fit.cpp`, because the test supplies a deterministic plane-fit stub to verify option forwarding and success/failure propagation without duplicating the robust fitter's separate acceptance suite. It was syntax-checked here; full-repository integration with the actual fitter remains a separate gate.
 
 Not run in this slice: full CMake/CTest, exact hosted-branch execution, Swift portable tests, Xcode/iOS simulator, physical iPhone LiDAR/ARKit/Metal, thermal/memory profiling, real-room metrology, export validation, or competitive benchmarks.
 
