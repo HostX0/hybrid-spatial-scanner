@@ -83,17 +83,12 @@ inline void clear_derived(Result &out) {
 
 inline bool valid_surface_key(std::string_view surface_key,
                               std::string_view support_identity) {
-  if (support_identity.empty())
+  constexpr std::string_view marker = ":patch:";
+  if (support_identity.empty() ||
+      surface_key.size() <= support_identity.size() + marker.size())
     return false;
-  std::string prefix;
-  try {
-    prefix.reserve(support_identity.size() + 7U);
-    prefix.append(support_identity);
-    prefix.append(":patch:");
-  } catch (const std::bad_alloc &) {
-    return false;
-  }
-  return surface_key.size() > prefix.size() && surface_key.starts_with(prefix);
+  return surface_key.substr(0U, support_identity.size()) == support_identity &&
+         surface_key.substr(support_identity.size(), marker.size()) == marker;
 }
 
 } // namespace detail
