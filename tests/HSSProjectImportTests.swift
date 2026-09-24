@@ -32,6 +32,15 @@ final class HSSProjectImportTests: XCTestCase {
     }
 
     @MainActor
+    func testArchiveExportWorkLeavesWorkspaceActorBeforeRunningBlockingOperation() async throws {
+        let ranOffMainThread = try await HSSProjectArchiveExport.perform {
+            !Thread.isMainThread
+        }
+
+        XCTAssertTrue(ranOffMainThread)
+    }
+
+    @MainActor
     func testPublicationFailureRollsBackOnlyThisNewlyMovedProject() async throws {
         enum InjectedFailure: Error { case catalog }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("hss-import-adoption-\(UUID().uuidString)")
@@ -82,7 +91,6 @@ final class HSSProjectImportTests: XCTestCase {
             .appendingPathComponent("hsscan-round-trip-\(UUID().uuidString)", isDirectory: true)
         let sourceRoot = root.appendingPathComponent("source", isDirectory: true)
         let importedRoot = root.appendingPathComponent("imported", isDirectory: true)
-        let archive = root.appendingPathComponent("saved-project.hsscan", isDirectory: false)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
 
@@ -92,11 +100,31 @@ final class HSSProjectImportTests: XCTestCase {
             root: sourceRoot, projectID: projectID, captureID: captureID
         )
         let sourceProject = sourceRoot.appendingPathComponent(projectID.hssDirectoryName, isDirectory: true)
+        let firstName = ScannerProjectArchiveExportName.make(
+            projectID: projectID,
+            sceneRevision: source.snapshot.revision,
+            exportID: UUID(uuidString: "01234567-89AB-CDEF-0123-456789ABCDEF")!
+        )
+        let secondName = ScannerProjectArchiveExportName.make(
+            projectID: projectID,
+            sceneRevision: source.snapshot.revision,
+            exportID: UUID(uuidString: "FEDCBA98-7654-3210-FEDC-BA9876543210")!
+        )
+        XCTAssertNotEqual(firstName, secondName)
+        XCTAssertTrue(firstName.hasPrefix("\(projectID.hssDirectoryName)-r\(source.snapshot.revision)-"))
+        XCTAssertTrue(firstName.hasSuffix(".hsscan"))
+        let archive = root.appendingPathComponent(firstName, isDirectory: false)
+        let secondArchive = root.appendingPathComponent(secondName, isDirectory: false)
         try HSSProjectArchiveExportBridge.writeHSSCANArchive(
             forProjectDirectory: sourceProject,
             to: archive
         )
+        try HSSProjectArchiveExportBridge.writeHSSCANArchive(
+            forProjectDirectory: sourceProject,
+            to: secondArchive
+        )
         XCTAssertTrue(FileManager.default.fileExists(atPath: archive.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: secondArchive.path))
 
         let staging = root.appendingPathComponent("staging", isDirectory: true)
         try HSSProjectImportBridge.extractHSSCANArchive(at: archive, toStagingDirectory: staging)

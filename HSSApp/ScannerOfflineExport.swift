@@ -17,6 +17,12 @@ enum ScannerProjectArchiveExportState: Equatable, Sendable {
     case failed(String)
 }
 
+enum ScannerProjectArchiveExportName {
+    static func make(projectID: UUID, sceneRevision: UInt64, exportID: UUID = UUID()) -> String {
+        "\(projectID.hssDirectoryName)-r\(sceneRevision)-\(exportID.uuidString.lowercased()).hsscan"
+    }
+}
+
 struct ScannerOfflineArtifactSet: Sendable {
     let files: [String: Data]
 

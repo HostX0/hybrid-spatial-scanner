@@ -40,8 +40,14 @@ enum HSSProjectImportBackgroundWork {
 }
 
 enum HSSProjectArchiveExport {
+    static func perform<Value: Sendable>(
+        _ operation: @escaping @Sendable () throws -> Value
+    ) async throws -> Value {
+        try await HSSProjectImportBackgroundWork.perform(operation)
+    }
+
     static func writeArchive(projectPath: String, destinationPath: String) async throws {
-        try await HSSProjectImportBackgroundWork.perform {
+        try await perform {
             try HSSProjectArchiveExportBridge.writeHSSCANArchive(
                 forProjectDirectory: URL(fileURLWithPath: projectPath),
                 to: URL(fileURLWithPath: destinationPath)

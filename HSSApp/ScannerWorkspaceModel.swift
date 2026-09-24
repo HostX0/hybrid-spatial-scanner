@@ -417,7 +417,10 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         let projectDirectory = trustedRoot.appendingPathComponent(projectID.hssDirectoryName, isDirectory: true)
         let archiveDirectory = trustedRoot.appendingPathComponent("archives", isDirectory: true)
         let archive = archiveDirectory.appendingPathComponent(
-            "(projectID.hssDirectoryName)-r(entry.sceneRevision)-(UUID().uuidString.lowercased()).hsscan",
+            ScannerProjectArchiveExportName.make(
+                projectID: projectID,
+                sceneRevision: entry.sceneRevision
+            ),
             isDirectory: false
         )
         Task { [weak self] in
