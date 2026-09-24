@@ -945,7 +945,10 @@ StoreStatus DurableSourceStore::open_project(const ProjectMetadata &metadata,
 
 RecoveryResult DurableSourceStore::recover() const {
   if (!valid_limits(limits_))
-    return {.status = StoreStatus::kInvalidArgument};
+    return {.status = StoreStatus::kInvalidArgument,
+            .revision = 0U,
+            .used_previous_manifest = false,
+            .records = {}};
   if (const auto active =
           validated_manifest(file_system_, kActiveManifest, limits_)) {
     return {.status = StoreStatus::kOk,
@@ -961,9 +964,15 @@ RecoveryResult DurableSourceStore::recover() const {
   }
   if (!file_system_.exists(kActiveManifest) &&
       !file_system_.exists(kPreviousManifest)) {
-    return {.status = StoreStatus::kOk};
+    return {.status = StoreStatus::kOk,
+            .revision = 0U,
+            .used_previous_manifest = false,
+            .records = {}};
   }
-  return {.status = StoreStatus::kCorrupt};
+  return {.status = StoreStatus::kCorrupt,
+          .revision = 0U,
+          .used_previous_manifest = false,
+          .records = {}};
 }
 
 StoreStatus DurableSourceStore::checkpoint(
