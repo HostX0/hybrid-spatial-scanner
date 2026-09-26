@@ -238,16 +238,16 @@ hss::project::Context control_context(const HSSProjectEventContext &value) {
 
 HSSStatus accept_control(StreamState *state,
                          const hss::project::Control &control) {
-  const auto &context = std::visit(
-      [](const auto &value) -> const hss::project::Context & {
-        return value.context;
+  const auto *context = std::visit(
+      [](const auto &value) -> const hss::project::Context * {
+        return &value.context;
       },
       control);
   StreamState next = *state;
-  if (!next.have_event || replay_id(context.capture_id) != next.capture_id ||
-      context.event_sequence <= next.last_sequence ||
-      context.monotonic_time_s < next.last_time ||
-      !next.epoch_revisions.contains(context.session_epoch))
+  if (!next.have_event || replay_id(context->capture_id) != next.capture_id ||
+      context->event_sequence <= next.last_sequence ||
+      context->monotonic_time_s < next.last_time ||
+      !next.epoch_revisions.contains(context->session_epoch))
     return HSS_STALE_REVISION;
   const uint64_t before = std::visit(
       [](const auto &value) { return value.before_scene_revision; }, control);
@@ -259,12 +259,12 @@ HSSStatus accept_control(StreamState *state,
       (command != nullptr &&
        command->disposition ==
            hss::project::CommandControl::Disposition::kApplied);
-  if (before != next.last_scene_revision || after != context.accepted_scene_revision ||
+  if (before != next.last_scene_revision || after != context->accepted_scene_revision ||
       (mutates && after != before + 1U) || (!mutates && after != before)) {
     return HSS_STALE_REVISION;
   }
-  next.last_sequence = context.event_sequence;
-  next.last_time = context.monotonic_time_s;
+  next.last_sequence = context->event_sequence;
+  next.last_time = context->monotonic_time_s;
   next.last_scene_revision = after;
   *state = std::move(next);
   return HSS_OK;
@@ -1285,16 +1285,16 @@ HSSStatus validate_stored_record(HSSProjectStore *store,
     if (command_like !=
         (stored.source.kind == hss::storage::SourceKind::kCommand))
       return HSS_PROJECT_STORE_CORRUPT;
-    const auto &common = std::visit(
-        [](const auto &value) -> const hss::project::Context & {
-          return value.context;
+    const auto *common = std::visit(
+        [](const auto &value) -> const hss::project::Context * {
+          return &value.context;
         },
         decoded.control);
-    if (replay_id(common.capture_id) != stored.source.capture_id ||
-        common.session_epoch != stored.source.session_epoch ||
-        common.event_sequence != stored.source.event_sequence ||
-        common.monotonic_time_s != stored.source.monotonic_time_s ||
-        common.accepted_scene_revision != stored.source.source_revision) {
+    if (replay_id(common->capture_id) != stored.source.capture_id ||
+        common->session_epoch != stored.source.session_epoch ||
+        common->event_sequence != stored.source.event_sequence ||
+        common->monotonic_time_s != stored.source.monotonic_time_s ||
+        common->accepted_scene_revision != stored.source.source_revision) {
       return HSS_PROJECT_STORE_CORRUPT;
     }
     status = accept_control(state, decoded.control);

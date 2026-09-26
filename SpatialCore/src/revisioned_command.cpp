@@ -143,7 +143,13 @@ const CurrentTarget *find_target(const SceneState &scene,
   return target == scene.current_targets.end() ? nullptr : &*target;
 }
 
-SubmissionResult failure(Status status) { return {.status = status}; }
+SubmissionResult failure(Status status) {
+  return {.status = status,
+          .outcome = std::nullopt,
+          .result_utf8_bytes = {},
+          .command_sha256 = {},
+          .durably_committed = false};
+}
 
 uint32_t load_be32(const uint8_t *bytes) {
   return (static_cast<uint32_t>(bytes[0]) << 24U) |
