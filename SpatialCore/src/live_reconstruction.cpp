@@ -107,6 +107,52 @@ struct Patch {
   double offset{};
   std::vector<plane_fit::WeightedSample> samples;
 };
+
+using TriangleKey = std::array<uint32_t, 3>;
+
+TriangleKey canonical_triangle(TriangleKey triangle) {
+  std::sort(triangle.begin(), triangle.end());
+  return triangle;
+}
+
+uint64_t splitmix64(uint64_t value) {
+  value += 0x9e3779b97f4a7c15ULL;
+  value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+  value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+  return value ^ (value >> 31U);
+}
+
+std::string triangle_suffix(const TriangleKey &triangle) {
+  return std::to_string(triangle[0]) + ":" + std::to_string(triangle[1]) +
+         ":" + std::to_string(triangle[2]);
+}
+
+struct FaceWork {
+  TriangleKey triangle{};
+  TriangleKey canonical{};
+  HSSVec3d normal{};
+  double offset{};
+  bool valid{false};
+};
+
+struct EdgeIncidence {
+  size_t count{};
+  std::array<size_t, 2> faces{};
+};
+
+struct ComponentWork {
+  TriangleKey canonical{
+      std::numeric_limits<uint32_t>::max(),
+      std::numeric_limits<uint32_t>::max(),
+      std::numeric_limits<uint32_t>::max()};
+  size_t triangle_count{};
+  size_t representative{std::numeric_limits<size_t>::max()};
+  bool ambiguous{false};
+  bool metric_skipped{false};
+  std::map<uint32_t, uint64_t> sample_ranks;
+  std::string surface;
+};
+
 struct Node {
   HSSVec3d point;
   boundary::Point2d uv;
@@ -154,9 +200,34 @@ struct Reconstruction::Impl {
     size_t anchor = 0, vertex = 0, triangle = 0, base = 0, patch_index = 0,
            item = 0, loop_seed = 0;
     int phase = 0;
+    int anchor_stage = 0;
     bool metric_limit = false;
     std::vector<Patch> patches;
-    std::map<std::pair<uint32_t, uint32_t>, size_t> adjacency;
+
+    using EdgeMap =
+        std::map<std::pair<uint32_t, uint32_t>, EdgeIncidence>;
+    using ComponentMap = std::map<size_t, ComponentWork>;
+    using CanonicalRoots = std::map<TriangleKey, std::vector<size_t>>;
+    using FaceOrder = std::map<TriangleKey, std::vector<size_t>>;
+
+    std::vector<FaceWork> faces;
+    EdgeMap edge_incidence;
+    EdgeMap::iterator edge_it{};
+    std::vector<size_t> dsu_parent;
+    std::vector<size_t> dsu_size;
+    std::vector<TriangleKey> dsu_key;
+    size_t face_index = 0;
+    ComponentMap components;
+    ComponentMap::iterator component_it{};
+    CanonicalRoots canonical_roots;
+    CanonicalRoots::iterator canonical_it{};
+    FaceOrder face_order;
+    FaceOrder::iterator slice_it{};
+    size_t slice_subindex = 0;
+    size_t degenerate_triangles = 0;
+    size_t non_manifold_edges = 0;
+    size_t ambiguous_components = 0;
+
     std::vector<Node> nodes;
     std::vector<Edge> edges;
     std::vector<Region> regions;
@@ -213,6 +284,103 @@ struct Reconstruction::Impl {
               std::to_string(a.source->event.anchor_revision) + ":" +
               std::to_string(a.source->event.event_sequence));
   }
+
+  size_t dsu_find(size_t index) {
+    auto &b = *build;
+    while (b.dsu_parent[index] != index) {
+      b.dsu_parent[index] = b.dsu_parent[b.dsu_parent[index]];
+      index = b.dsu_parent[index];
+    }
+    return index;
+  }
+
+  void dsu_unite(size_t left, size_t right) {
+    auto &b = *build;
+    left = dsu_find(left);
+    right = dsu_find(right);
+    if (left == right)
+      return;
+    if (b.dsu_size[left] < b.dsu_size[right] ||
+        (b.dsu_size[left] == b.dsu_size[right] &&
+         b.dsu_key[right] < b.dsu_key[left]))
+      std::swap(left, right);
+    b.dsu_parent[right] = left;
+    b.dsu_size[left] += b.dsu_size[right];
+    b.dsu_key[left] = std::min(b.dsu_key[left], b.dsu_key[right]);
+  }
+
+  void consider_sample(ComponentWork &component, uint32_t vertex) {
+    if (component.sample_ranks.contains(vertex))
+      return;
+    const uint64_t rank =
+        splitmix64(config.deterministic_seed ^ uint64_t(vertex));
+    if (component.sample_ranks.size() < 96U) {
+      component.sample_ranks.emplace(vertex, rank);
+      return;
+    }
+    auto worst = std::max_element(
+        component.sample_ranks.begin(), component.sample_ranks.end(),
+        [](const auto &left, const auto &right) {
+          return std::pair{left.second, left.first} <
+                 std::pair{right.second, right.first};
+        });
+    if (std::pair{rank, vertex} < std::pair{worst->second, worst->first}) {
+      component.sample_ranks.erase(worst);
+      component.sample_ranks.emplace(vertex, rank);
+    }
+  }
+
+  static bool opposite_vertex(const FaceWork &face, uint32_t edge_a,
+                              uint32_t edge_b, uint32_t *out) {
+    for (uint32_t vertex : face.triangle)
+      if (vertex != edge_a && vertex != edge_b) {
+        *out = vertex;
+        return true;
+      }
+    return false;
+  }
+
+  bool compatible_faces(size_t left_index, size_t right_index,
+                        uint32_t edge_a, uint32_t edge_b) {
+    auto &b = *build;
+    const auto &left = b.faces[left_index];
+    const auto &right = b.faces[right_index];
+    if (!left.valid || !right.valid ||
+        std::abs(dot(left.normal, right.normal)) < 0.99999)
+      return false;
+    uint32_t left_vertex = 0U, right_vertex = 0U;
+    if (!opposite_vertex(left, edge_a, edge_b, &left_vertex) ||
+        !opposite_vertex(right, edge_a, edge_b, &right_vertex))
+      return false;
+    const auto &left_point = b.out->vertices[b.base + left_vertex];
+    const auto &right_point = b.out->vertices[b.base + right_vertex];
+    const double left_to_right =
+        std::abs(dot(right.normal, left_point) + right.offset);
+    const double right_to_left =
+        std::abs(dot(left.normal, right_point) + left.offset);
+    return std::max(left_to_right, right_to_left) <= 0.002;
+  }
+
+  void reset_anchor_work() {
+    auto &b = *build;
+    b.vertex = 0U;
+    b.triangle = 0U;
+    b.anchor_stage = 0;
+    b.faces.clear();
+    b.edge_incidence.clear();
+    b.dsu_parent.clear();
+    b.dsu_size.clear();
+    b.dsu_key.clear();
+    b.face_index = 0U;
+    b.components.clear();
+    b.canonical_roots.clear();
+    b.face_order.clear();
+    b.slice_subindex = 0U;
+    b.degenerate_triangles = 0U;
+    b.non_manifold_edges = 0U;
+    b.ambiguous_components = 0U;
+  }
+
   size_t node(HSSVec3d p, const std::string &support_id) {
     auto &b = *build;
     auto key = std::tuple{std::llround(p.x / kJoin), std::llround(p.y / kJoin),
@@ -265,54 +433,52 @@ struct Reconstruction::Impl {
   void triangle_unit() {
     auto &b = *build;
     const auto &[key, a] = b.anchors[b.anchor];
+    (void)key;
     const auto &e = a.source->event;
-    std::array<uint32_t, 3> idx{};
-    std::memcpy(idx.data(),
+
+    TriangleKey local{};
+    std::memcpy(local.data(),
                 e.payload.data() + e.mesh.vertex_count * 12 + b.triangle * 12,
                 12);
-    std::array<HSSVec3d, 3> p;
+    const size_t face_index = b.faces.size();
+    FaceWork face;
+    face.triangle = local;
+    face.canonical = canonical_triangle(local);
+
+    std::array<HSSVec3d, 3> points{};
     for (size_t i = 0; i < 3; ++i) {
-      idx[i] += uint32_t(b.base);
-      p[i] = b.out->vertices[idx[i]];
-      b.out->triangles.push_back(idx[i]);
+      const uint32_t global = local[i] + uint32_t(b.base);
+      points[i] = b.out->vertices[global];
+      b.out->triangles.push_back(global);
     }
-    const auto sup = support(key, a);
-    HSSVec3d n = cross(sub(p[1], p[0]), sub(p[2], p[0]));
-    double len = std::sqrt(dot(n, n));
-    if (len > 1e-10) {
-      n = mul(n, 1 / len);
-      double d = -dot(n, p[0]);
-      size_t patch = b.patches.size();
+
+    const bool repeated =
+        local[0] == local[1] || local[1] == local[2] || local[0] == local[2];
+    HSSVec3d normal =
+        repeated ? HSSVec3d{} :
+                   cross(sub(points[1], points[0]), sub(points[2], points[0]));
+    const double length = std::sqrt(dot(normal, normal));
+    if (!repeated && length > 1e-10) {
+      normal = mul(normal, 1.0 / length);
+      face.normal = normal;
+      face.offset = -dot(normal, points[0]);
+      face.valid = true;
+      b.face_order[face.canonical].push_back(face_index);
       for (size_t i = 0; i < 3; ++i) {
-        auto edge = std::minmax(idx[i], idx[(i + 1) % 3]);
-        auto found = b.adjacency.find(edge);
-        if (found == b.adjacency.end())
-          continue;
-        auto &prior = b.patches[found->second];
-        if (prior.samples.size() <= 93 &&
-            std::abs(dot(prior.normal, n)) > 0.99999 &&
-            std::abs(dot(prior.normal, p[0]) + prior.offset) < 0.002) {
-          patch = found->second;
-          break;
-        }
+        const auto edge = std::minmax(local[i], local[(i + 1U) % 3U]);
+        auto &incidence = b.edge_incidence[{edge.first, edge.second}];
+        if (incidence.count < incidence.faces.size())
+          incidence.faces[incidence.count] = face_index;
+        ++incidence.count;
       }
-      if (patch == b.patches.size() && patch < kMaxMetric)
-        b.patches.push_back(
-            {id(sup + ":patch:" + std::to_string(b.triangle)), sup, n, d, {}});
-      if (patch < b.patches.size()) {
-        auto &group = b.patches[patch];
-        for (auto q : p)
-          group.samples.push_back({{q.x, q.y, q.z}, 1.0, e.event_sequence});
-        for (size_t i = 0; i < 3; ++i) {
-          auto edge = std::minmax(idx[i], idx[(i + 1) % 3]);
-          b.adjacency[edge] = patch;
-        }
-        slice(p, sup, group.identity);
-      } else {
-        b.metric_limit = true;
-        slice(p, sup, id(sup + ":mesh"));
-      }
+    } else {
+      ++b.degenerate_triangles;
     }
+
+    b.faces.push_back(face);
+    b.dsu_parent.push_back(face_index);
+    b.dsu_size.push_back(1U);
+    b.dsu_key.push_back(face.canonical);
     ++b.triangle;
   }
   void loop_unit() {
@@ -813,28 +979,176 @@ bool Reconstruction::advance() {
     }
     const auto &[key, a] = b.anchors[b.anchor];
     const auto &e = a.source->event;
-    if (b.vertex < e.mesh.vertex_count) {
-      float v[3];
-      std::memcpy(v, e.payload.data() + b.vertex * 12, 12);
-      auto p = coordinate::transform_point(e.mesh.T_world_anchor,
-                                           {v[0], v[1], v[2]});
-      p = coordinate::transform_point(
-          b.state.epochs.at(epoch_key(e))->event.epoch.T_project_world, p);
-      if (!bounded(p)) {
-        cancel(HSS_INVALID_COORDINATE_FRAME);
-        return true;
+    const auto sup = x.support(key, a);
+
+    if (b.anchor_stage == 0) {
+      if (b.vertex < e.mesh.vertex_count) {
+        float v[3];
+        std::memcpy(v, e.payload.data() + b.vertex * 12, 12);
+        auto p = coordinate::transform_point(e.mesh.T_world_anchor,
+                                             {v[0], v[1], v[2]});
+        p = coordinate::transform_point(
+            b.state.epochs.at(epoch_key(e))->event.epoch.T_project_world, p);
+        if (!bounded(p)) {
+          cancel(HSS_INVALID_COORDINATE_FRAME);
+          return true;
+        }
+        b.out->vertices.push_back(p);
+        ++b.vertex;
+        return false;
       }
-      b.out->vertices.push_back(p);
-      ++b.vertex;
+      if (b.triangle < e.mesh.triangle_count) {
+        x.triangle_unit();
+        return false;
+      }
+      b.edge_it = b.edge_incidence.begin();
+      b.anchor_stage = 1;
       return false;
     }
-    if (b.triangle < e.mesh.triangle_count) {
-      x.triangle_unit();
+
+    if (b.anchor_stage == 1) {
+      if (b.edge_it != b.edge_incidence.end()) {
+        const auto edge = b.edge_it->first;
+        const auto incidence = b.edge_it->second;
+        if (incidence.count > 2U) {
+          ++b.non_manifold_edges;
+        } else if (incidence.count == 2U &&
+                   x.compatible_faces(incidence.faces[0], incidence.faces[1],
+                                      edge.first, edge.second)) {
+          x.dsu_unite(incidence.faces[0], incidence.faces[1]);
+        }
+        ++b.edge_it;
+        return false;
+      }
+      b.face_index = 0U;
+      b.anchor_stage = 2;
       return false;
     }
-    auto sup = x.support(key, a);
+
+    if (b.anchor_stage == 2) {
+      if (b.face_index < b.faces.size()) {
+        const size_t index = b.face_index++;
+        const auto &face = b.faces[index];
+        if (!face.valid)
+          return false;
+        const size_t root = x.dsu_find(index);
+        auto &component = b.components[root];
+        ++component.triangle_count;
+        if (face.canonical < component.canonical) {
+          component.canonical = face.canonical;
+          component.representative = index;
+        }
+        for (uint32_t vertex : face.triangle)
+          x.consider_sample(component, vertex);
+        return false;
+      }
+      b.component_it = b.components.begin();
+      b.anchor_stage = 3;
+      return false;
+    }
+
+    if (b.anchor_stage == 3) {
+      if (b.component_it != b.components.end()) {
+        b.canonical_roots[b.component_it->second.canonical].push_back(
+            b.component_it->first);
+        ++b.component_it;
+        return false;
+      }
+      b.canonical_it = b.canonical_roots.begin();
+      b.anchor_stage = 4;
+      return false;
+    }
+
+    if (b.anchor_stage == 4) {
+      if (b.canonical_it != b.canonical_roots.end()) {
+        auto &roots = b.canonical_it->second;
+        if (roots.size() != 1U) {
+          b.ambiguous_components += roots.size();
+          for (size_t root : roots)
+            b.components.at(root).ambiguous = true;
+        } else {
+          auto &component = b.components.at(roots.front());
+          if (b.patches.size() >= kMaxMetric) {
+            component.metric_skipped = true;
+            b.metric_limit = true;
+          } else {
+            const auto &representative =
+                b.faces.at(component.representative);
+            Patch patch;
+            patch.identity =
+                id(sup + ":patch:" + triangle_suffix(component.canonical));
+            patch.support = sup;
+            patch.normal = representative.normal;
+            patch.offset = representative.offset;
+            patch.samples.reserve(component.sample_ranks.size());
+            for (const auto &[vertex, rank] : component.sample_ranks) {
+              (void)rank;
+              const auto &point = b.out->vertices[b.base + vertex];
+              patch.samples.push_back(
+                  {{point.x, point.y, point.z}, 1.0, e.event_sequence});
+            }
+            component.surface = patch.identity;
+            b.patches.push_back(std::move(patch));
+          }
+        }
+        ++b.canonical_it;
+        return false;
+      }
+      b.slice_it = b.face_order.begin();
+      b.slice_subindex = 0U;
+      b.anchor_stage = 5;
+      return false;
+    }
+
+    if (b.anchor_stage == 5) {
+      if (b.slice_it == b.face_order.end()) {
+        b.anchor_stage = 6;
+        return false;
+      }
+      if (b.slice_subindex >= b.slice_it->second.size()) {
+        ++b.slice_it;
+        b.slice_subindex = 0U;
+        return false;
+      }
+
+      const size_t face_index = b.slice_it->second[b.slice_subindex++];
+      const size_t root = x.dsu_find(face_index);
+      auto found = b.components.find(root);
+      if (found == b.components.end() || found->second.ambiguous ||
+          found->second.metric_skipped || found->second.surface.empty())
+        return false;
+
+      const auto &face = b.faces[face_index];
+      std::array<HSSVec3d, 3> points{};
+      for (size_t i = 0; i < 3; ++i)
+        points[i] = b.out->vertices[b.base + face.triangle[i]];
+      x.slice(points, sup, found->second.surface);
+      return false;
+    }
+
+    const std::string mesh_id = id(sup + ":mesh");
+    if (b.non_manifold_edges != 0U)
+      x.issue("non_manifold_mesh",
+              "Non-manifold indexed mesh edges=" +
+                  std::to_string(b.non_manifold_edges) +
+                  "; bridge excluded; support=" + sup,
+              e.event_sequence, mesh_id);
+    if (b.ambiguous_components != 0U)
+      x.issue("ambiguous_mesh_component",
+              "Ambiguous canonical mesh components=" +
+                  std::to_string(b.ambiguous_components) +
+                  "; fitting and slicing excluded; support=" + sup,
+              e.event_sequence, mesh_id);
+    if (b.degenerate_triangles != 0U)
+      x.issue("degenerate_mesh_triangle",
+              "Degenerate mesh triangles=" +
+                  std::to_string(b.degenerate_triangles) +
+                  "; raw evidence retained; fitting and slicing excluded; support=" +
+                  sup,
+              e.event_sequence, mesh_id);
+
     b.surfaces.push_back(
-        "{\"id\":" + quote(id(sup + ":mesh")) +
+        "{\"id\":" + quote(mesh_id) +
         ",\"kind\":\"mesh_patch\",\"normal_unit\":null,\"offset_m\":null,"
         "\"boundary_node_ids\":[],\"mesh_asset\":null,\"fit_residual_m\":null,"
         "\"provenance\":" +
@@ -847,12 +1161,11 @@ bool Reconstruction::advance() {
                 " anchor_revision=" + std::to_string(e.anchor_revision) +
                 " vertices=" + std::to_string(b.base) + "+" +
                 std::to_string(e.mesh.vertex_count),
-            e.event_sequence, id(sup + ":mesh"));
+            e.event_sequence, mesh_id);
+
     b.base = b.out->vertices.size();
-    b.vertex = 0;
-    b.triangle = 0;
     ++b.anchor;
-    b.adjacency.clear();
+    x.reset_anchor_work();
     return false;
   }
   case 2: {

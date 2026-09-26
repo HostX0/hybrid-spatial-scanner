@@ -580,6 +580,24 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_link_options(hss_live_reconstruction_test PRIVATE -fsanitize=address,undefined)
 endif()
 add_test(NAME hss_live_reconstruction COMMAND hss_live_reconstruction_test)
+add_executable(hss_live_permutation_regression_test
+  tests/hss_live_permutation_characterization_test.cpp
+)
+target_link_libraries(hss_live_permutation_regression_test PRIVATE SpatialCore)
+target_compile_options(hss_live_permutation_regression_test PRIVATE
+  -Wall -Wextra -Werror -Wpedantic
+)
+if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+ target_compile_options(hss_live_permutation_regression_test PRIVATE
+   -fsanitize=address,undefined -fno-omit-frame-pointer
+ )
+ target_link_options(hss_live_permutation_regression_test PRIVATE
+   -fsanitize=address,undefined
+ )
+endif()
+add_test(NAME hss_live_permutation_regression
+  COMMAND hss_live_permutation_regression_test
+)
 add_executable(hss_plan_annotation_runtime_test
   tests/hss_plan_annotation_runtime_test.cpp
 )
