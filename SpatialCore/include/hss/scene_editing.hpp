@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -76,9 +77,23 @@ struct DynamicExclusion {
   uint64_t end_sequence{0U};
 };
 
+// Derived only from validated, applied zero-target mark_unknown commands.
+// The JSON parts are serialized by the existing parser/writer, not user text.
+// Splitting the issue at its revision lets source serialization stay one
+// bounded record per quantum without parsing/replaying the command journal.
+struct RetainedUnknown {
+  std::string feature_json;
+  std::string issue_before_revision;
+  std::string issue_after_revision;
+  std::vector<std::string> protection_constraints_json;
+};
+using RetainedUnknowns = std::vector<RetainedUnknown>;
+inline constexpr size_t kMaxRetainedUnknowns = 256U;
+
 struct ProcessResult {
   Status status{Status::kInvalidCommand};
   bool scene_changed{false};
+  std::shared_ptr<const RetainedUnknowns> retained_unknowns;
 
   // Populated for accepted mutations. Rejections preserve the caller's scene.
   std::string candidate_scene_json;

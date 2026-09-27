@@ -224,6 +224,7 @@ struct Reconstruction::Impl {
     FaceOrder face_order;
     FaceOrder::iterator slice_it{};
     size_t slice_subindex = 0;
+    size_t retained_constraint_index = 0, retained_constraint_count = 0;
     size_t canonical_subindex = 0;
     size_t degenerate_triangles = 0;
     size_t non_manifold_edges = 0;
@@ -802,7 +803,9 @@ HSSStatus Reconstruction::publish_edited_scene(std::string candidate_scene_json,
                                                uint64_t expected_revision,
                                                uint64_t node_count,
                                                uint64_t edge_count,
-                                               uint64_t issue_count) {
+                                               uint64_t issue_count,
+                                               std::shared_ptr<const scene_editing::RetainedUnknowns>
+                                                   retained_unknowns) {
   auto &x = *impl_;
   if (x.build || expected_revision == 0U ||
       expected_revision != x.accepted->revision + 1U ||
@@ -816,7 +819,43 @@ HSSStatus Reconstruction::publish_edited_scene(std::string candidate_scene_json,
   if (!lease)
     return HSS_RESOURCE_LIMIT;
   try {
+    std::shared_ptr<UnknownOverlay> overlay;
+    if (retained_unknowns && !retained_unknowns->empty()) {
+      if (retained_unknowns->size() > scene_editing::kMaxRetainedUnknowns)
+        return HSS_RESOURCE_LIMIT;
+      uint64_t payload = 0U, serialized = 0U;
+      for (const auto &item : *retained_unknowns) {
+        for (const auto *text : {&item.feature_json, &item.issue_before_revision,
+                                 &item.issue_after_revision}) {
+          if (text->capacity() > 16U * 1024U * 1024U ||
+              payload > 16U * 1024U * 1024U - text->capacity())
+            return HSS_RESOURCE_LIMIT;
+          payload += text->capacity();
+          serialized += text->size();
+        }
+        if (item.protection_constraints_json.size() > scene_editing::kMaxRetainedUnknowns)
+          return HSS_RESOURCE_LIMIT;
+        for (const auto &constraint : item.protection_constraints_json) {
+          if (constraint.capacity() > 16U * 1024U * 1024U ||
+              payload > 16U * 1024U * 1024U - constraint.capacity())
+            return HSS_RESOURCE_LIMIT;
+          payload += constraint.capacity();
+          serialized += constraint.size() + 1U;
+        }
+        payload += item.protection_constraints_json.capacity() * sizeof(std::string);
+        serialized += 24U; // Canonical quoted uint64 revision and separators.
+      }
+      auto overlay_lease = reserve(x.budget, 1024U + payload +
+          retained_unknowns->capacity() * sizeof(scene_editing::RetainedUnknown));
+      if (!overlay_lease)
+        return HSS_RESOURCE_LIMIT;
+      overlay = std::make_shared<UnknownOverlay>();
+      overlay->lease = std::move(overlay_lease);
+      overlay->records = std::move(retained_unknowns);
+      overlay->serialized_bytes = serialized;
+    }
     auto next = std::make_shared<Snapshot>();
+    next->retained_unknowns = std::move(overlay);
     next->lease = std::move(lease);
     next->revision = expected_revision;
     next->node_count = node_count;
@@ -927,6 +966,10 @@ HSSStatus Reconstruction::Impl::start_build(State candidate) {
                     std::min(triangles, kMaxMetric) * 8192 +
                     candidate.epochs.size() * 2048 +
                     candidate.anchors.size() * 4096;
+  // Existing retained bytes already own their lease. Charge the additional
+  // serialized copy/growth needed by this new immutable source snapshot.
+  if (x.accepted->retained_unknowns)
+    charge += 2U * x.accepted->retained_unknowns->serialized_bytes;
   auto lease = reserve(x.budget, charge);
   if (!lease)
     return x.last = HSS_RESOURCE_LIMIT;
@@ -935,6 +978,7 @@ HSSStatus Reconstruction::Impl::start_build(State candidate) {
   b->out = std::make_shared<Snapshot>();
   b->out->lease = std::move(lease);
   b->out->revision = x.accepted->revision + 1;
+  b->out->retained_unknowns = x.accepted->retained_unknowns;
   b->out->vertices.reserve(vertices);
   b->out->triangles.reserve(triangles * 3);
   for (const auto &[key, a] : b->state.anchors) {
@@ -1312,11 +1356,22 @@ bool Reconstruction::advance() {
       b.out->json += b.surfaces[b.item++];
       return false;
     }
-    b.out->json += "],\"features\":[],\"regions\":[";
+    b.out->json += "],\"features\":[";
     b.phase = 7;
     b.item = 0;
     return false;
   case 7:
+    if (b.out->retained_unknowns &&
+        b.item < b.out->retained_unknowns->records->size()) {
+      if (b.item) b.out->json += ',';
+      b.out->json += (*b.out->retained_unknowns->records)[b.item++].feature_json;
+      return false;
+    }
+    b.out->json += "],\"regions\":[";
+    b.phase = 8;
+    b.item = 0;
+    return false;
+  case 8:
     if (b.item < b.regions.size()) {
       const auto &r = b.regions[b.item];
       if (b.item++)
@@ -1342,19 +1397,44 @@ bool Reconstruction::advance() {
           num(x.cut) + ",\"provenance\":" + provenance(r.supports) + "}";
       return false;
     }
-    b.out->json += "],\"objects\":[],\"constraints\":[],\"issues\":[";
-    b.phase = 8;
+    b.out->json += "],\"objects\":[],\"constraints\":[";
+    b.phase = 10;
     b.item = 0;
     return false;
-  case 8:
+  case 10:
+    if (b.out->retained_unknowns && b.item < b.out->retained_unknowns->records->size()) {
+      const auto &constraints = (*b.out->retained_unknowns->records)[b.item].protection_constraints_json;
+      if (b.retained_constraint_index < constraints.size()) {
+        if (b.retained_constraint_count++) b.out->json += ',';
+        b.out->json += constraints[b.retained_constraint_index++];
+      } else {
+        ++b.item;
+        b.retained_constraint_index = 0;
+      }
+      return false;
+    }
+    b.out->json += "],\"issues\":[";
+    b.phase = 9;
+    b.item = 0;
+    return false;
+  case 9:
     if (b.item < b.issues.size()) {
       if (b.item)
         b.out->json += ',';
       b.out->json += b.issues[b.item++];
       return false;
     }
+    if (b.out->retained_unknowns &&
+        b.item - b.issues.size() < b.out->retained_unknowns->records->size()) {
+      const auto &record = (*b.out->retained_unknowns->records)[b.item - b.issues.size()];
+      if (b.item++) b.out->json += ',';
+      b.out->json += record.issue_before_revision +
+                     quote(std::to_string(b.out->revision)) + record.issue_after_revision;
+      return false;
+    }
     b.out->json += "],\"quality_state\":\"provisional\"}";
-    b.out->issue_count = b.issues.size();
+    b.out->issue_count = b.issues.size() +
+        (b.out->retained_unknowns ? b.out->retained_unknowns->records->size() : 0U);
     if (b.out->json.size() > 16 * 1024 * 1024) {
       cancel(HSS_RESOURCE_LIMIT);
       return true;

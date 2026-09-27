@@ -1,5 +1,6 @@
 #include "hss/hss_api.h"
 #include "hss/hss_project_store.h"
+#include "hss/scene_editing.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -351,10 +352,177 @@ void publication_failure_is_atomic() {
   }
 }
 
+
+size_t occurrences(const std::string &text, const std::string &needle) {
+  size_t count = 0U, at = 0U;
+  while ((at = text.find(needle, at)) != std::string::npos) { ++count; at += needle.size(); }
+  return count;
+}
+
+std::string derived_id(const std::string &command, const std::string &role) {
+  auto bytes = hss::command::sha256(command + "|" + role + "|0");
+  bytes[6] = (bytes[6] & 15U) | 0x50U;
+  bytes[8] = (bytes[8] & 63U) | 0x80U;
+  const char *hex = "0123456789abcdef";
+  std::string out;
+  for (size_t i=0U;i<16U;++i) {
+    if(i==4U||i==6U||i==8U||i==10U) out += '-';
+    out += hex[bytes[i]>>4U]; out += hex[bytes[i]&15U];
+  }
+  return out;
+}
+
+void overlay_reservation_failure() {
+  HSSEngine *engine=nullptr;
+  auto cfg=engine_config();
+  check(hss_engine_create(&cfg,&engine)==HSS_OK,"measure overlay fixture");
+  std::string command=mark_unknown_command(project_id_from_scene(scene_json(engine)));
+  const std::string old="\"expected_scene_revision\":\"3\"";
+  command.replace(command.find(old),old.size(),"\"expected_scene_revision\":\"0\"");
+  const HSSBytes bytes{reinterpret_cast<const uint8_t*>(command.data()),command.size()};
+  check(hss_engine_apply_command_json(engine,bytes)==HSS_OK,"measure edited scene reservation");
+  const uint64_t scene_charge=4096U+scene_json(engine).size();
+  hss_engine_destroy(engine);
+  cfg.max_working_bytes=scene_charge;
+  check(hss_engine_create(&cfg,&engine)==HSS_OK,"scene fits but overlay does not");
+  const auto before=scene_json(engine);
+  for(int i=0;i<2;++i)
+    check(hss_engine_apply_command_json(engine,bytes)==HSS_RESOURCE_LIMIT,
+          "overlay reservation failure rolls back volatile command for true retry");
+  check(scene_json(engine)==before,"failed overlay allocation leaves original snapshot");
+  uint64_t needed=0U;
+  check(hss_engine_copy_command_result_json(engine,nullptr,0U,&needed)==HSS_NOT_READY,
+        "no result leaked from failed overlay reservation");
+  hss_engine_destroy(engine);
+}
+
+void retained_capacity_is_fail_closed() {
+  HSSEngine *engine=nullptr; const auto cfg=engine_config();
+  check(hss_engine_create(&cfg,&engine)==HSS_OK,"capacity baseline scene");
+  std::string scene=scene_json(engine);hss_engine_destroy(engine);
+  const auto project=project_id_from_scene(scene);
+  hss::scene_editing::Processor processor;
+  const auto build=[&](uint64_t index,uint64_t revision,const std::string &type,
+                       const std::string &payload) {
+    return "{\"schema_version\":\"1.1\",\"command_id\":\""+
+      derived_id("capacity-fixture",std::to_string(index))+"\",\"project_id\":\""+
+      project+"\",\"expected_scene_revision\":\""+std::to_string(revision)+
+      "\",\"event_sequence\":\""+std::to_string(revision+1U)+
+      "\",\"targets\":[],\"user_intent\":\"bounded retention\",\"type\":\""+
+      type+"\",\"payload\":"+payload+"}";
+  };
+  const size_t cap=hss::scene_editing::kMaxRetainedUnknowns;
+  for(size_t i=0;i<cap;++i) {
+    auto applied=processor.process(scene,build(i,i,"mark_unknown",R"({"reason":"capacity fixture"})"));
+    check(applied.status==hss::scene_editing::Status::kApplied &&
+          applied.retained_unknowns && applied.retained_unknowns->size()==i+1U,
+          "retention accepts up to documented capacity");
+    scene=std::move(applied.candidate_scene_json);
+  }
+  const auto overflow=build(cap,cap,"mark_unknown",R"({"reason":"capacity overflow"})");
+  for(int i=0;i<2;++i) {
+    const auto rejected=processor.process(scene,overflow);
+    check(rejected.status==hss::scene_editing::Status::kResourceLimitExceeded &&
+          !rejected.scene_changed && !rejected.owns_new_record &&
+          rejected.exact_result_json.empty() && processor.journal().size()==cap,
+          "capacity failure retains scene/history and cannot become phantom stored retry");
+  }
+  const auto undo=processor.process(scene,build(cap+1U,cap,"undo",
+      "{\"original_command_id\":\""+derived_id("capacity-fixture",std::to_string(cap-1U))+"\"}"));
+  check(undo.status==hss::scene_editing::Status::kApplied &&
+        undo.retained_unknowns->size()==cap-1U,"undo releases annotation capacity");
+  const auto accepted=processor.process(undo.candidate_scene_json,
+      build(cap,cap+1U,"mark_unknown",R"({"reason":"capacity overflow"})"));
+  check(accepted.status==hss::scene_editing::Status::kApplied &&
+        accepted.retained_unknowns->size()==cap,"failed capacity command can be validly resubmitted after undo");
+}
+
+void retained_unknown_lifecycle() {
+  HSSEngine *engine=nullptr;
+  const auto cfg=engine_config();
+  check(hss_engine_create(&cfg,&engine)==HSS_OK, "overlay lifecycle create");
+  check(hss_engine_set_source_is_synthetic(engine,1U)==HSS_OK, "overlay synthetic");
+  const auto project=project_id_from_scene(scene_json(engine));
+  const std::string one="cccccccc-cccc-5ccc-8ccc-ccccccccccc1";
+  const std::string two="cccccccc-cccc-5ccc-8ccc-ccccccccccc2";
+  const auto apply = [&](const std::string &cid, uint64_t rev, const std::string &type,
+                         const std::string &payload, const std::string &targets="[]") {
+    const std::string cmd="{\"schema_version\":\"1.1\",\"command_id\":\""+cid+
+       "\",\"project_id\":\""+project+"\",\"expected_scene_revision\":\""+
+       std::to_string(rev)+"\",\"event_sequence\":\""+std::to_string(rev+1U)+
+       "\",\"targets\":"+targets+",\"user_intent\":\"retention test\",\"type\":\""+
+       type+"\",\"payload\":"+payload+"}";
+    const auto rc=hss_engine_apply_command_json(engine,
+        {reinterpret_cast<const uint8_t*>(cmd.data()),cmd.size()});
+    check(rc==HSS_OK, "accepted annotation lifecycle action");
+    return cmd;
+  };
+  const auto first=apply(one,0U,"mark_unknown",R"({"reason":"quoted \"note\" \\ next\n غير مرئي"})");
+  (void)first;
+  apply(two,1U,"mark_unknown",R"({"reason":"second unknown note"})");
+  apply("cccccccc-cccc-5ccc-8ccc-ccccccccccc3",2U,"undo",
+        "{\"original_command_id\":\""+two+"\"}");
+  check(occurrences(scene_json(engine),"HSS_UNKNOWN_REGION")==1U, "undo removes only second intent");
+  apply("cccccccc-cccc-5ccc-8ccc-ccccccccccc4",3U,"redo",
+        "{\"original_command_id\":\""+two+"\"}");
+  const auto feature_id=derived_id(one,"unknown-feature");
+  apply("cccccccc-cccc-5ccc-8ccc-ccccccccccc5",4U,"protect_feature",
+        R"({"preserve_topology":true,"lock_position":false})", "[\""+feature_id+"\"]");
+  const std::string before_source=scene_json(engine), before_result=result_json(engine);
+  HSSSnapshot *held=nullptr;
+  check(hss_engine_acquire_snapshot(engine,&held)==HSS_OK, "pin accepted annotation snapshot");
+  HSSEpoch epoch{};epoch.abi_version=HSS_ABI_VERSION;epoch.struct_size=sizeof(epoch);
+  epoch.capture_id=id(2U);epoch.event_sequence=8U;epoch.relationship_state=1U;
+  epoch.transform_revision=1U;epoch.T_project_world=identity();
+  check(hss_engine_set_epoch(engine,&epoch)==HSS_OK,"epoch after annotation");drain(engine,6U);
+  const std::array<float,9> vertices{0,0,0,2,0,0,0,3,0};
+  const std::array<uint32_t,3> triangles{0,1,2};
+  HSSMeshEvent mesh{};mesh.abi_version=HSS_ABI_VERSION;mesh.struct_size=sizeof(mesh);
+  mesh.capture_id=id(2U);mesh.anchor_id=id(3U);mesh.event_sequence=9U;mesh.anchor_revision=1U;
+  mesh.T_world_anchor=identity();mesh.vertices_xyz=vertices.data();mesh.vertex_count=3U;
+  mesh.triangle_indices=triangles.data();mesh.triangle_count=1U;
+  check(hss_engine_submit_mesh_event(engine,&mesh)==HSS_OK,"mesh after annotations");drain(engine,7U);
+  const auto floor=identity();
+  check(hss_engine_set_plan_reference(engine,&floor,1.2)==HSS_OK,"plan reference retains intent");drain(engine,8U);
+  const auto final=scene_json(engine);
+  check(hss::scene_editing::scene_counts(final).has_value(),"retained scene validates all references/escaping");
+  check(occurrences(final,"\"kind\":\"unknown\"")==2U &&
+        occurrences(final,"\"code\":\"HSS_UNKNOWN_REGION\"")==2U,
+        "repeated source rebuilds retain each intent exactly once");
+  check(occurrences(final,"\"kind\":\"topology_protection\"")==1U &&
+        final.find(feature_id)!=std::string::npos,
+        "protect existing nonmetric annotation remains supported and retained");
+  check(final.find("غير مرئي")!=std::string::npos &&
+        final.find("second unknown note")!=std::string::npos,
+        "escaped unicode reasons survive source serialization");
+  for (const auto &original : {one, two}) {
+    const auto at=final.find("\"id\":\""+derived_id(original,"unknown-issue")+"\"");
+    const auto revision=final.find("\"scene_revision\":\"8\"",at);
+    const auto severity=final.find("\"severity\":",at);
+    check(at!=std::string::npos && revision!=std::string::npos && revision<severity,
+          "retained issue revision matches newest immutable source snapshot");
+  }
+  check(result_json(engine)==before_result, "source revisions never rewrite exact result");
+  mesh.kind=1U;mesh.anchor_revision=2U;mesh.event_sequence=10U;mesh.T_world_anchor.column_major[0]=2.0;
+  check(hss_engine_submit_mesh_event(engine,&mesh)==HSS_INVALID_COORDINATE_FRAME,
+        "invalid replacement rejected without altering retained annotations");
+  check(scene_json(engine)==final && result_json(engine)==before_result,
+        "rejected source keeps previous geometry, intent, exact result");
+  uint64_t count=0U;
+  check(hss_snapshot_copy_scene_json(held,nullptr,0U,&count)==HSS_BUFFER_TOO_SMALL,"pinned size");
+  std::string pinned(count,'\0');
+  check(hss_snapshot_copy_scene_json(held,reinterpret_cast<uint8_t*>(pinned.data()),
+        pinned.size(),&count)==HSS_OK && pinned==before_source,"old immutable snapshot unchanged");
+  hss_snapshot_release(held);hss_engine_destroy(engine);
+}
+
 } // namespace
 
 int main() {
   publication_failure_is_atomic();
+  retained_unknown_lifecycle();
+  overlay_reservation_failure();
+  retained_capacity_is_fail_closed();
   char temporary[] = "/tmp/hss-engine-edit-XXXXXX";
   check(mkdtemp(temporary) != nullptr, "temporary project root");
   const std::string root(temporary);
@@ -385,6 +553,48 @@ int main() {
   check(result_json(engine) == exact_result && scene_json(engine) == before_retry,
         "retry preserves exact result and snapshot revision");
 
+  // A fresh source revision must keep an accepted target-independent note.
+  const std::array<float, 9U> replacement_vertices{0.F, 0.F, 0.F, 2.5F, 0.F, 0.F,
+                                                 0.F, 3.5F, 0.F};
+  const std::array<uint32_t, 3U> replacement_indices{0U, 1U, 2U};
+  HSSMeshEvent replacement{};
+  replacement.abi_version = HSS_ABI_VERSION;
+  replacement.struct_size = sizeof(replacement);
+  replacement.capture_id = id(2U);
+  replacement.anchor_id = id(3U);
+  replacement.event_sequence = 6U;
+  replacement.anchor_revision = 2U;
+  replacement.kind = 1U;
+  replacement.T_world_anchor = identity();
+  replacement.vertices_xyz = replacement_vertices.data();
+  replacement.vertex_count = 3U;
+  replacement.triangle_indices = replacement_indices.data();
+  replacement.triangle_count = 1U;
+  check(hss_engine_submit_mesh_event(engine, &replacement) == HSS_OK,
+        "queue source replacement after accepted user command");
+  drain(engine, 5U);
+  const auto updated_vertices = mesh_vertices(engine);
+  check(updated_vertices.size() == 3U && updated_vertices[1].x == 2.5 &&
+            updated_vertices[2].y == 3.5, "new raw observations are not replaced by stale edited geometry");
+  const auto refined_scene = scene_json(engine);
+  check(refined_scene.find("HSS_UNKNOWN_REGION") != std::string::npos &&
+            refined_scene.find("occluded rear face remains unknown") != std::string::npos,
+        "accepted unknown intent survives source rebuild");
+  check(refined_scene.find("\"kind\":\"unknown\"") != std::string::npos,
+        "unknown feature survives without inventing measured geometry");
+  check(occurrences(refined_scene, "\"kind\":\"unknown\"") == 1U &&
+            occurrences(refined_scene, "HSS_UNKNOWN_REGION") == 1U,
+        "source rebuild does not duplicate retained intent");
+  check(hss::scene_editing::scene_counts(refined_scene).has_value(),
+        "refined complete Scene is valid");
+  check(result_json(engine) == exact_result, "source rebuild does not rewrite exact command result");
+  check(has_typed_plan(engine), "fresh source rebuild produces its current typed plan");
+  HSSProjectStoreReceipt replacement_receipt{};
+  const auto replacement_context = context(6U, 5U);
+  check(hss_project_store_append_mesh_event(store, &replacement_context,
+              &replacement, &replacement_receipt) == HSS_OK, "persist source after command");
+  edited_scene = refined_scene;
+
   HSSProjectCheckpointResult checkpoint{};
   check(hss_project_store_checkpoint(store, &checkpoint) == HSS_OK,
         "checkpoint command after captured baseline");
@@ -397,12 +607,12 @@ int main() {
   HSSProjectReplayResult replay{};
   check(hss_project_store_replay(store, engine, &replay) == HSS_OK,
         "replay source baseline then command once");
-  check(replay.applied_event_count == 5U && replay.engine_status == HSS_OK,
+  check(replay.applied_event_count == 6U && replay.engine_status == HSS_OK,
         "all durable source/control events replayed");
   check(scene_json(engine) == edited_scene && result_json(engine) == exact_result,
         "reopened scene and exact command result match accepted publication");
-  check(!has_typed_plan(engine),
-        "replay preserves explicit unavailable typed-plan state");
+  check(has_typed_plan(engine),
+        "replay preserves fresh source-rebuilt typed-plan state");
 
   hss_engine_destroy(engine);
   hss_project_store_destroy(store);

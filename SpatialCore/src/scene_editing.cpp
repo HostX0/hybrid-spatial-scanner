@@ -2861,6 +2861,128 @@ bool same_scene_payload_except_revision(const std::string &expected,
   }
 }
 
+
+// Keep only exact command-owned, target-independent unknown annotations.
+// Candidate membership naturally handles existing strict undo/redo. No mutable
+// overlay sidecar is committed ahead of immutable scene publication.
+bool collect_retained_unknowns(const Object &scene,
+                              const std::vector<JournalRecord> &journal,
+                              const CommandData &current,
+                              uint64_t revision,
+                              std::shared_ptr<const RetainedUnknowns> *output,
+                              bool *resource_limit) {
+  auto retained = std::make_shared<RetainedUnknowns>();
+  // Index the validated candidate once. A linear scan for every journaled
+  // annotation made the capacity regression needlessly quadratic per edit.
+  using Index = std::map<std::string_view, const Json *, std::less<>>;
+  const auto index_entities = [](const Array &items) {
+    Index index;
+    for (const Json &entity : items)
+      index.emplace(member(entity.object(), "id")->string(), &entity);
+    return index;
+  };
+  const auto find_entity = [](const Index &index, const std::string &id) -> const Json * {
+    const auto found = index.find(id);
+    return found == index.end() ? nullptr : found->second;
+  };
+  const Index features = index_entities(member(scene, "features")->array());
+  const Index issues = index_entities(member(scene, "issues")->array());
+  const Array &constraints = member(scene, "constraints")->array();
+  size_t retained_constraints = 0U;
+  const auto collect = [&](const CommandData &command) {
+    if (command.type != "mark_unknown" || !command.targets.empty())
+      return true;
+    const auto *feature = find_entity(features, deterministic_uuid(command.command_id, "unknown-feature"));
+    const auto *issue = find_entity(issues, deterministic_uuid(command.command_id, "unknown-issue"));
+    if (!feature && !issue) // An accepted undo removed both entities.
+      return true;
+    if (!feature || !issue) return false;
+    if (retained->size() >= kMaxRetainedUnknowns) {
+      *resource_limit = true;
+      return false;
+    }
+    // Compare the entire validated entity to the original command's output:
+    // no targeted/foreign geometry, changed protection, or orphan reference
+    // can become a target-independent retained annotation by appearance alone.
+    Object expected{{"features", Json(Array{})}, {"issues", Json(Array{})}};
+    (void)apply_unknown(expected, command, revision);
+    Json expected_feature = member(expected, "features")->array().front();
+    Json expected_issue = member(expected, "issues")->array().front();
+    const Json *prior_revision = member(issue->object(), "scene_revision");
+    if (!prior_revision)
+      return false;
+    expected_issue.object()["scene_revision"] = *prior_revision;
+    // Protection of this command-created, nonmetric annotation is safe:
+    // preserve only the exact topology-protection constraint targeting it,
+    // never use this exception to rebase a measured node/edge/surface.
+    RetainedUnknown item;
+    const std::string feature_id = deterministic_uuid(command.command_id, "unknown-feature");
+    for (const Json &constraint : constraints) {
+      const auto targets = json_ids(*member(constraint.object(), "target_ids"));
+      if (std::find(targets.begin(), targets.end(), feature_id) == targets.end())
+        continue;
+      std::string source_command;
+      if (targets != std::vector<std::string>{feature_id} ||
+          !string_member(constraint.object(), "source_command_id", &source_command))
+        return false;
+      bool authorized = current.command_id == source_command &&
+          current.type == "protect_feature" && current.targets == targets;
+      for (const auto &record : journal) {
+        if (authorized || record.command_id != source_command ||
+            record.command_type != "protect_feature" ||
+            record.before_scene_revision == record.after_scene_revision) continue;
+        const Json parsed = JsonParser(record.exact_command_utf8).parse();
+        CommandData protection;
+        authorized = command_base(parsed, &protection) && protection.targets == targets;
+      }
+      const Json expected_constraint = make_constraint(
+          deterministic_uuid(source_command, "topology-protection"),
+          "topology_protection", targets, source_command, Json(nullptr),
+          "none", true, 0.0, "user_intent");
+      if (!authorized || serialize(constraint) != serialize(expected_constraint)) return false;
+      if (retained_constraints >= kMaxRetainedUnknowns) {
+        *resource_limit = true;
+        return false;
+      }
+      ++retained_constraints;
+      item.protection_constraints_json.push_back(serialize(constraint));
+    }
+    expected_feature.object()["protected_topology"] =
+        Json(!item.protection_constraints_json.empty());
+    if (serialize(*feature) != serialize(expected_feature) ||
+        serialize(*issue) != serialize(expected_issue))
+      return false;
+    item.feature_json = serialize(*feature);
+    std::string *part = &item.issue_before_revision;
+    *part = "{";
+    bool first = true;
+    for (const auto &[key, value] : issue->object()) {
+      if (!first) *part += ',';
+      first = false;
+      *part += serialize(Json(key)) + ':';
+      if (key == "scene_revision")
+        part = &item.issue_after_revision;
+      else
+        *part += serialize(value);
+    }
+    *part += '}';
+    retained->push_back(std::move(item));
+    return true;
+  };
+  for (const auto &record : journal) {
+    if (record.command_type != "mark_unknown" ||
+        record.before_scene_revision == record.after_scene_revision)
+      continue;
+    const Json original = JsonParser(record.exact_command_utf8).parse();
+    CommandData original_data;
+    if (!command_base(original, &original_data) || !collect(original_data))
+      return false;
+  }
+  if (!collect(current)) return false;
+  *output = std::move(retained);
+  return true;
+}
+
 } // namespace
 
 Processor::Processor(Options options)
@@ -2943,9 +3065,11 @@ ProcessResult Processor::process(std::string_view current_scene_json,
   command::SceneState gate_accepted = gate_scene(accepted);
   const std::string before_scene = serialize(accepted.root);
   std::string candidate_scene;
+  std::shared_ptr<const RetainedUnknowns> retained_unknowns;
   MutationResult mutation;
   bool callback_ran = false;
   bool pending_exclusion = false;
+  bool retention_resource_limit = false;
 
   command::SubmissionResult submitted = gate_.submit(
       envelope, exact_command_utf8, gate_accepted,
@@ -3046,6 +3170,16 @@ ProcessResult Processor::process(std::string_view current_scene_json,
                                       : validation_diagnostic;
           }
         }
+        if (mutation.outcome == command::Outcome::kApplied &&
+            !collect_retained_unknowns(*candidate.object, journal_, command_data,
+                                      new_revision, &retained_unknowns,
+                                      &retention_resource_limit)) {
+          // Invalid apply result prevents the gate from committing any record.
+          // Map the known capacity condition below, without inventing an applied result.
+          if (retention_resource_limit) return {command::Outcome::kRejected, {}};
+          mutation.outcome = command::Outcome::kRejected;
+          mutation.diagnostic = "retained unknown annotation limit or ownership conflict";
+        }
         uint64_t result_revision = accepted.revision;
         if (mutation.outcome == command::Outcome::kApplied) {
           candidate_scene = serialize(candidate.root);
@@ -3058,6 +3192,10 @@ ProcessResult Processor::process(std::string_view current_scene_json,
         return {mutation.outcome, exact_result};
       });
 
+  if (retention_resource_limit && !submitted.outcome) {
+    result.status = Status::kResourceLimitExceeded;
+    return result;
+  }
   result.status = map_gate_status(submitted.status);
   result.command_sha256 = submitted.command_sha256;
   result.exact_result_json = std::move(submitted.result_utf8_bytes);
@@ -3131,6 +3269,7 @@ ProcessResult Processor::process(std::string_view current_scene_json,
     }
     if (*submitted.outcome == command::Outcome::kApplied) {
       result.scene_changed = true;
+      result.retained_unknowns = std::move(retained_unknowns);
       result.candidate_scene_json = std::move(candidate_scene);
     }
     if (pending_exclusion)

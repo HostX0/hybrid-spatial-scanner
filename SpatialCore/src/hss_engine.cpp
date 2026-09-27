@@ -1379,7 +1379,8 @@ extern "C" HSSStatus hss_engine_apply_command_json(HSSEngine *engine,
         const HSSStatus published = engine->live.publish_edited_scene(
             std::move(processed.candidate_scene_json),
             engine->live.snapshot()->revision + 1U, counts->node_count,
-            counts->edge_count, counts->issue_count);
+            counts->edge_count, counts->issue_count,
+            std::move(processed.retained_unknowns));
         if (published != HSS_OK)
           return abort_publication(published);
         ++engine->accepted_commands;
