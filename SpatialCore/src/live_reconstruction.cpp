@@ -224,6 +224,7 @@ struct Reconstruction::Impl {
     FaceOrder face_order;
     FaceOrder::iterator slice_it{};
     size_t slice_subindex = 0;
+    size_t canonical_subindex = 0;
     size_t degenerate_triangles = 0;
     size_t non_manifold_edges = 0;
     size_t ambiguous_components = 0;
@@ -376,9 +377,35 @@ struct Reconstruction::Impl {
     b.canonical_roots.clear();
     b.face_order.clear();
     b.slice_subindex = 0U;
+    b.canonical_subindex = 0U;
     b.degenerate_triangles = 0U;
     b.non_manifold_edges = 0U;
     b.ambiguous_components = 0U;
+  }
+
+  // Retire one map entry per quantum. Component sample maps are capped at 96;
+  // the remaining vectors contain trivial elements and retain bounded capacity.
+  // Do not hide an anchor-sized tree destruction behind its final triangle.
+  bool retire_anchor_unit() {
+    auto &b = *build;
+    if (!b.edge_incidence.empty()) {
+      b.edge_incidence.erase(b.edge_incidence.begin());
+      return false;
+    }
+    if (!b.components.empty()) {
+      b.components.erase(b.components.begin());
+      return false;
+    }
+    if (!b.canonical_roots.empty()) {
+      b.canonical_roots.erase(b.canonical_roots.begin());
+      return false;
+    }
+    if (!b.face_order.empty()) {
+      b.face_order.erase(b.face_order.begin());
+      return false;
+    }
+    reset_anchor_work();
+    return true;
   }
 
   size_t node(HSSVec3d p, const std::string &support_id) {
@@ -981,6 +1008,14 @@ bool Reconstruction::advance() {
     const auto &e = a.source->event;
     const auto sup = x.support(key, a);
 
+    if (b.anchor_stage == 7) {
+      if (x.retire_anchor_unit()) {
+        b.base = b.out->vertices.size();
+        ++b.anchor;
+      }
+      return false;
+    }
+
     if (b.anchor_stage == 0) {
       if (b.vertex < e.mesh.vertex_count) {
         float v[3];
@@ -1063,9 +1098,12 @@ bool Reconstruction::advance() {
       if (b.canonical_it != b.canonical_roots.end()) {
         auto &roots = b.canonical_it->second;
         if (roots.size() != 1U) {
-          b.ambiguous_components += roots.size();
-          for (size_t root : roots)
-            b.components.at(root).ambiguous = true;
+          if (b.canonical_subindex == 0U)
+            b.ambiguous_components += roots.size();
+          b.components.at(roots[b.canonical_subindex++]).ambiguous = true;
+          if (b.canonical_subindex < roots.size())
+            return false;
+          b.canonical_subindex = 0U;
         } else {
           auto &component = b.components.at(roots.front());
           if (b.patches.size() >= kMaxMetric) {
@@ -1163,9 +1201,7 @@ bool Reconstruction::advance() {
                 std::to_string(e.mesh.vertex_count),
             e.event_sequence, mesh_id);
 
-    b.base = b.out->vertices.size();
-    ++b.anchor;
-    x.reset_anchor_work();
+    b.anchor_stage = 7;
     return false;
   }
   case 2: {

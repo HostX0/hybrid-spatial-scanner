@@ -89,6 +89,10 @@ struct ProcessResult {
   std::array<uint8_t, 32U> command_sha256{};
   std::optional<JournalRecord> journal_record;
   std::optional<DynamicExclusion> pending_dynamic_exclusion;
+  // Only a newly committed volatile process can be aborted by its owner.
+  bool owns_new_record{false};
+  std::optional<command::Outcome> recorded_outcome;
+  uint64_t associated_scene_revision{0U};
 };
 
 // Counts parsed from a schema-valid complete scene candidate. The engine uses
@@ -119,6 +123,8 @@ public:
   find_journal_record(std::string_view command_id) const;
   [[nodiscard]] const std::vector<DynamicExclusion> &
   pending_dynamic_exclusions() const;
+
+  [[nodiscard]] bool rollback_last_process(const ProcessResult &result) noexcept;
 
 private:
   Options options_;

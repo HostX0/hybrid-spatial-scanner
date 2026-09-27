@@ -303,9 +303,58 @@ void submit_baseline(HSSEngine *engine, HSSProjectStore *store,
         "persist exact command/result control");
 }
 
+
+// Publication is deliberately too large for the tiny budget. A failed edit
+// must not enter the retry journal or overwrite an earlier exposed result.
+void publication_failure_is_atomic() {
+  for (bool keep_previous_result : {false, true}) {
+    auto configuration = engine_config();
+    configuration.max_working_bytes = 4096U;
+    HSSEngine *engine=nullptr;
+    check(hss_engine_create(&configuration, &engine)==HSS_OK, "tiny budget create");
+    const auto before=scene_json(engine);
+    auto at_revision_zero = [](std::string command) {
+      const std::string old="\"expected_scene_revision\":\"3\"";
+      const size_t at=command.find(old);
+      check(at!=std::string::npos, "fixture expected revision");
+      command.replace(at, old.size(), "\"expected_scene_revision\":\"0\"");
+      return command;
+    };
+    std::string previous;
+    if (keep_previous_result) {
+      const auto pending=at_revision_zero(pending_exclusion_command(project_id_from_scene(before)));
+      check(hss_engine_apply_command_json(engine,
+          {reinterpret_cast<const uint8_t*>(pending.data()),pending.size()})==HSS_UNSUPPORTED_CAPABILITY,
+          "establish previous pending result");
+      previous=result_json(engine);
+    }
+    const auto command=at_revision_zero(mark_unknown_command(project_id_from_scene(before)));
+    const HSSBytes bytes{reinterpret_cast<const uint8_t*>(command.data()),command.size()};
+    const auto first=hss_engine_apply_command_json(engine,bytes);
+    const auto retry=hss_engine_apply_command_json(engine,bytes);
+    std::cout<<"publication first="<<first<<" exact_retry="<<retry<<'\n';
+    check(first==HSS_RESOURCE_LIMIT && retry==HSS_RESOURCE_LIMIT,
+          "failed publication exact retry must execute, never false StoredRetry");
+    check(scene_json(engine)==before, "failed publication leaves complete scene unchanged");
+    HSSEngineStats stats{};
+    check(hss_engine_get_stats(engine,&stats)==HSS_OK &&
+              stats.scene_revision==0U && stats.accepted_commands==0U,
+          "failed publication does not advance revision or accepted counter");
+    if (keep_previous_result) {
+      check(result_json(engine)==previous, "prior exact result survives failed publication");
+    } else {
+      uint64_t size=99U;
+      check(hss_engine_copy_command_result_json(engine,nullptr,0U,&size)==HSS_NOT_READY,
+            "no phantom applied result on failed publication");
+    }
+    hss_engine_destroy(engine);
+  }
+}
+
 } // namespace
 
 int main() {
+  publication_failure_is_atomic();
   char temporary[] = "/tmp/hss-engine-edit-XXXXXX";
   check(mkdtemp(temporary) != nullptr, "temporary project root");
   const std::string root(temporary);

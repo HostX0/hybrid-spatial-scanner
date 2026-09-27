@@ -319,9 +319,55 @@ void test_bounds_utf8_and_record_capacity() {
         "record capacity prevents untracked application");
 }
 
+
+void test_exact_volatile_abort() {
+  RevisionedCommandGate gate;
+  auto accepted=scene();
+  const auto before=accepted;
+  const auto first=command();
+  int calls=0;
+  const auto apply=[&](const CommandEnvelope &, SceneState &candidate) {
+    ++calls;
+    return applied_result("{\"applied\":true}",candidate);
+  };
+  const auto one=gate.submit(first,"first exact bytes",accepted,apply);
+  check(one.status==Status::kApplied,"abort fixture applies");
+  auto wrong=one.command_sha256; wrong[0]^=1U;
+  check(!gate.rollback_last_record(first.command_id,wrong,Outcome::kApplied,4U),
+        "abort rejects wrong digest");
+  check(!gate.rollback_last_record(first.command_id,one.command_sha256,Outcome::kRejected,4U),
+        "abort rejects wrong outcome");
+  check(!gate.rollback_last_record(first.command_id,one.command_sha256,Outcome::kApplied,3U),
+        "abort rejects wrong revision");
+  check(gate.record_count()==1U,"mismatched abort preserves record");
+  check(gate.rollback_last_record(first.command_id,one.command_sha256,Outcome::kApplied,4U),
+        "exact latest volatile abort succeeds");
+  // The outer owner retains its old accepted scene until publication succeeds.
+  accepted=before;
+  const auto again=gate.submit(first,"first exact bytes",accepted,apply);
+  check(again.status==Status::kApplied && calls==2,
+        "exact retry after abort actually executes again");
+  const auto second=command("b1a1e1ae-ec03-5401-af12-faa045864666","4");
+  const auto two=gate.submit(second,"second exact bytes",accepted,apply);
+  check(!gate.rollback_last_record(first.command_id,again.command_sha256,Outcome::kApplied,4U),
+        "abort cannot remove an older record");
+  check(gate.rollback_last_record(second.command_id,two.command_sha256,Outcome::kApplied,5U),
+        "abort matches only latest record");
+  check(gate.record_count()==1U && gate.find_record(first.command_id)!=nullptr,
+        "older accepted record survives abort");
+  RevisionedCommandGate pending_gate;
+  auto unchanged=scene();
+  const auto pending=pending_gate.submit(first,"pending",unchanged,
+      [](const CommandEnvelope &,SceneState &){return ApplyResult{Outcome::kRejected,"pending"};});
+  check(pending_gate.rollback_last_record(first.command_id,pending.command_sha256,
+            Outcome::kRejected,3U) && pending_gate.record_count()==0U,
+        "pending rejected volatile record can be aborted exactly");
+}
+
 } // namespace
 
 int main() {
+  test_exact_volatile_abort();
   test_sha256_and_exact_byte_idempotency();
   test_project_revision_and_target_validation_precede_apply();
   test_explicit_stale_reconciliation_requires_unchanged_lineage();

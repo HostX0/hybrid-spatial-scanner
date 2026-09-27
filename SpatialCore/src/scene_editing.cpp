@@ -18,6 +18,8 @@
 #include <utility>
 #include <variant>
 
+#include <type_traits>
+
 namespace hss::scene_editing {
 namespace {
 
@@ -2945,7 +2947,7 @@ ProcessResult Processor::process(std::string_view current_scene_json,
   bool callback_ran = false;
   bool pending_exclusion = false;
 
-  const command::SubmissionResult submitted = gate_.submit(
+  command::SubmissionResult submitted = gate_.submit(
       envelope, exact_command_utf8, gate_accepted,
       [&](const command::CommandEnvelope &,
           command::SceneState &candidate_gate) -> command::ApplyResult {
@@ -3058,7 +3060,7 @@ ProcessResult Processor::process(std::string_view current_scene_json,
 
   result.status = map_gate_status(submitted.status);
   result.command_sha256 = submitted.command_sha256;
-  result.exact_result_json = submitted.result_utf8_bytes;
+  result.exact_result_json = std::move(submitted.result_utf8_bytes);
 
   if (submitted.status == command::Status::kDuplicateMismatch) {
     result.exact_result_json = result_json(
@@ -3075,37 +3077,89 @@ ProcessResult Processor::process(std::string_view current_scene_json,
   if (submitted.status == command::Status::kStoredRetry)
     return result;
 
-  if (callback_ran) {
-    JournalRecord record;
-    record.ordinal = static_cast<uint64_t>(journal_.size());
-    record.command_id = command_data.command_id;
-    record.command_type = command_data.type;
-    record.original_command_id = mutation.original_command_id;
-    record.event_sequence = command_data.event_sequence_text;
-    record.exact_command_utf8 = std::string(exact_command_utf8);
-    record.command_sha256 = submitted.command_sha256;
-    record.exact_result_utf8 = submitted.result_utf8_bytes;
-    record.before_scene_revision = accepted.revision;
-    record.after_scene_revision = submitted.outcome == command::Outcome::kApplied
-                                      ? accepted.revision + 1U
-                                      : accepted.revision;
-    record.before_scene_json = before_scene;
-    record.after_scene_json = submitted.outcome == command::Outcome::kApplied
-                                  ? candidate_scene
-                                  : before_scene;
-    journal_.push_back(record);
-    result.journal_record = std::move(record);
-  }
-  if (submitted.outcome == command::Outcome::kApplied) {
-    result.scene_changed = true;
-    result.candidate_scene_json = std::move(candidate_scene);
-  }
-  if (pending_exclusion) {
-    dynamic_exclusions_.push_back(exclusion);
-    result.pending_dynamic_exclusion = exclusion;
-    result.status = Status::kPendingUnsupported;
+  if (callback_ran && submitted.outcome.has_value()) {
+    const uint64_t associated_revision =
+        *submitted.outcome == command::Outcome::kApplied
+            ? accepted.revision + 1U : accepted.revision;
+    try {
+      JournalRecord record;
+      record.ordinal = static_cast<uint64_t>(journal_.size());
+      record.command_id = command_data.command_id;
+      record.command_type = command_data.type;
+      record.original_command_id = mutation.original_command_id;
+      record.event_sequence = command_data.event_sequence_text;
+      record.exact_command_utf8 = std::string(exact_command_utf8);
+      record.command_sha256 = submitted.command_sha256;
+      record.exact_result_utf8 = result.exact_result_json;
+      record.before_scene_revision = accepted.revision;
+      record.after_scene_revision = associated_revision;
+      record.before_scene_json = before_scene;
+      record.after_scene_json = *submitted.outcome == command::Outcome::kApplied
+                                    ? candidate_scene : before_scene;
+      // Reserve/copy all fallible output before the no-throw semantic commit.
+      if (journal_.size() == journal_.capacity())
+        journal_.reserve(std::min(options_.max_records,
+            std::max(journal_.size() + 1U, journal_.capacity() * 2U)));
+      result.journal_record = record;
+      if (pending_exclusion) {
+        if (dynamic_exclusions_.size() == dynamic_exclusions_.capacity())
+          dynamic_exclusions_.reserve(std::min(options_.max_records,
+              std::max(dynamic_exclusions_.size() + 1U,
+                       dynamic_exclusions_.capacity() * 2U)));
+        result.pending_dynamic_exclusion = exclusion;
+      }
+      static_assert(std::is_nothrow_move_constructible_v<JournalRecord>);
+      static_assert(std::is_nothrow_move_constructible_v<DynamicExclusion>);
+      journal_.push_back(std::move(record));
+      if (pending_exclusion)
+        dynamic_exclusions_.push_back(std::move(exclusion));
+      result.owns_new_record = true;
+      result.recorded_outcome = submitted.outcome;
+      result.associated_scene_revision = associated_revision;
+    } catch (const std::bad_alloc &) {
+      const bool restored = gate_.rollback_last_record(command_data.command_id,
+          submitted.command_sha256, *submitted.outcome, associated_revision);
+      result = ProcessResult{};
+      result.status = restored ? Status::kResourceLimitExceeded : Status::kInternalError;
+      return result;
+    } catch (...) {
+      (void)gate_.rollback_last_record(command_data.command_id,
+          submitted.command_sha256, *submitted.outcome, associated_revision);
+      result = ProcessResult{};
+      result.status = Status::kInternalError;
+      return result;
+    }
+    if (*submitted.outcome == command::Outcome::kApplied) {
+      result.scene_changed = true;
+      result.candidate_scene_json = std::move(candidate_scene);
+    }
+    if (pending_exclusion)
+      result.status = Status::kPendingUnsupported;
   }
   return result;
+}
+
+bool Processor::rollback_last_process(const ProcessResult &result) noexcept {
+  if (!result.owns_new_record || !result.recorded_outcome ||
+      !result.journal_record || journal_.empty())
+    return false;
+  const auto &expected = *result.journal_record;
+  const auto &last = journal_.back();
+  if (last.ordinal != expected.ordinal || last.command_id != expected.command_id ||
+      last.command_sha256 != result.command_sha256 ||
+      last.after_scene_revision != result.associated_scene_revision)
+    return false;
+  if (result.pending_dynamic_exclusion &&
+      (dynamic_exclusions_.empty() ||
+       dynamic_exclusions_.back().command_id != expected.command_id))
+    return false;
+  if (!gate_.rollback_last_record(expected.command_id, result.command_sha256,
+          *result.recorded_outcome, result.associated_scene_revision))
+    return false;
+  if (result.pending_dynamic_exclusion)
+    dynamic_exclusions_.pop_back();
+  journal_.pop_back();
+  return true;
 }
 
 const char *status_name(Status status) {

@@ -1,5 +1,7 @@
 #include "hss/hss_api.h"
 #include "hss/scene_editing.hpp"
+#include "hss/live_reconstruction.hpp"
+#include <cstring>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -280,9 +282,74 @@ void permutations(const Mesh &mesh, size_t expected, const char *name) {
     require(value.json == baseline.json, "entire derived Scene permutation equality");
   }
 }
+
+// Count actual internal advance() quanta, not wall-clock-dependent facade calls.
+// Every duplicate is scanned, accumulated, indexed, marked, skipped for slicing
+// and retired independently. Previously all marks and retirements were batched.
+void duplicate_heavy_quanta(size_t count) {
+  hss::live::Reconstruction core(config());
+  require(core.set_synthetic(1U) == HSS_OK, "direct synthetic origin");
+  auto epoch = std::make_shared<hss::live::Evidence>();
+  epoch->event.kind = hss::ingress::EventKind::epoch;
+  epoch->event.capture_id = ident(2);
+  epoch->event.event_sequence = 1U;
+  epoch->event.epoch.capture_id = ident(2);
+  epoch->event.epoch.event_sequence = 1U;
+  epoch->event.epoch.relationship_state = 1U;
+  epoch->event.epoch.transform_revision = 1U;
+  epoch->event.epoch.T_project_world = identity();
+  epoch->lease = hss::live::reserve(core.budget(),
+      hss::live::event_reservation(epoch->event));
+  require(bool(epoch->lease) && core.begin(epoch) == HSS_OK, "direct epoch");
+  while (core.busy()) core.advance();
+  const auto accepted = core.snapshot();
+  auto evidence = std::make_shared<hss::live::Evidence>();
+  auto &event = evidence->event;
+  event.kind = hss::ingress::EventKind::mesh_add;
+  event.capture_id = ident(2);
+  event.anchor_id = ident(3);
+  event.event_sequence = 2U;
+  event.anchor_revision = 1U;
+  event.mesh.T_world_anchor = identity();
+  event.mesh.vertex_count = 3U;
+  event.mesh.triangle_count = count;
+  const std::array<float,9> vertices{0,0,0, 1,0,0, 0,1,0};
+  const std::array<uint32_t,3> face{0U,1U,2U};
+  event.payload.resize(sizeof(vertices) + count*sizeof(face));
+  std::memcpy(event.payload.data(), vertices.data(), sizeof(vertices));
+  for (size_t i=0; i<count; ++i)
+    std::memcpy(event.payload.data()+sizeof(vertices)+i*sizeof(face),
+                face.data(), sizeof(face));
+  event.payload_bytes = event.payload.size();
+  evidence->lease = hss::live::reserve(core.budget(),
+      hss::live::event_reservation(event));
+  require(bool(evidence->lease) && core.begin(evidence) == HSS_OK,
+          "direct duplicate-heavy admission");
+  size_t quanta=0U;
+  while (core.busy() && quanta < 12U*count+256U) {
+    const bool completed = core.advance();
+    ++quanta;
+    if (!completed)
+      require(core.snapshot() == accepted, "no partial snapshot during cleanup");
+  }
+  require(!core.busy() && core.status() == HSS_OK,
+          "duplicate-heavy build completes within bounded stage count");
+  std::cout << "duplicate_triangles=" << count << " advance_quanta=" << quanta << '\n';
+  require(quanta >= 6U*count,
+          "ambiguous marking and scratch retirement must each yield per root");
+  const auto result=core.snapshot();
+  require(result->triangles.size()==3U*count && plane_count(result->json)==0U,
+          "duplicate-heavy raw evidence kept without fitted bridging");
+  for(size_t i=0; i<result->triangles.size(); ++i)
+    require(result->triangles[i]==face[i%3U], "duplicate-heavy indices exact");
+  require(hss::scene_editing::scene_counts(result->json).has_value(),
+          "duplicate-heavy output scene validates");
+}
+
 } // namespace
 
 int main() {
+  duplicate_heavy_quanta(2048U);
   for (const auto &[width, expected] :
        {std::pair{0.50F, size_t{1U}}, std::pair{1.00F, size_t{2U}}}) {
     const auto natural_mesh = shallow_crease(width, false);
