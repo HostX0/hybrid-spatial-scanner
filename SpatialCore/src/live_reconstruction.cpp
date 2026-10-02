@@ -21,6 +21,7 @@ namespace {
 constexpr size_t kMaxAnchors = 128, kMaxEpochs = 32, kMaxFrames = 256;
 constexpr size_t kMaxVertices = 65536, kMaxTriangles = 65536, kMaxMetric = 2048;
 constexpr double kExtent = 10000, kJoin = 1e-7;
+constexpr double kPlaneSupportM = 0.002;
 using Key = std::string;
 std::string uuid(const HSSId &id) {
   const char *hex = "0123456789abcdef";
@@ -103,9 +104,11 @@ struct State {
 };
 struct Patch {
   std::string identity, support;
-  HSSVec3d normal{};
-  double offset{};
   std::vector<plane_fit::WeightedSample> samples;
+  std::optional<plane_fit::Plane> plane;
+  uint64_t source_sequence{};
+  size_t expected_triangles{}, checked_triangles{};
+  bool support_failed{false};
 };
 
 using TriangleKey = std::array<uint32_t, 3>;
@@ -149,6 +152,7 @@ struct ComponentWork {
   size_t representative{std::numeric_limits<size_t>::max()};
   bool ambiguous{false};
   bool metric_skipped{false};
+  size_t patch_index{std::numeric_limits<size_t>::max()};
   std::map<uint32_t, uint64_t> sample_ranks;
   std::string surface;
 };
@@ -217,6 +221,7 @@ struct Reconstruction::Impl {
     std::vector<size_t> dsu_size;
     std::vector<TriangleKey> dsu_key;
     size_t face_index = 0;
+    size_t anchor_fit_index = 0;
     ComponentMap components;
     ComponentMap::iterator component_it{};
     CanonicalRoots canonical_roots;
@@ -374,6 +379,7 @@ struct Reconstruction::Impl {
     b.dsu_size.clear();
     b.dsu_key.clear();
     b.face_index = 0U;
+    b.anchor_fit_index = b.patches.size();
     b.components.clear();
     b.canonical_roots.clear();
     b.face_order.clear();
@@ -1154,14 +1160,12 @@ bool Reconstruction::advance() {
             component.metric_skipped = true;
             b.metric_limit = true;
           } else {
-            const auto &representative =
-                b.faces.at(component.representative);
             Patch patch;
             patch.identity =
                 id(sup + ":patch:" + triangle_suffix(component.canonical));
             patch.support = sup;
-            patch.normal = representative.normal;
-            patch.offset = representative.offset;
+            patch.source_sequence = e.event_sequence;
+            patch.expected_triangles = component.triangle_count;
             patch.samples.reserve(component.sample_ranks.size());
             for (const auto &[vertex, rank] : component.sample_ranks) {
               (void)rank;
@@ -1170,10 +1174,33 @@ bool Reconstruction::advance() {
                   {{point.x, point.y, point.z}, 1.0, e.event_sequence});
             }
             component.surface = patch.identity;
+            component.patch_index = b.patches.size();
             b.patches.push_back(std::move(patch));
           }
         }
         ++b.canonical_it;
+        return false;
+      }
+      b.anchor_stage = 8;
+      return false;
+    }
+
+    // Fit one bounded sample set per quantum before the existing face walk.
+    // Neighbour compatibility is transitive, while planarity is not: a robust
+    // inlier subset alone cannot label the entire connected component planar.
+    if (b.anchor_stage == 8) {
+      if (b.anchor_fit_index < b.patches.size()) {
+        auto &p = b.patches[b.anchor_fit_index++];
+        plane_fit::Options o;
+        o.inlier_threshold_m = kPlaneSupportM;
+        o.seed = x.config.deterministic_seed;
+        o.max_input_samples = 96;
+        o.candidate_iterations = 24;
+        o.max_refinement_iterations = 4;
+        o.max_residual_evaluations = 4096;
+        o.min_support_samples = 3;
+        o.min_distinct_support_points = 3;
+        p.plane = plane_fit::fit(p.samples, o).plane;
         return false;
       }
       b.slice_it = b.face_order.begin();
@@ -1204,6 +1231,22 @@ bool Reconstruction::advance() {
       std::array<HSSVec3d, 3> points{};
       for (size_t i = 0; i < 3; ++i)
         points[i] = b.out->vertices[b.base + face.triangle[i]];
+      auto &patch = b.patches.at(found->second.patch_index);
+      ++patch.checked_triangles;
+      if (patch.plane) {
+        const auto &plane = *patch.plane;
+        // Check all original support, including vertices omitted by the
+        // deterministic 96-sample cap. Only three points are checked in this
+        // quantum; no second anchor-sized pass or unbounded replay is added.
+        for (const auto &point : points) {
+          const double distance = std::abs(std::fma(
+              plane.normal.x, point.x,
+              std::fma(plane.normal.y, point.y,
+                       std::fma(plane.normal.z, point.z, plane.offset_m))));
+          patch.support_failed |=
+              !std::isfinite(distance) || distance > kPlaneSupportM;
+        }
+      }
       x.slice(points, sup, found->second.surface);
       return false;
     }
@@ -1255,19 +1298,17 @@ bool Reconstruction::advance() {
       return false;
     }
     const auto &p = b.patches[b.patch_index++];
-    plane_fit::Options o;
-    o.inlier_threshold_m = 0.002;
-    o.seed = x.config.deterministic_seed;
-    o.max_input_samples = 96;
-    o.candidate_iterations = 24;
-    o.max_refinement_iterations = 4;
-    o.max_residual_evaluations = 4096;
-    o.min_support_samples = 3;
-    o.min_distinct_support_points = 3;
-    auto fit = plane_fit::fit(p.samples, o);
+    const bool supported = p.plane && !p.support_failed &&
+                           p.checked_triangles == p.expected_triangles;
+    if (p.plane && !supported)
+      x.issue("partial_plane_support",
+              "Plane hypothesis does not cover original mesh component; "
+              "captured shape retained; surface=" + p.identity +
+              " support=" + p.support,
+              p.source_sequence, p.identity);
     std::string s = "{\"id\":" + quote(p.identity);
-    if (fit.plane) {
-      const auto &plane = *fit.plane;
+    if (supported) {
+      const auto &plane = *p.plane;
       s += ",\"kind\":\"plane\",\"normal_unit\":" +
            vec({plane.normal.x, plane.normal.y, plane.normal.z}) +
            ",\"offset_m\":" + num(plane.offset_m) +
@@ -1276,7 +1317,7 @@ bool Reconstruction::advance() {
       s += ",\"kind\":\"mesh_patch\",\"normal_unit\":null,\"offset_m\":null,"
            "\"fit_residual_m\":null";
     s += ",\"boundary_node_ids\":[],\"mesh_asset\":null,\"provenance\":" +
-         provenance({p.support}, fit.plane ? "fitted" : "observed") + "}";
+         provenance({p.support}, supported ? "fitted" : "observed") + "}";
     b.surfaces.push_back(std::move(s));
     return false;
   }

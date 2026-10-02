@@ -1,4 +1,7 @@
 #include "hss/hss_api.h"
+#include "hss/hss_project_store.h"
+#include <filesystem>
+#include <unistd.h>
 #include "hss/scene_editing.hpp"
 #include "hss/live_reconstruction.hpp"
 #include <cstring>
@@ -346,9 +349,190 @@ void duplicate_heavy_quanta(size_t count) {
           "duplicate-heavy output scene validates");
 }
 
+
+// A connected smooth strip is not necessarily one plane. Each neighbouring
+// facet passes the existing pairwise gate, but the full arc does not.
+Mesh curved_strip(uint32_t facets, double turn_degrees) {
+  Mesh mesh;
+  double x = 0.0, z = 0.0;
+  const double turn = turn_degrees * std::acos(-1.0) / 180.0;
+  for (uint32_t i = 0U; i <= facets; ++i) {
+    mesh.vertices.insert(mesh.vertices.end(),
+                         {float(x), 0.0F, float(z), float(x), 3.0F, float(z)});
+    if (i < facets) {
+      const double angle = (double(i) - double(facets - 1U) / 2.0) * turn;
+      x += 0.1 * std::cos(angle);
+      z += 0.1 * std::sin(angle);
+      const uint32_t a = 2U * i, b = a + 2U;
+      mesh.triangles.insert(mesh.triangles.end(),
+                            {a, b, b + 1U, a, b + 1U, a + 1U});
+    }
+  }
+  return mesh;
+}
+
+
+Mesh unsampled_bend() {
+  Mesh mesh = curved_strip(600U, 0.0);
+  double z = 0.0;
+  for (uint32_t i = 595U; i <= 600U; ++i) {
+    z += 0.1 * std::tan(double(i - 594U) * 0.2 * std::acos(-1.0) / 180.0);
+    mesh.vertices[6U * i + 2U] = mesh.vertices[6U * i + 5U] = float(z);
+  }
+  // Independently verify this adversary: every one of the currently selected
+  // 96 vertices is on z=0, while the omitted tip exceeds the 2mm fit threshold.
+  std::vector<std::pair<uint64_t, uint32_t>> ranks;
+  for (uint32_t i = 0U; i < mesh.vertices.size()/3U; ++i) {
+    uint64_t value = (config().deterministic_seed ^ uint64_t(i)) +
+                     0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+    ranks.emplace_back(value ^ (value >> 31U), i);
+  }
+  std::sort(ranks.begin(), ranks.end());
+  for (size_t i = 0; i < 96U; ++i)
+    require(mesh.vertices[3U * ranks[i].second + 2U] == 0.0F,
+            "adversarial bend must lie outside all 96 selected samples");
+  require(mesh.vertices.back() > 0.007F, "omitted raw tip exceeds 7mm");
+  return mesh;
+}
+
+void durable_component_support() {
+  char temporary[] = "/tmp/hss-component-support-XXXXXX";
+  require(::mkdtemp(temporary) != nullptr, "private synthetic test directory");
+  const std::string directory = temporary;
+  HSSProjectStoreConfig sc{};
+  sc.abi_version = HSS_PROJECT_STORE_ABI_VERSION; sc.struct_size = sizeof(sc);
+  sc.project_id = ident(1);
+  sc.trusted_root_directory_utf8 = {
+      reinterpret_cast<const uint8_t *>(directory.data()), directory.size()};
+  sc.open_mode = HSS_PROJECT_STORE_CREATE_NEW; sc.source_is_synthetic = 1U;
+  sc.max_epoch_records = sc.max_depth_records = sc.max_mesh_records =
+      sc.max_command_records = 8U;
+  sc.max_retained_bytes = 16U * 1024U * 1024U;
+  sc.max_record_bytes = 2U * 1024U * 1024U;
+  sc.max_pending_bytes = 8U * 1024U * 1024U;
+  HSSProjectStore *store{};
+  require(hss_project_store_create(&sc, &store) == HSS_OK, "create actual store");
+  auto cfg = config(); HSSEngine *engine{};
+  require(hss_engine_create(&cfg, &engine) == HSS_OK, "create durable engine");
+  require(hss_engine_set_source_is_synthetic(engine, 1U) == HSS_OK, "synthetic store");
+  auto context = [](uint64_t sequence) {
+    HSSProjectEventContext c{};
+    c.abi_version = HSS_PROJECT_STORE_ABI_VERSION; c.struct_size = sizeof(c);
+    c.capture_id = ident(2); c.event_sequence = sequence;
+    c.accepted_scene_revision = sequence; c.monotonic_time_s = double(sequence);
+    return c;
+  };
+  HSSProjectStoreReceipt receipt{};
+  HSSEpoch epoch{};
+  epoch.abi_version = HSS_ABI_VERSION; epoch.struct_size = sizeof(epoch);
+  epoch.capture_id = ident(2); epoch.event_sequence = 1U;
+  epoch.relationship_state = 1U; epoch.transform_revision = 1U;
+  epoch.T_project_world = identity();
+  require(hss_engine_set_epoch(engine, &epoch) == HSS_OK, "durable epoch");
+  drain(engine, 1U); auto c = context(1U);
+  require(hss_project_store_append_epoch(store, &c, &epoch, &receipt) == HSS_OK,
+          "append epoch");
+  const auto flat = curved_strip(100U, 0.0), curved = curved_strip(100U, 0.2);
+  HSSMeshEvent event{};
+  event.abi_version = HSS_ABI_VERSION; event.struct_size = sizeof(event);
+  event.capture_id = ident(2); event.anchor_id = ident(3);
+  event.T_world_anchor = identity();
+  auto submit = [&](const Mesh &mesh, uint64_t sequence, uint64_t revision) {
+    event.event_sequence = sequence; event.anchor_revision = revision;
+    event.kind = revision == 1U ? 0U : 1U;
+    event.vertices_xyz = mesh.vertices.data(); event.vertex_count = mesh.vertices.size()/3U;
+    event.triangle_indices = mesh.triangles.data(); event.triangle_count = mesh.triangles.size()/3U;
+    require(hss_engine_submit_mesh_event(engine, &event) == HSS_OK, "source refinement");
+    drain(engine, sequence % 2U == 0U ? 1U : 50U);
+    require(stats(engine).scene_revision == sequence, "exact single source revision");
+    c = context(sequence);
+    require(hss_project_store_append_mesh_event(store, &c, &event, &receipt) == HSS_OK,
+            "append exact replacement source");
+    const auto json = scene_json(engine);
+    require(hss::scene_editing::scene_counts(json).has_value(), "valid replacement scene");
+    const bool is_flat = &mesh == &flat;
+    require(plane_count(json) == (is_flat ? 1U : 0U), "classification follows fresh support");
+    require((json.find("partial_plane_support") == std::string::npos) == is_flat,
+            "warning appears and clears with actual source support");
+  };
+  submit(flat, 2U, 1U);
+  HSSProjectPlanReference plan{};
+  plan.abi_version = HSS_PROJECT_STORE_ABI_VERSION; plan.struct_size = sizeof(plan);
+  plan.T_project_floor = identity(); plan.cut_height_m = 1.2;
+  plan.before_scene_revision = 2U; plan.after_scene_revision = 3U;
+  require(hss_engine_set_plan_reference(engine, &plan.T_project_floor, 1.2) == HSS_OK,
+          "durable floor reference");
+  drain(engine, 1U); c = context(3U);
+  require(hss_project_store_append_plan_reference(store, &c, &plan, &receipt) == HSS_OK,
+          "append floor reference");
+  submit(curved, 4U, 2U); submit(flat, 5U, 3U); submit(curved, 6U, 4U);
+  const auto accepted = scene_json(engine);
+  auto verify_raw = [&]() {
+    require(raw_triangles(engine) == curved.triangles, "all raw triangles retained through replay");
+    HSSSnapshot *snapshot{};
+    require(hss_engine_acquire_snapshot(engine, &snapshot) == HSS_OK, "raw replay snapshot");
+    std::vector<HSSVec3d> points(curved.vertices.size()/3U); uint64_t count{};
+    require(hss_snapshot_copy_vertices(snapshot, points.data(), points.size(), &count) == HSS_OK &&
+                count == points.size(), "all raw points retained through replay");
+    for (size_t i = 0; i < points.size(); ++i)
+      require(points[i].x == curved.vertices[3U*i] && points[i].y == curved.vertices[3U*i+1U] &&
+                  points[i].z == curved.vertices[3U*i+2U], "no flattening of raw observed shape");
+    hss_snapshot_release(snapshot);
+  };
+  verify_raw(); HSSProjectCheckpointResult cp{};
+  require(hss_project_store_checkpoint(store, &cp) == HSS_OK &&
+              cp.durable_event_count == 6U && cp.durability_state == 1U, "durable checkpoint");
+  hss_engine_destroy(engine); hss_project_store_destroy(store);
+  sc.open_mode = HSS_PROJECT_STORE_OPEN_EXISTING;
+  require(hss_project_store_create(&sc, &store) == HSS_OK, "reopen project");
+  require(hss_engine_create(&cfg, &engine) == HSS_OK, "create replay engine");
+  HSSProjectReplayResult replay{};
+  require(hss_project_store_replay(store, engine, &replay) == HSS_OK &&
+              replay.applied_event_count == 6U && replay.engine_status == HSS_OK,
+          "replay original source and floor events");
+  require(scene_json(engine) == accepted, "byte-equivalent warnings and geometry on durable replay");
+  verify_raw(); hss_engine_destroy(engine); hss_project_store_destroy(store);
+  std::filesystem::remove_all(directory);
+}
+
+void full_component_support_regression() {
+  const auto mesh = curved_strip(100U, 0.2);
+  const auto result = reconstruct_many({mesh}, 50U, true);
+  std::cout << "Curved connected strip: vertices=" << mesh.vertices.size()/3U
+            << " triangles=" << mesh.triangles.size()/3U
+            << " emitted_planes=" << result.planes << std::endl;
+  require(result.planes == 0U,
+          "a subset plane cannot stand for a whole curved component");
+  require(result.json.find("partial_plane_support") != std::string::npos,
+          "rejected whole-component fit has an explicit issue");
+  const auto omitted = unsampled_bend();
+  const auto tail = reconstruct_many({omitted}, 1U, true);
+  require(tail.planes == 0U && tail.json.find("partial_plane_support") != std::string::npos,
+          "a missed sample cannot hide nonplanar raw support");
+  auto ceiling = mesh;
+  for (size_t i = 0; i < ceiling.vertices.size(); i += 3U) {
+    const float previous_y = ceiling.vertices[i+1U];
+    ceiling.vertices[i+1U] = 3.0F + ceiling.vertices[i+2U];
+    ceiling.vertices[i+2U] = -previous_y;
+  }
+  require(reconstruct_many({ceiling}, 1U, true).planes == 0U,
+          "curved overhead surface remains captured rather than flattened");
+  permutations(mesh, 0U, "curved component triangle permutations");
+  const auto multi = reconstruct_many({mesh, ceiling}, 50U, true);
+  require(multi.planes == 0U, "independent nonplanar anchors retain unique valid issues");
+  durable_component_support();
+  std::cout << "Full original support, unsampled bend, ceiling and durable refinement passed\n";
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc == 2 && std::string(argv[1]) == "--full-component-support") {
+    full_component_support_regression();
+    return 0;
+  }
   duplicate_heavy_quanta(2048U);
   for (const auto &[width, expected] :
        {std::pair{0.50F, size_t{1U}}, std::pair{1.00F, size_t{2U}}}) {

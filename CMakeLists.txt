@@ -598,6 +598,9 @@ endif()
 add_test(NAME hss_live_permutation_regression
   COMMAND hss_live_permutation_regression_test
 )
+add_test(NAME hss_full_component_plane_support
+  COMMAND hss_live_permutation_regression_test --full-component-support
+)
 add_executable(hss_plan_annotation_runtime_test
   tests/hss_plan_annotation_runtime_test.cpp
 )
