@@ -583,7 +583,7 @@ add_test(NAME hss_live_reconstruction COMMAND hss_live_reconstruction_test)
 add_executable(hss_live_permutation_regression_test
   tests/hss_live_permutation_characterization_test.cpp
 )
-target_link_libraries(hss_live_permutation_regression_test PRIVATE SpatialCore)
+target_link_libraries(hss_live_permutation_regression_test PRIVATE SpatialCore hss_obj_mtl_exporter)
 target_compile_options(hss_live_permutation_regression_test PRIVATE
   -Wall -Wextra -Werror -Wpedantic
 )
@@ -665,3 +665,7 @@ add_test(NAME hss_resource_runtime_integration
 endif()
 
 include(cmake/HSSMeshPipelineTests.cmake)
+
+if(HSS_BUILD_TESTS)
+add_test(NAME hss_mixed_room_replay COMMAND hss_live_permutation_regression_test --mixed-room)
+endif()

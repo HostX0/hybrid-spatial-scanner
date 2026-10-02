@@ -1,4 +1,5 @@
 #include "hss/hss_api.h"
+#include "hss/obj_mtl_exporter.hpp"
 #include "hss/hss_project_store.h"
 #include <filesystem>
 #include <unistd.h>
@@ -15,6 +16,9 @@
 #include <iostream>
 #include <string>
 #include <utility>
+#include <map>
+#include <sstream>
+#include <iomanip>
 #include <vector>
 
 namespace {
@@ -526,9 +530,360 @@ void full_component_support_regression() {
   std::cout << "Full original support, unsampled bend, ceiling and durable refinement passed\n";
 }
 
+
+// Authored metre-domain challenge. Zero sensor noise, Float32 input encoding,
+// omitted skylight observations, and no semantic labels supplied to the core.
+// These readers inspect our already scene_counts-validated canonical output;
+// they are test utilities, not a replacement project JSON parser.
+std::vector<std::string> scene_records(const std::string &json, const std::string &key) {
+  const std::string prefix = "\"" + key + "\":[";
+  const auto found = json.find(prefix);
+  require(found != std::string::npos, "canonical scene collection exists");
+  std::vector<std::string> result;
+  bool quoted = false, escaped = false;
+  size_t depth = 0U, start = 0U;
+  for (size_t i = found + prefix.size(); i < json.size(); ++i) {
+    const char c = json[i];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (c == '\\') escaped = true;
+      else if (c == '"') quoted = false;
+      continue;
+    }
+    if (c == '"') quoted = true;
+    else if (c == '{') { if (depth++ == 0U) start = i; }
+    else if (c == '}') {
+      require(depth != 0U, "balanced canonical record");
+      if (--depth == 0U) result.push_back(json.substr(start, i - start + 1U));
+    } else if (c == ']' && depth == 0U) return result;
+  }
+  require(false, "closed canonical collection"); return {};
+}
+std::string record_text(const std::string &record, const std::string &key) {
+  const std::string prefix = "\"" + key + "\":\"";
+  const auto pos = record.find(prefix);
+  require(pos != std::string::npos, "canonical text exists");
+  const auto start = pos + prefix.size(), end = record.find('"', start);
+  require(end != std::string::npos, "canonical text terminates");
+  return record.substr(start, end - start);
+}
+double record_number(const std::string &record, const std::string &key) {
+  const std::string prefix = "\"" + key + "\":";
+  const auto pos = record.find(prefix);
+  require(pos != std::string::npos, "canonical number exists");
+  return std::stod(record.substr(pos + prefix.size()));
+}
+HSSVec3d record_point(const std::string &record, const std::string &key) {
+  const std::string prefix = "\"" + key + "\":[";
+  const auto pos = record.find(prefix);
+  require(pos != std::string::npos, "canonical point exists");
+  const auto start = pos + prefix.size(), end = record.find(']', start);
+  require(end != std::string::npos, "canonical point terminates");
+  auto values = record.substr(start, end - start);
+  std::replace(values.begin(), values.end(), ',', ' ');
+  std::istringstream input(values); HSSVec3d point{};
+  require(bool(input >> point.x >> point.y >> point.z), "three finite coordinates");
+  require(std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z), "finite point");
+  return point;
+}
+HSSVec3d delta(HSSVec3d a, HSSVec3d b) { return {a.x-b.x,a.y-b.y,a.z-b.z}; }
+double length3(HSSVec3d p) { return std::hypot(p.x,p.y,p.z); }
+double product3(HSSVec3d a,HSSVec3d b) { return a.x*b.x+a.y*b.y+a.z*b.z; }
+HSSVec3d cross3(HSSVec3d a,HSSVec3d b) { return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x}; }
+struct MixedRoom {
+  std::vector<Mesh> meshes{3U};
+  std::vector<std::array<HSSVec3d,4>> faces;
+  std::vector<std::pair<HSSVec3d,HSSVec3d>> cuts;
+};
+void add_face(MixedRoom &room, size_t anchor, std::array<HSSVec3d,4> face) {
+  auto &mesh=room.meshes.at(anchor); const uint32_t base=uint32_t(mesh.vertices.size()/3U);
+  for (auto p:face) mesh.vertices.insert(mesh.vertices.end(),{float(p.x),float(p.y),float(p.z)});
+  mesh.triangles.insert(mesh.triangles.end(),{base,base+1U,base+2U,base,base+2U,base+3U});
+  room.faces.push_back(face);
+}
+MixedRoom mixed_room(double upper=3.5) {
+  MixedRoom room;
+  const std::vector<std::pair<double,double>> outer{{0,0},{6,0},{6,-5},{4,-5},
+      {4,-4.5},{3.85,-4.5},{3.85,-5},{2,-5},{0,-4}};
+  const std::vector<std::pair<double,double>> column{{1,-1},{1.3,-1},{1.3,-1.5},{1,-1.5}};
+  auto walls=[&](const auto &ring,size_t anchor,double height) {
+    for(size_t i=0;i<ring.size();++i) {
+      const auto [x,z]=ring[i]; const auto [u,v]=ring[(i+1U)%ring.size()];
+      add_face(room,anchor,{{{x,0,z},{u,0,v},{u,height,v},{x,height,z}}});
+      room.cuts.push_back({{x,1.2,z},{u,1.2,v}});
+    }
+  };
+  walls(outer,0U,3.6); walls(column,2U,2.8);
+  add_face(room,1U,{{{0,2.8,0},{2,2.8,0},{2,2.8,-2},{0,2.8,-2}}});
+  add_face(room,1U,{{{2,3.2,0},{4,3.2,0},{4,3.2,-2},{2,3.2,-2}}});
+  add_face(room,1U,{{{2,2.8,0},{2,3.2,0},{2,3.2,-2},{2,2.8,-2}}});
+  add_face(room,1U,{{{4,3.2,0},{6,upper,0},{6,upper,-2},{4,3.2,-2}}});
+  // Four separately observed panels around an unobserved 1m by 1m skylight.
+  for (const auto &r:std::vector<std::array<double,4>>{{0,6,-2,-2.5},{0,6,-3.5,-4},
+                                                   {0,2.5,-2.5,-3.5},{3.5,6,-2.5,-3.5}})
+    add_face(room,1U,{{{r[0],3.3,r[2]},{r[1],3.3,r[2]},{r[1],3.3,r[3]},{r[0],3.3,r[3]}}});
+  return room;
+}
+void verify_mixed_geometry(const std::string &json,const MixedRoom &reference, bool open = false) {
+  require(hss::scene_editing::scene_counts(json).has_value(),"complete mixed scene validates");
+  std::vector<std::pair<HSSVec3d,double>> planes;
+  for(const auto &surface:scene_records(json,"surfaces")) {
+    if(record_text(surface,"kind")=="plane") {
+      require(surface.find("\"semantic_origin\":\"unknown\"")!=std::string::npos,
+              "unclassified planes do not gain room semantics");
+      planes.push_back({record_point(surface,"normal_unit"),record_number(surface,"offset_m")});
+    }
+  }
+  std::cout<<"mixed reference_faces="<<reference.faces.size()<<" actual_planes="<<planes.size()<<std::endl;
+  require(planes.size()==reference.faces.size(),"every supported ceiling/wall/return has a separate fitted plane");
+  std::vector<bool> used(planes.size()); double max_distance=0.0,max_sine=0.0;
+  for(const auto &face:reference.faces) {
+    auto normal=cross3(delta(face[1],face[0]),delta(face[3],face[0]));
+    const auto norm=length3(normal); require(norm>0.0,"nondegenerate authored reference");
+    normal={normal.x/norm,normal.y/norm,normal.z/norm};
+    size_t selected=planes.size(); double best=1e100,chosen_sine=0.0;
+    for(size_t i=0;i<planes.size();++i) if(!used[i]) {
+      const auto &[n,d]=planes[i]; double distance=0.0;
+      for(auto p:face) distance=std::max(distance,std::abs(product3(n,p)+d));
+      const double sine=length3(cross3(n,normal));
+      if(distance+sine<best) {best=distance+sine;selected=i;chosen_sine=sine;}
+    }
+    require(selected<planes.size(),"one-to-one reference plane matching"); used[selected]=true;
+    double distance=0.0;
+    for(auto p:face) distance=std::max(distance,std::abs(product3(planes[selected].first,p)+planes[selected].second));
+    max_distance=std::max(max_distance,distance); max_sine=std::max(max_sine,chosen_sine);
+    require(distance<1e-6 && chosen_sine<1e-6,"plane height/orientation follows authored reference, not flattened levels");
+  }
+  std::map<std::string,HSSVec3d> nodes;
+  std::map<std::string,size_t> degree;
+  for(const auto &node:scene_records(json,"nodes")) nodes.emplace(record_text(node,"id"),record_point(node,"position_m"));
+  std::vector<std::vector<std::pair<double,double>>> intervals(reference.cuts.size());
+  double max_endpoint_error=0.0;
+  for(const auto &edge:scene_records(json,"edges")) {
+    const auto start=record_text(edge,"start_node_id"),end=record_text(edge,"end_node_id");
+    ++degree[start]; ++degree[end]; const auto a=nodes.at(start),b=nodes.at(end);
+    size_t matches=0U;
+    for(size_t i=0;i<reference.cuts.size();++i) {
+      const auto &[p,q]=reference.cuts[i]; const auto direction=delta(q,p); const double l2=product3(direction,direction);
+      const double ta=product3(delta(a,p),direction)/l2,tb=product3(delta(b,p),direction)/l2;
+      auto error=[&](HSSVec3d x,double t) {return length3(delta(x,{p.x+t*direction.x,p.y+t*direction.y,p.z+t*direction.z}));};
+      const double ea=error(a,ta),eb=error(b,tb);
+      if(ea<1e-6 && eb<1e-6 && ta>=-1e-6 && ta<=1.0+1e-6 && tb>=-1e-6 && tb<=1.0+1e-6) {
+        ++matches; intervals[i].push_back(std::minmax(ta,tb));
+        max_endpoint_error=std::max({max_endpoint_error,ea,eb});
+      }
+    }
+    require(matches==1U,"each measured cut fragment belongs to exactly one finite reference face");
+  }
+  size_t endpoints = 0U;
+  for (const auto &[id, point] : nodes) {
+    (void)point;
+    if (degree[id] == 1U) ++endpoints;
+    else require(degree[id] == 2U, "no invented branches in reference topology");
+  }
+  require(endpoints == (open ? 2U : 0U), "missing return stays open; complete reference closes");
+  double max_length_error=0.0;
+  for(size_t i=0;i<intervals.size();++i) {
+    auto spans=intervals[i]; std::sort(spans.begin(),spans.end()); double cursor=0.0,total=0.0;
+    require(!spans.empty(),"narrow front and both returns have actual support");
+    for(const auto &[a,b]:spans) { require(std::abs(a-cursor)<1e-6,"no missing or overlapping cut intervals"); total+=b-a;cursor=b; }
+    require(std::abs(cursor-1.0)<1e-6,"complete finite reference edge covered");
+    max_length_error=std::max(max_length_error,std::abs(total-1.0)*length3(delta(reference.cuts[i].first,reference.cuts[i].second)));
+  }
+  const auto regions=scene_records(json,"regions");
+  require(regions.size() == (open ? 1U : 2U), "missing room edge cannot invent a closed room loop");
+  if (!open) {
+    for (const auto &region : regions)
+      require(region.find("\"area_m2\":null") != std::string::npos, "unknown attachment does not invent net floor area");
+    require(json.find("unclassified_slice_loops") != std::string::npos, "unresolved column/room semantics explicit");
+  } else {
+    require(json.find("open_or_ambiguous_slice") != std::string::npos, "missing return generates explicit open-boundary issue");
+  }
+  std::cout<<std::setprecision(12)<<"synthetic metres: max_plane_distance="<<max_distance
+           <<" max_normal_sine="<<max_sine<<" max_cut_perpendicular="<<max_endpoint_error
+           <<" max_chain_length_error="<<max_length_error<<"; no physical accuracy claim"<<std::endl;
+}
+
+hss::obj_mtl::Artifact export_mixed(HSSEngine *engine,const MixedRoom &reference) {
+  HSSSnapshot *snapshot{};
+  require(hss_engine_acquire_snapshot(engine,&snapshot)==HSS_OK,"frozen mixed export snapshot");
+  HSSCounts counts{}; require(hss_snapshot_get_counts(snapshot,&counts)==HSS_OK,"mixed export counts");
+  std::vector<HSSVec3d> vertices(counts.vertex_count); std::vector<uint32_t> triangles(counts.triangle_count*3U);
+  uint64_t needed{};
+  require(hss_snapshot_copy_vertices(snapshot,vertices.data(),vertices.size(),&needed)==HSS_OK && needed==vertices.size(),"mixed raw vertices copy");
+  require(hss_snapshot_copy_triangles(snapshot,triangles.data(),triangles.size(),&needed)==HSS_OK && needed==triangles.size(),"mixed raw triangles copy");
+  hss_snapshot_release(snapshot);
+  size_t base=0U,face_offset=0U;
+  for(const auto &mesh:reference.meshes) {
+    for(size_t i=0;i<mesh.vertices.size()/3U;++i)
+      require(vertices.at(base+i).x==mesh.vertices[3U*i] && vertices.at(base+i).y==mesh.vertices[3U*i+1U] && vertices.at(base+i).z==mesh.vertices[3U*i+2U],"new raw geometry exact, never stale-scene replacement");
+    for(size_t i=0;i<mesh.triangles.size();++i)
+      require(triangles.at(face_offset+i)==base+mesh.triangles[i],"raw index order and anchor offsets exact");
+    base+=mesh.vertices.size()/3U; face_offset+=mesh.triangles.size();
+  }
+  require(base==vertices.size() && face_offset==triangles.size(),"no duplicate/fabricated raw entities");
+  const auto json=scene_json(engine);
+  std::vector<std::string> vertex_support(vertices.size());
+  hss::obj_mtl::Snapshot output;
+  output.export_id="mixed-room-export"; output.project_id=record_text(json,"project_id");
+  output.scene_revision=counts.scene_revision; output.captured_mesh_id="mixed-raw-snapshot";
+  output.source_is_synthetic=true; output.quality_state="provisional";
+  for(const auto &issue:scene_records(json,"issues")) {
+    const auto reason=record_text(issue,"reason");
+    output.warnings.push_back(record_text(issue,"code"));
+    if(record_text(issue,"code")!="mesh_source") continue;
+    const auto support_at=reason.find("support="),range_at=reason.find("vertices=");
+    require(support_at!=std::string::npos && range_at!=std::string::npos,"actual raw source mapping exists");
+    const auto plus=reason.find('+',range_at);
+    require(plus!=std::string::npos,"source vertex range exists");
+    const auto first=std::stoull(reason.substr(range_at+9U));
+    const auto count=std::stoull(reason.substr(plus+1U));
+    require(first+count<=vertices.size(),"source vertex range bounded");
+    const auto support=reason.substr(support_at+8U,36U);
+    for(size_t i=first;i<first+count;++i) { require(vertex_support[i].empty(),"source ranges do not overlap"); vertex_support[i]=support; }
+  }
+  for(auto p:vertices) output.vertices_m.push_back({p.x,p.y,p.z});
+  for(size_t i=0;i<triangles.size();i+=3U) {
+    const auto a=triangles[i],b=triangles[i+1U],c=triangles[i+2U];
+    require(!vertex_support.at(a).empty() && vertex_support[a]==vertex_support.at(b) && vertex_support[a]==vertex_support.at(c),"face export uses actual common source support");
+    output.faces.push_back({"raw-face-"+std::to_string(i/3U),{a,b,c},{vertex_support[a]},"",std::nullopt});
+  }
+  hss::obj_mtl::Options options; options.include_textures=false;
+  const auto result=hss::obj_mtl::export_snapshot(output,options);
+  require(result.status==hss::obj_mtl::Status::kOk && result.artifact.has_value(),"real OBJ/MTL exporter accepts mixed raw snapshot");
+  const auto &artifact=*result.artifact;
+  require(artifact.texture_references.empty() && artifact.mtl_utf8.find("map_Kd")==std::string::npos,"no invented texture or private capture upload");
+  require(artifact.manifest_json.find("\"scene_revision\":\""+std::to_string(counts.scene_revision)+"\"")!=std::string::npos,"OBJ sidecar binds exact scene revision");
+  std::istringstream lines(artifact.obj_utf8); std::string line; size_t vi=0U,ti=0U;
+  while(std::getline(lines,line)) {
+    if(line.starts_with("v ")) {
+      std::istringstream values(line.substr(2U)); HSSVec3d p{};
+      require(bool(values>>p.x>>p.y>>p.z) && vi<vertices.size(),"OBJ vertex parse");
+      const auto q=vertices[vi++]; require(p.x==q.x && p.y==q.y && p.z==q.z,"OBJ round-trip preserves every source coordinate exactly");
+    } else if(line.starts_with("f ")) {
+      std::istringstream values(line.substr(2U));
+      for(size_t j=0;j<3U;++j) { uint64_t index{}; require(bool(values>>index) && ti<triangles.size() && index==uint64_t(triangles[ti++])+1U,"OBJ uses exact one-based raw indices"); }
+    }
+  }
+  require(vi==vertices.size() && ti==triangles.size(),"OBJ omitted/added no geometry including skylight gap");
+  return artifact;
+}
+void durable_mixed_room() {
+  char temporary[]="/tmp/hss-mixed-room-XXXXXX";
+  require(::mkdtemp(temporary)!=nullptr,"private synthetic mixed project directory");
+  const std::string directory=temporary;
+  HSSProjectStoreConfig sc{}; sc.abi_version=HSS_PROJECT_STORE_ABI_VERSION; sc.struct_size=sizeof(sc);
+  sc.project_id=ident(1); sc.trusted_root_directory_utf8={reinterpret_cast<const uint8_t*>(directory.data()),directory.size()};
+  sc.open_mode=HSS_PROJECT_STORE_CREATE_NEW; sc.source_is_synthetic=1U;
+  sc.max_epoch_records=sc.max_depth_records=sc.max_mesh_records=sc.max_command_records=16U;
+  sc.max_retained_bytes=32U*1024U*1024U; sc.max_record_bytes=2U*1024U*1024U; sc.max_pending_bytes=16U*1024U*1024U;
+  HSSProjectStore *store{}; require(hss_project_store_create(&sc,&store)==HSS_OK,"create mixed project store");
+  auto cfg=config(); HSSEngine *engine{}; require(hss_engine_create(&cfg,&engine)==HSS_OK,"create mixed engine");
+  require(hss_engine_set_source_is_synthetic(engine,1U)==HSS_OK,"mixed synthetic provenance");
+  uint64_t sequence=0U;
+  auto context=[&]() {
+    HSSProjectEventContext c{}; c.abi_version=HSS_PROJECT_STORE_ABI_VERSION;c.struct_size=sizeof(c);
+    c.capture_id=ident(2);c.event_sequence=sequence;c.accepted_scene_revision=sequence;c.monotonic_time_s=double(sequence);return c;
+  };
+  auto finish=[&]() {drain(engine,sequence%2U?1U:50U);require(stats(engine).scene_revision==sequence,"one accepted revision per journaled event");};
+  HSSProjectStoreReceipt receipt{}; HSSEpoch epoch{};
+  epoch.abi_version=HSS_ABI_VERSION;epoch.struct_size=sizeof(epoch);epoch.capture_id=ident(2);
+  epoch.event_sequence=++sequence;epoch.relationship_state=1U;epoch.transform_revision=1U;epoch.T_project_world=identity();
+  require(hss_engine_set_epoch(engine,&epoch)==HSS_OK,"mixed epoch");finish();auto c=context();
+  require(hss_project_store_append_epoch(store,&c,&epoch,&receipt)==HSS_OK,"persist mixed epoch");
+  auto cut=[&](double height) {
+    HSSProjectPlanReference plan{};plan.abi_version=HSS_PROJECT_STORE_ABI_VERSION;plan.struct_size=sizeof(plan);
+    plan.T_project_floor=identity();plan.cut_height_m=height;plan.before_scene_revision=sequence;plan.after_scene_revision=++sequence;
+    require(hss_engine_set_plan_reference(engine,&plan.T_project_floor,height)==HSS_OK,"mixed floor/cut control");finish();c=context();
+    require(hss_project_store_append_plan_reference(store,&c,&plan,&receipt)==HSS_OK,"persist mixed floor/cut control");
+  };
+  cut(1.2);
+  auto reference=mixed_room();
+  auto submit=[&](size_t anchor,uint64_t revision) {
+    const auto &mesh=reference.meshes.at(anchor);HSSMeshEvent event{};
+    event.abi_version=HSS_ABI_VERSION;event.struct_size=sizeof(event);event.capture_id=ident(2);event.anchor_id=ident(uint8_t(3U+anchor));
+    event.event_sequence=++sequence;event.anchor_revision=revision;event.kind=revision==1U?0U:1U;event.T_world_anchor=identity();
+    event.vertices_xyz=mesh.vertices.data();event.vertex_count=mesh.vertices.size()/3U;event.triangle_indices=mesh.triangles.data();event.triangle_count=mesh.triangles.size()/3U;
+    require(hss_engine_submit_mesh_event(engine,&event)==HSS_OK,"mixed source observation");finish();c=context();
+    require(hss_project_store_append_mesh_event(store,&c,&event,&receipt)==HSS_OK,"persist mixed raw source");
+  };
+  submit(0U,1U);submit(1U,1U);submit(2U,1U);
+  verify_mixed_geometry(scene_json(engine),reference);
+  const auto original=export_mixed(engine,reference);
+  const auto before=sequence++;
+  const std::string command="{\"schema_version\":\"1.1\",\"command_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"project_id\":\""+record_text(scene_json(engine),"project_id")+
+      "\",\"expected_scene_revision\":\""+std::to_string(before)+"\",\"event_sequence\":\""+std::to_string(sequence)+
+      "\",\"targets\":[],\"user_intent\":\"retain missing ceiling observation\",\"type\":\"mark_unknown\",\"payload\":{\"reason\":\"skylight depth is unavailable\"}}";
+  require(hss_engine_apply_command_json(engine,{reinterpret_cast<const uint8_t*>(command.data()),command.size()})==HSS_OK,"mark actual unsupported ceiling unknown");finish();
+  uint64_t bytes{};require(hss_engine_copy_command_result_json(engine,nullptr,0U,&bytes)==HSS_BUFFER_TOO_SMALL,"mixed exact result query");
+  std::string result(bytes,'\0');require(hss_engine_copy_command_result_json(engine,reinterpret_cast<uint8_t*>(result.data()),result.size(),&bytes)==HSS_OK,"mixed exact result copy");
+  HSSProjectCommandRecord record{};record.abi_version=HSS_PROJECT_STORE_ABI_VERSION;record.struct_size=sizeof(record);record.context=context();
+  record.before_scene_revision=before;record.after_scene_revision=sequence;record.disposition=HSS_PROJECT_COMMAND_APPLIED;
+  record.command_json={reinterpret_cast<const uint8_t*>(command.data()),command.size()};record.result_json={reinterpret_cast<const uint8_t*>(result.data()),result.size()};
+  require(hss_project_store_append_command_record(store,&record,&receipt)==HSS_OK,"persist mixed exact command/result");
+  reference=mixed_room(3.65);submit(1U,2U);
+  verify_mixed_geometry(scene_json(engine),reference);
+  auto refined=export_mixed(engine,reference);require(refined.obj_utf8!=original.obj_utf8,"fresh ceiling observations replace old geometry");
+  // Remove only the observed triangles of the first 0.50m return. Keeping
+  // original vertex storage must not fabricate the missing face/closed loop.
+  const auto complete = reference;
+  reference.meshes[0].triangles.erase(reference.meshes[0].triangles.begin()+18,
+                                      reference.meshes[0].triangles.begin()+24);
+  reference.faces.erase(reference.faces.begin()+3);
+  reference.cuts.erase(reference.cuts.begin()+3);
+  submit(0U,2U);
+  verify_mixed_geometry(scene_json(engine),reference,true);
+  export_mixed(engine,reference);
+  reference = complete;
+  submit(0U,3U);
+  verify_mixed_geometry(scene_json(engine),reference);
+
+  cut(3.1);export_mixed(engine,reference);cut(1.2);
+  const auto accepted=scene_json(engine);verify_mixed_geometry(accepted,reference);
+  require(scene_records(accepted,"features").size()==1U && accepted.find("skylight depth is unavailable")!=std::string::npos,"one explicit unknown intent survives mixed refinement");
+  const auto final_export=export_mixed(engine,reference);
+  require(final_export.manifest_json.find("HSS_UNKNOWN_REGION") != std::string::npos,
+          "actual unknown issue code survives exported sidecar; reason stays in Scene/journal");
+  HSSProjectCheckpointResult cp{};require(hss_project_store_checkpoint(store,&cp)==HSS_OK && cp.durable_event_count==sequence && cp.durability_state==1U,"mixed checkpoint is durable");
+  hss_engine_destroy(engine);hss_project_store_destroy(store);sc.open_mode=HSS_PROJECT_STORE_OPEN_EXISTING;
+  require(hss_project_store_create(&sc,&store)==HSS_OK && hss_engine_create(&cfg,&engine)==HSS_OK,"reopen mixed project with new engine");
+  HSSProjectReplayResult replay{};require(hss_project_store_replay(store,engine,&replay)==HSS_OK && replay.engine_status==HSS_OK && replay.applied_event_count==sequence,"replay every mixed source and command in order");
+  require(scene_json(engine)==accepted,"byte-equivalent mixed scene after durable reopen");verify_mixed_geometry(scene_json(engine),reference);
+  require(export_mixed(engine,reference)==final_export,"byte-equivalent OBJ/MTL/manifest after replay");
+  std::string replay_result(result.size(),'\0');require(hss_engine_copy_command_result_json(engine,reinterpret_cast<uint8_t*>(replay_result.data()),replay_result.size(),&bytes)==HSS_OK && replay_result==result,"exact accepted command result retained through source and replay");
+  hss_engine_destroy(engine);hss_project_store_destroy(store);std::filesystem::remove_all(directory);
+  std::cout<<"Mixed-room source/correction/refinement/"<<sequence<<"-event checkpoint/reopen/OBJ round-trip passed\n";
+}
+
+void mixed_room_characterization() {
+  const auto reference=mixed_room();
+  const auto result=reconstruct_many(reference.meshes,1U,true);
+  verify_mixed_geometry(result.json,reference);
+  // Reorder only faces, not identities/source vertices. Reference geometry
+  // and the complete derived scene must remain unchanged across traversal.
+  for (uint32_t seed : {11U, 27U, 83U}) {
+    auto shuffled = reference.meshes;
+    std::mt19937 generator(seed);
+    for (auto &mesh : shuffled) {
+      std::vector<std::array<uint32_t,3>> faces;
+      for (size_t i=0; i<mesh.triangles.size(); i+=3U)
+        faces.push_back({mesh.triangles[i],mesh.triangles[i+1U],mesh.triangles[i+2U]});
+      std::shuffle(faces.begin(),faces.end(),generator);
+      mesh.triangles.clear();
+      for (const auto &face : faces)
+        mesh.triangles.insert(mesh.triangles.end(),face.begin(),face.end());
+    }
+    const auto permutation=reconstruct_many(shuffled,50U,true);
+    require(permutation.json==result.json,"mixed derived geometry is invariant to triangle traversal");
+    verify_mixed_geometry(permutation.json,reference);
+  }
+  durable_mixed_room();
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
+  if (argc == 2 && std::string(argv[1]) == "--mixed-room") { mixed_room_characterization(); return 0; }
   if (argc == 2 && std::string(argv[1]) == "--full-component-support") {
     full_component_support_regression();
     return 0;
