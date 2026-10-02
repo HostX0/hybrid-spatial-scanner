@@ -958,7 +958,10 @@ bool segments_intersect(const P2 &a, const P2 &b, const P2 &c, const P2 &d,
   const int o2 = orientation(cross2(a, b, d), epsilon);
   const int o3 = orientation(cross2(c, d, a), epsilon);
   const int o4 = orientation(cross2(c, d, b), epsilon);
-  if (o1 != o2 && o3 != o4)
+  // Proper crossings require strictly opposite sides. A tolerance-zero
+  // orientation may be collinear only with the infinite supporting line;
+  // finite endpoint contact is checked by on_segment below.
+  if (o1 * o2 < 0 && o3 * o4 < 0)
     return true;
   return (o1 == 0 && on_segment(a, b, c, epsilon)) ||
          (o2 == 0 && on_segment(a, b, d, epsilon)) ||

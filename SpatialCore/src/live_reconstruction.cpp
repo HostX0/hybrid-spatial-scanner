@@ -453,6 +453,12 @@ struct Reconstruction::Impl {
     if (hits.size() != 2 ||
         dot(sub(hits[0], hits[1]), sub(hits[0], hits[1])) < 1e-12)
       return;
+    // A cyclic rotation names the same oriented triangle and yields the same
+    // two intersections, but may visit them in the opposite order. Canonical
+    // endpoint order belongs to the derived cut only; raw indices stay intact.
+    if (std::tie(hits[1].x, hits[1].y, hits[1].z) <
+        std::tie(hits[0].x, hits[0].y, hits[0].z))
+      std::swap(hits[0], hits[1]);
     size_t a = node(hits[0], sup), c = node(hits[1], sup);
     if (a == c)
       return;

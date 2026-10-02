@@ -880,9 +880,235 @@ void mixed_room_characterization() {
   durable_mixed_room();
 }
 
+
+// Independent frozen development sibling: different outline, tessellation and
+// yaw; bounded smooth coordinate perturbation is not a calibrated sensor model.
+HSSVec3d perturb_point(HSSVec3d p, double amplitude, double yaw) {
+  const double dx=amplitude*std::sin(1.7*p.x+0.9*p.y+0.3*p.z);
+  const double dy=amplitude*std::sin(0.4*p.x+1.3*p.y-0.7*p.z);
+  const double dz=amplitude*std::sin(0.8*p.x-0.6*p.y+1.1*p.z);
+  p={p.x+dx,p.y+dy,p.z+dz};
+  const double a=yaw*std::acos(-1.0)/180.0;
+  return {1.234+std::cos(a)*p.x+std::sin(a)*p.z,p.y,
+          -0.753-std::sin(a)*p.x+std::cos(a)*p.z};
+}
+MixedRoom perturbed_room(double amplitude, double yaw=37.0,
+                         uint32_t columns=4U, uint32_t rows=5U,
+                         bool missing_return=false) {
+  MixedRoom ref;
+  const std::vector<std::pair<double,double>> outer{{0,0},{7.2,0},{7.2,-4.7},
+      {4.4,-4.7},{4.4,-4.2},{4.25,-4.2},{4.25,-4.7},{1.6,-4.7},{0,-3.6}};
+  const std::vector<std::pair<double,double>> column{{1.3,-1.2},{1.6,-1.2},{1.6,-1.7},{1.3,-1.7}};
+  auto grid_face=[&](size_t anchor,std::array<HSSVec3d,4> q,bool omit=false) {
+    auto &mesh=ref.meshes.at(anchor); const auto base=uint32_t(mesh.vertices.size()/3U);
+    for(uint32_t j=0;j<=rows;++j) for(uint32_t i=0;i<=columns;++i) {
+      const double u=double(i)/columns,v=double(j)/rows;
+      HSSVec3d p{std::lerp(std::lerp(q[0].x,q[1].x,u),std::lerp(q[3].x,q[2].x,u),v),
+                 std::lerp(std::lerp(q[0].y,q[1].y,u),std::lerp(q[3].y,q[2].y,u),v),
+                 std::lerp(std::lerp(q[0].z,q[1].z,u),std::lerp(q[3].z,q[2].z,u),v)};
+      p=perturb_point(p,amplitude,yaw);
+      mesh.vertices.insert(mesh.vertices.end(),{float(p.x),float(p.y),float(p.z)});
+    }
+    if(omit) return;
+    for(uint32_t j=0;j<rows;++j) for(uint32_t i=0;i<columns;++i) {
+      const uint32_t a=base+j*(columns+1U)+i,b=a+1U,c=a+columns+1U,d=c+1U;
+      if((i+j)%2U==0U) mesh.triangles.insert(mesh.triangles.end(),{a,b,d,a,d,c});
+      else mesh.triangles.insert(mesh.triangles.end(),{a,b,c,b,d,c});
+    }
+    for(auto &p:q) p=perturb_point(p,0.0,yaw);
+    ref.faces.push_back(q);
+  };
+  auto walls=[&](const auto &ring,size_t anchor,double height) {
+    for(size_t i=0;i<ring.size();++i) {
+      const auto [x,z]=ring[i];const auto [u,v]=ring[(i+1U)%ring.size()];
+      const bool omit=anchor==0U && i==3U && missing_return;
+      grid_face(anchor,{{{x,0,z},{u,0,v},{u,height,v},{x,height,z}}},omit);
+      if(!omit) ref.cuts.push_back({perturb_point({x,1.2,z},0.0,yaw),perturb_point({u,1.2,v},0.0,yaw)});
+    }
+  };
+  walls(outer,0U,3.72);walls(column,2U,2.95);
+  grid_face(1U,{{{0,2.7,0},{2.2,2.7,0},{2.2,2.7,-1.8},{0,2.7,-1.8}}});
+  grid_face(1U,{{{2.2,3.11,0},{4.6,3.11,0},{4.6,3.11,-1.8},{2.2,3.11,-1.8}}});
+  grid_face(1U,{{{2.2,2.7,0},{2.2,3.11,0},{2.2,3.11,-1.8},{2.2,2.7,-1.8}}});
+  grid_face(1U,{{{4.6,3.11,0},{7.2,3.56,0},{7.2,3.56,-1.8},{4.6,3.11,-1.8}}});
+  for(const auto &r:std::vector<std::array<double,4>>{{0,7.2,-1.8,-2.3},{0,7.2,-3.1,-3.6},
+                                                  {0,2.8,-2.3,-3.1},{3.6,7.2,-2.3,-3.1}})
+    grid_face(1U,{{{r[0],3.24,r[2]},{r[1],3.24,r[2]},{r[1],3.24,r[3]},{r[0],3.24,r[3]}}});
+  return ref;
+}
+
+// Guard the unchanged finite-contact policy through the actual Scene validator.
+bool accepts_ring(const std::vector<std::pair<double,double>> &ring) {
+  const std::string provenance=R"({"geometry_origin":"fitted","semantic_origin":"unknown","support_ids":[],"uncertainty_m":null,"quality_state":"provisional"})";
+  std::ostringstream nodes,ids;
+  nodes<<std::setprecision(17);
+  for(size_t i=0;i<ring.size();++i) {
+    const auto suffix=std::to_string(i+1U);
+    const auto id="aaaaaaaa-aaaa-4aaa-8aaa-"+std::string(12U-suffix.size(),'0')+suffix;
+    if(i) { nodes<<','; ids<<','; }
+    nodes<<"{\"id\":\""<<id<<"\",\"position_m\":["<<ring[i].first<<",0,"<<-ring[i].second
+         <<"],\"position_locked\":false,\"provenance\":"<<provenance<<'}';
+    ids<<'"'<<id<<'"';
+  }
+  const std::string scene=R"({"schema_version":"1.1","project_id":"01000000-0000-4000-8000-000000000000","scene_revision":"1","source_is_synthetic":true,"units":"m","basis":{"handedness":"right","up":"+Y","floor_origin_m":[0,0,0],"floor_u":[1,0,0],"floor_v":[0,0,-1],"floor_n":[0,1,0]},"epochs":[],"nodes":[)"+nodes.str()+
+      R"(],"edges":[],"surfaces":[],"features":[],"regions":[{"id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","outer_node_ids":[)"+ids.str()+
+      R"(],"hole_node_ids":[],"area_m2":null,"area_policy":"internal_finished_face","view":"floor_footprint","cut_height_m":0,"provenance":)"+provenance+
+      R"(}],"objects":[],"constraints":[],"issues":[],"quality_state":"provisional"})";
+  return hss::scene_editing::scene_counts(scene).has_value();
+}
+void finite_contact_guards() {
+  require(accepts_ring({{0,0},{1,0},{2,0},{2,2},{0,2}}),"forward collinear ring is valid");
+  require(accepts_ring({{0,0},{3,0},{3,3},{2,3},{2,1},{1,1},{1,3},{0,3}}),"concave ring stays valid");
+  require(!accepts_ring({{0,0},{3,3},{0,3},{2,0}}),"proper crossing remains rejected");
+  require(!accepts_ring({{0,0},{2,0},{2,2},{1,0},{0,2}}),"nonadjacent endpoint contact remains rejected");
+  require(!accepts_ring({{0,0},{3,0},{3,2},{1,2},{1,0},{2,0},{2,3},{0,3}}),"collinear overlap remains rejected");
+  require(!accepts_ring({{0,0},{2,0},{2,0},{2,2},{0,2}}),"zero-length ring edge remains rejected");
+}
+void verify_perturbed_geometry(const std::string &json,const MixedRoom &reference,
+                               double amplitude,bool open=false) {
+  require(hss::scene_editing::scene_counts(json).has_value(),"perturbed scene validates for supported corrections");
+  // The oracle bound is tied to the authored per-coordinate perturbation, not
+  // sensor accuracy or a changed production fit/merge threshold.
+  const double bound=4.0*std::sqrt(3.0)*amplitude+2e-6;
+  const auto surfaces=scene_records(json,"surfaces");
+  std::vector<std::pair<HSSVec3d,double>> planes;
+  for(const auto &surface:surfaces) if(record_text(surface,"kind")=="plane")
+    planes.push_back({record_point(surface,"normal_unit"),record_number(surface,"offset_m")});
+  require(planes.size()==reference.faces.size(),"perturbation does not lose separate supported planes");
+  std::vector<bool> used(planes.size()); double max_distance=0.0,max_sine=0.0;
+  for(const auto &face:reference.faces) {
+    auto normal=cross3(delta(face[1],face[0]),delta(face[3],face[0]));
+    const double n=length3(normal); normal={normal.x/n,normal.y/n,normal.z/n};
+    size_t selected=planes.size();double best=1e100;
+    for(size_t i=0;i<planes.size();++i) if(!used[i]) {
+      double d=0.0;for(auto p:face)d=std::max(d,std::abs(product3(planes[i].first,p)+planes[i].second));
+      if(d<best){best=d;selected=i;}
+    }
+    require(selected<planes.size() && best<=bound,"fitted plane covers the bounded nominal reference");
+    used[selected]=true;max_distance=std::max(max_distance,best);
+    max_sine=std::max(max_sine,length3(cross3(normal,planes[selected].first)));
+  }
+  std::map<std::string,HSSVec3d> nodes;std::map<std::string,size_t> degrees;
+  for(const auto &node:scene_records(json,"nodes"))nodes[record_text(node,"id")]=record_point(node,"position_m");
+  std::vector<std::vector<std::pair<double,double>>> intervals(reference.cuts.size());
+  double max_perpendicular=0.0,max_length_error=0.0;
+  for(const auto &edge:scene_records(json,"edges")) {
+    const auto sa=record_text(edge,"start_node_id"),sb=record_text(edge,"end_node_id");
+    ++degrees[sa];++degrees[sb];const auto a=nodes.at(sa),b=nodes.at(sb);size_t matched=0U;
+    for(size_t i=0;i<reference.cuts.size();++i) {
+      const auto [p,q]=reference.cuts[i];const auto d=delta(q,p);const auto l=length3(d);
+      const double ta=product3(delta(a,p),d)/(l*l),tb=product3(delta(b,p),d)/(l*l);
+      const double ea=length3(cross3(delta(a,p),d))/l,eb=length3(cross3(delta(b,p),d))/l;
+      if(ea<=bound && eb<=bound && std::min(ta,tb)>=-bound/l && std::max(ta,tb)<=1.0+bound/l) {
+        intervals[i].push_back(std::minmax(ta,tb));++matched;max_perpendicular=std::max({max_perpendicular,ea,eb});
+      }
+    }
+    require(matched==1U,"each perturbed fragment has exactly one finite nominal support");
+  }
+  size_t endpoints=0U;
+  for(const auto &[id,p]:nodes){(void)p;if(degrees[id]==1U)++endpoints;else require(degrees[id]==2U,"no perturbed branch or isolated node");}
+  require(endpoints==(open?2U:0U),"only the genuinely omitted return creates open endpoints");
+  for(size_t i=0;i<intervals.size();++i) {
+    auto spans=intervals[i];std::sort(spans.begin(),spans.end());double cursor=0.0,total=0.0;
+    const double l=length3(delta(reference.cuts[i].second,reference.cuts[i].first));
+    require(!spans.empty(),"narrow face has perturbed cut coverage");
+    for(const auto &[a,b]:spans){require(std::abs(a-cursor)*l<=bound,"no hidden gap or overlap in perturbed cut");total+=b-a;cursor=b;}
+    require(std::abs(cursor-1.0)*l<=bound,"whole nominal edge remains covered within declared perturbation");
+    max_length_error=std::max(max_length_error,std::abs(total-1.0)*l);
+  }
+  require(scene_records(json,"regions").size()==(open?1U:2U),"perturbed loop count respects absent observations");
+  if(open)require(json.find("open_or_ambiguous_slice")!=std::string::npos,"omitted return warning is explicit");
+  std::cout<<std::setprecision(12)<<"perturbed planes="<<planes.size()<<" endpoints="<<endpoints
+           <<" max_reference_distance_m="<<max_distance<<" max_normal_sine="<<max_sine
+           <<" max_cut_deviation_m="<<max_perpendicular<<" max_chain_error_m="<<max_length_error
+           <<" bound_m="<<bound<<" (synthetic only)\n";
+}
+void durable_perturbed_room(double amplitude,double yaw,uint32_t columns,uint32_t rows) {
+  char temporary[]="/tmp/hss-perturbed-room-XXXXXX";
+  require(::mkdtemp(temporary)!=nullptr,"private perturbed project directory");
+  const std::string directory=temporary;
+  HSSProjectStoreConfig sc{};sc.abi_version=HSS_PROJECT_STORE_ABI_VERSION;sc.struct_size=sizeof(sc);
+  sc.project_id=ident(1);sc.trusted_root_directory_utf8={reinterpret_cast<const uint8_t*>(directory.data()),directory.size()};
+  sc.open_mode=HSS_PROJECT_STORE_CREATE_NEW;sc.source_is_synthetic=1U;
+  sc.max_epoch_records=sc.max_depth_records=sc.max_mesh_records=sc.max_command_records=16U;
+  sc.max_retained_bytes=32U*1024U*1024U;sc.max_record_bytes=2U*1024U*1024U;sc.max_pending_bytes=16U*1024U*1024U;
+  HSSProjectStore *store{};require(hss_project_store_create(&sc,&store)==HSS_OK,"create perturbed store");
+  auto cfg=config();HSSEngine *engine{};require(hss_engine_create(&cfg,&engine)==HSS_OK,"create perturbed engine");
+  require(hss_engine_set_source_is_synthetic(engine,1U)==HSS_OK,"perturbed synthetic origin");
+  uint64_t sequence=0U;
+  auto context=[&](){HSSProjectEventContext c{};c.abi_version=HSS_PROJECT_STORE_ABI_VERSION;c.struct_size=sizeof(c);c.capture_id=ident(2);c.event_sequence=sequence;c.accepted_scene_revision=sequence;c.monotonic_time_s=double(sequence);return c;};
+  auto finish=[&](){drain(engine,sequence%2U?1U:50U);require(stats(engine).scene_revision==sequence,"one revision per perturbed event");};
+  HSSProjectStoreReceipt receipt{};HSSEpoch epoch{};
+  epoch.abi_version=HSS_ABI_VERSION;epoch.struct_size=sizeof(epoch);epoch.capture_id=ident(2);epoch.event_sequence=++sequence;epoch.relationship_state=1U;epoch.transform_revision=1U;epoch.T_project_world=identity();
+  require(hss_engine_set_epoch(engine,&epoch)==HSS_OK,"perturbed epoch");finish();auto c=context();
+  require(hss_project_store_append_epoch(store,&c,&epoch,&receipt)==HSS_OK,"persist perturbed epoch");
+  HSSProjectPlanReference plan{};plan.abi_version=HSS_PROJECT_STORE_ABI_VERSION;plan.struct_size=sizeof(plan);plan.T_project_floor=identity();plan.cut_height_m=1.2;plan.before_scene_revision=sequence;plan.after_scene_revision=++sequence;
+  require(hss_engine_set_plan_reference(engine,&plan.T_project_floor,plan.cut_height_m)==HSS_OK,"perturbed floor");finish();c=context();
+  require(hss_project_store_append_plan_reference(store,&c,&plan,&receipt)==HSS_OK,"persist perturbed floor");
+  auto reference=perturbed_room(amplitude,yaw,columns,rows);
+  auto submit=[&](size_t anchor,uint64_t revision){
+    const auto &mesh=reference.meshes.at(anchor);HSSMeshEvent e{};e.abi_version=HSS_ABI_VERSION;e.struct_size=sizeof(e);e.capture_id=ident(2);e.anchor_id=ident(uint8_t(3U+anchor));e.event_sequence=++sequence;e.anchor_revision=revision;e.kind=revision==1U?0U:1U;e.T_world_anchor=identity();e.vertices_xyz=mesh.vertices.data();e.vertex_count=mesh.vertices.size()/3U;e.triangle_indices=mesh.triangles.data();e.triangle_count=mesh.triangles.size()/3U;
+    require(hss_engine_submit_mesh_event(engine,&e)==HSS_OK,"perturbed raw source");finish();c=context();require(hss_project_store_append_mesh_event(store,&c,&e,&receipt)==HSS_OK,"persist perturbed raw source");
+  };
+  submit(0U,1U);submit(1U,1U);submit(2U,1U);
+  verify_perturbed_geometry(scene_json(engine),reference,amplitude);export_mixed(engine,reference);
+  const auto before=sequence++;
+  const std::string command="{\"schema_version\":\"1.1\",\"command_id\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"project_id\":\""+record_text(scene_json(engine),"project_id")+"\",\"expected_scene_revision\":\""+std::to_string(before)+"\",\"event_sequence\":\""+std::to_string(sequence)+"\",\"targets\":[],\"user_intent\":\"record missing coverage\",\"type\":\"mark_unknown\",\"payload\":{\"reason\":\"perturbed skylight remains unobserved\"}}";
+  require(hss_engine_apply_command_json(engine,{reinterpret_cast<const uint8_t*>(command.data()),command.size()})==HSS_OK,"valid perturbed scan accepts real supported correction");finish();
+  uint64_t bytes{};require(hss_engine_copy_command_result_json(engine,nullptr,0U,&bytes)==HSS_BUFFER_TOO_SMALL,"query perturbed command result");
+  std::string result(bytes,'\0');require(hss_engine_copy_command_result_json(engine,reinterpret_cast<uint8_t*>(result.data()),bytes,&bytes)==HSS_OK,"copy perturbed result");
+  HSSProjectCommandRecord record{};record.abi_version=HSS_PROJECT_STORE_ABI_VERSION;record.struct_size=sizeof(record);record.context=context();record.before_scene_revision=before;record.after_scene_revision=sequence;record.disposition=HSS_PROJECT_COMMAND_APPLIED;record.command_json={reinterpret_cast<const uint8_t*>(command.data()),command.size()};record.result_json={reinterpret_cast<const uint8_t*>(result.data()),result.size()};
+  require(hss_project_store_append_command_record(store,&record,&receipt)==HSS_OK,"persist perturbed correction");
+  reference=perturbed_room(amplitude,yaw,columns,rows,true);submit(0U,2U);
+  verify_perturbed_geometry(scene_json(engine),reference,amplitude,true);export_mixed(engine,reference);
+  reference=perturbed_room(amplitude,yaw,columns,rows);submit(0U,3U);
+  reference.meshes[1]=perturbed_room(amplitude*0.5,yaw,columns,rows).meshes[1];submit(1U,2U);
+  verify_perturbed_geometry(scene_json(engine),reference,amplitude);
+  const auto accepted=scene_json(engine);const auto artifact=export_mixed(engine,reference);
+  require(artifact.manifest_json.find("HSS_UNKNOWN_REGION")!=std::string::npos,"unknown intent exported after perturbed source updates");
+  HSSProjectCheckpointResult cp{};require(hss_project_store_checkpoint(store,&cp)==HSS_OK && cp.durability_state==1U && cp.durable_event_count==sequence,"perturbed checkpoint durable");
+  hss_engine_destroy(engine);hss_project_store_destroy(store);sc.open_mode=HSS_PROJECT_STORE_OPEN_EXISTING;
+  require(hss_project_store_create(&sc,&store)==HSS_OK && hss_engine_create(&cfg,&engine)==HSS_OK,"reopen perturbed project");
+  HSSProjectReplayResult replay{};require(hss_project_store_replay(store,engine,&replay)==HSS_OK && replay.applied_event_count==sequence && replay.engine_status==HSS_OK,"replay perturbed sources and correction");
+  require(scene_json(engine)==accepted && export_mixed(engine,reference)==artifact,"perturbed Scene and OBJ/MTL sidecar byte-equivalent after reopen");
+  std::string actual(result.size(),'\0');require(hss_engine_copy_command_result_json(engine,reinterpret_cast<uint8_t*>(actual.data()),actual.size(),&bytes)==HSS_OK && actual==result,"exact perturbed command result survives replay");
+  hss_engine_destroy(engine);hss_project_store_destroy(store);std::filesystem::remove_all(directory);
+  std::cout<<"perturbed durable events="<<sequence<<" yaw="<<yaw<<" grid="<<columns<<'x'<<rows<<" passed\n";
+}
+
+void perturbed_characterization() {
+  finite_contact_guards();
+  // This profile is frozen before the first baseline run. Cyclic rotation
+  // preserves the oriented triangle, not merely its approximate appearance.
+  const auto ref=perturbed_room(0.00015);
+  const auto baseline=reconstruct_many(ref.meshes,1U,true);
+  auto cycled=ref.meshes;
+  for(auto &mesh:cycled) for(size_t i=0;i<mesh.triangles.size();i+=3U)
+    std::rotate(mesh.triangles.begin()+std::ptrdiff_t(i),
+                mesh.triangles.begin()+std::ptrdiff_t(i+1U),
+                mesh.triangles.begin()+std::ptrdiff_t(i+3U));
+  const auto reordered=reconstruct_many(cycled,50U,true);
+  std::cout<<"perturbed cyclic source: planes="<<baseline.planes
+           <<" versus="<<reordered.planes<<" same_scene="<<(baseline.json==reordered.json)<<std::endl;
+  if (baseline.json != reordered.json) {
+    const auto mismatch=std::mismatch(baseline.json.begin(),baseline.json.end(),
+                                      reordered.json.begin(),reordered.json.end());
+    const size_t offset=size_t(mismatch.first-baseline.json.begin());
+    std::cerr << "first derived mismatch at " << offset << "\noriginal="
+              << baseline.json.substr(offset,200U) << "\ncycled="
+              << reordered.json.substr(offset,200U) << '\n';
+  }
+  require(baseline.json==reordered.json,
+          "cyclic triangle indexing cannot change derived perturbed geometry");
+  verify_perturbed_geometry(baseline.json,ref,0.00015);
+  durable_perturbed_room(0.00015,37.0,4U,5U);
+  durable_perturbed_room(0.0001,-23.0,3U,7U);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
+  if (argc == 2 && std::string(argv[1]) == "--perturbed-room") { perturbed_characterization(); return 0; }
   if (argc == 2 && std::string(argv[1]) == "--mixed-room") { mixed_room_characterization(); return 0; }
   if (argc == 2 && std::string(argv[1]) == "--full-component-support") {
     full_component_support_regression();

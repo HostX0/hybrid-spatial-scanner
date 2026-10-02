@@ -669,3 +669,7 @@ include(cmake/HSSMeshPipelineTests.cmake)
 if(HSS_BUILD_TESTS)
 add_test(NAME hss_mixed_room_replay COMMAND hss_live_permutation_regression_test --mixed-room)
 endif()
+
+if(HSS_BUILD_TESTS)
+add_test(NAME hss_perturbed_room COMMAND hss_live_permutation_regression_test --perturbed-room)
+endif()
