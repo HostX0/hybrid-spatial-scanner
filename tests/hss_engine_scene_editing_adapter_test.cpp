@@ -80,7 +80,7 @@ HSSProjectStoreConfig store_config(const std::string &root, uint32_t mode) {
   return result;
 }
 
-void drain(HSSEngine *engine, uint64_t expected_revision) {
+void drain(HSSEngine *engine, uint64_t expected_revision, uint64_t budget_us = 100U) {
   for (size_t iteration = 0U; iteration != 200000U; ++iteration) {
     HSSEngineStats stats{};
     check(hss_engine_get_stats(engine, &stats) == HSS_OK, "read engine stats");
@@ -88,7 +88,7 @@ void drain(HSSEngine *engine, uint64_t expected_revision) {
       check(stats.scene_revision == expected_revision, "expected published revision");
       return;
     }
-    check(hss_engine_step(engine, 100U) == HSS_OK, "advance source rebuild");
+    check(hss_engine_step(engine, budget_us) == HSS_OK, "advance source rebuild");
   }
   check(false, "source rebuild completed within bounded work");
 }
@@ -516,9 +516,186 @@ void retained_unknown_lifecycle() {
   hss_snapshot_release(held);hss_engine_destroy(engine);
 }
 
+// A source-derived target is not stable lineage. Keep the accepted intention
+// visible as an unresolved, nonmetric annotation rather than redirecting it.
+void targeted_protection_source_conflict() {
+  for (bool undo_before_source : {false, true}) {
+    char temporary[] = "/tmp/hss-protection-refine-XXXXXX";
+    check(mkdtemp(temporary) != nullptr, "targeted temporary store");
+    const std::string root(temporary);
+    HSSProjectStore *store = nullptr;
+    auto sc = store_config(root, HSS_PROJECT_STORE_CREATE_NEW);
+    check(hss_project_store_create(&sc, &store) == HSS_OK, "targeted store create");
+    HSSEngine *engine = nullptr;
+    const auto cfg = engine_config();
+    check(hss_engine_create(&cfg, &engine) == HSS_OK, "targeted engine create");
+    check(hss_engine_set_source_is_synthetic(engine, 1U) == HSS_OK, "targeted synthetic");
+    const auto project = project_id_from_scene(scene_json(engine));
+    std::string baseline_scene, baseline_result;
+    submit_baseline(engine, store, mark_unknown_command(project),
+                    &baseline_scene, &baseline_result);
+    const size_t edges = baseline_scene.find("\"edges\":[");
+    const size_t at = baseline_scene.find("\"id\":\"", edges);
+    check(edges != std::string::npos && at != std::string::npos,
+          "target comes from actual captured section");
+    const std::string target = baseline_scene.substr(at + 6U, 36U);
+    const std::string protect_id = "dddddddd-dddd-5ddd-8ddd-ddddddddddd1";
+    uint64_t revision = 4U, sequence = 5U;
+    const auto apply = [&](const std::string &cid, const std::string &type,
+                           const std::string &payload, const std::string &targets) {
+      const std::string cmd = "{\"schema_version\":\"1.1\",\"command_id\":\"" + cid +
+          "\",\"project_id\":\"" + project + "\",\"expected_scene_revision\":\"" +
+          std::to_string(revision) + "\",\"event_sequence\":\"" +
+          std::to_string(++sequence) + "\",\"targets\":" + targets +
+          ",\"user_intent\":\"keep narrow return\",\"type\":\"" + type +
+          "\",\"payload\":" + payload + "}";
+      check(hss_engine_apply_command_json(engine,
+                {reinterpret_cast<const uint8_t *>(cmd.data()), cmd.size()}) == HSS_OK,
+            "apply targeted workflow command");
+      const auto result = result_json(engine);
+      HSSProjectCommandRecord record{};
+      record.abi_version = HSS_PROJECT_STORE_ABI_VERSION;
+      record.struct_size = sizeof(record);
+      record.before_scene_revision = revision++;
+      record.after_scene_revision = revision;
+      record.context = context(sequence, revision);
+      record.command_json = {reinterpret_cast<const uint8_t *>(cmd.data()), cmd.size()};
+      record.result_json = {reinterpret_cast<const uint8_t *>(result.data()), result.size()};
+      HSSProjectStoreReceipt receipt{};
+      check(hss_project_store_append_command_record(store, &record, &receipt) == HSS_OK,
+            "persist targeted exact command and result");
+      return cmd;
+    };
+    const auto protection = apply(protect_id, "protect_feature",
+        R"({"preserve_topology":true,"lock_position":false})", "[\"" + target + "\"]");
+    const auto protection_result = result_json(engine);
+    check(occurrences(scene_json(engine), "\"kind\":\"topology_protection\"") == 1U,
+          "protection actually applied before refinement");
+    check(scene_json(engine).find("HSS_TARGET_LINEAGE_UNRESOLVED") == std::string::npos,
+          "protection not conflicted before any source change");
+    if (undo_before_source)
+      apply("dddddddd-dddd-5ddd-8ddd-ddddddddddd2", "undo",
+            "{\"original_command_id\":\"" + protect_id + "\"}", "[]");
+    const auto last_result = result_json(engine);
+    const std::array<float, 9U> vertices{0, 0, 0, 2.5F, 0, 0, 0, 3.5F, 0};
+    const std::array<uint32_t, 3U> indices{0, 1, 2};
+    HSSMeshEvent mesh{};
+    mesh.abi_version = HSS_ABI_VERSION; mesh.struct_size = sizeof(mesh);
+    mesh.capture_id = id(2U); mesh.anchor_id = id(3U);
+    mesh.event_sequence = ++sequence; mesh.anchor_revision = 2U; mesh.kind = 1U;
+    mesh.T_world_anchor = identity(); mesh.vertices_xyz = vertices.data(); mesh.vertex_count = 3U;
+    mesh.triangle_indices = indices.data(); mesh.triangle_count = 1U;
+    check(hss_engine_submit_mesh_event(engine, &mesh) == HSS_OK, "replace protected source");
+    drain(engine, ++revision, undo_before_source ? 1U : 50U);
+    HSSProjectStoreReceipt receipt{};
+    const auto mc = context(sequence, revision);
+    check(hss_project_store_append_mesh_event(store, &mc, &mesh, &receipt) == HSS_OK,
+          "persist refinement after protection");
+    const auto raw = mesh_vertices(engine);
+    check(raw.size() == 3U && raw[1].x == 2.5 && raw[2].y == 3.5,
+          "protection conflict never restores stale measured vertices");
+    const auto verify = [&] {
+      const auto scene = scene_json(engine);
+      check(hss::scene_editing::scene_counts(scene).has_value(), "conflict scene references validate");
+      const auto expected = undo_before_source ? 0U : 1U;
+      check(occurrences(scene, "HSS_TARGET_LINEAGE_UNRESOLVED") == expected,
+            "source refinement must surface accepted protection or remove an undone intent");
+      check(occurrences(scene, "\"kind\":\"topology_protection\"") == 0U,
+            "unproven lineage never rebinds an active metric constraint");
+      if (!undo_before_source) {
+        check(scene.find(protect_id) != std::string::npos && scene.find(target) != std::string::npos,
+              "conflict identifies original command and target without pretending current identity");
+        const auto issue_at = scene.find("\"id\":\"" + derived_id(protect_id, "protection-conflict-issue") + "\"");
+        const auto issue_rev = scene.find("\"scene_revision\":\"" + std::to_string(revision) + "\"", issue_at);
+        check(issue_at != std::string::npos && issue_rev != std::string::npos &&
+                  issue_rev < scene.find("\"severity\":", issue_at), "conflict belongs to current revision");
+        check(scene.find("\"geometry_origin\":\"unknown\"") != std::string::npos &&
+                  scene.find("\"semantic_origin\":\"user\"") != std::string::npos,
+              "retained intent never claims an observed replacement surface");
+      }
+    };
+    check(result_json(engine) == last_result, "refinement preserves original exact command result");
+    verify();
+    // A rejected source packet must not retire the accepted conflict overlay.
+    const auto before_invalid = scene_json(engine);
+    const std::array<uint32_t, 3U> invalid_indices{0U, 1U, 99U};
+    auto invalid = mesh;
+    invalid.anchor_revision = 3U; invalid.event_sequence = sequence + 1U;
+    invalid.triangle_indices = invalid_indices.data();
+    check(hss_engine_submit_mesh_event(engine, &invalid) == HSS_INVALID_ARGUMENT,
+          "invalid refinement rejects before publication");
+    check(scene_json(engine) == before_invalid && result_json(engine) == last_result,
+          "failed source update preserves conflict and command result atomically");
+    if (!undo_before_source) {
+      check(hss_engine_apply_command_json(engine,
+                {reinterpret_cast<const uint8_t *>(protection.data()), protection.size()}) == HSS_OK,
+            "accepted protection exact retry remains idempotent");
+      check(result_json(engine) == protection_result, "retry returns original applied bytes, not rewritten conflict");
+    }
+    // A second rebuild and a later independent edit must not lose the conflict.
+    HSSProjectPlanReference plan{};
+    plan.abi_version = HSS_PROJECT_STORE_ABI_VERSION; plan.struct_size = sizeof(plan);
+    plan.T_project_floor = identity(); plan.cut_height_m = 1.3;
+    plan.before_scene_revision = revision; plan.after_scene_revision = revision + 1U;
+    check(hss_engine_set_plan_reference(engine, &plan.T_project_floor, plan.cut_height_m) == HSS_OK,
+          "second source control");
+    drain(engine, ++revision, undo_before_source ? 1U : 50U);
+    const auto pc = context(++sequence, revision);
+    check(hss_project_store_append_plan_reference(store, &pc, &plan, &receipt) == HSS_OK,
+          "persist second rebuild");
+    verify();
+    apply("dddddddd-dddd-5ddd-8ddd-ddddddddddd3", "mark_unknown",
+          R"({"reason":"independent missing ceiling view"})", "[]");
+    // Issues may keep the immediately preceding source revision during an edit;
+    // the next source rebuild must rebind only issue metadata, never geometry.
+    plan.before_scene_revision = revision; plan.after_scene_revision = revision + 1U;
+    plan.cut_height_m = 1.4;
+    check(hss_engine_set_plan_reference(engine, &plan.T_project_floor, plan.cut_height_m) == HSS_OK,
+          "source rebuild after another edit");
+    drain(engine, ++revision, undo_before_source ? 1U : 50U);
+    const auto pc2 = context(++sequence, revision);
+    check(hss_project_store_append_plan_reference(store, &pc2, &plan, &receipt) == HSS_OK,
+          "persist third rebuild");
+    verify();
+    const auto final_scene = scene_json(engine), final_result = result_json(engine);
+    HSSProjectCheckpointResult cp{};
+    check(hss_project_store_checkpoint(store, &cp) == HSS_OK, "checkpoint targeted workflow");
+    hss_engine_destroy(engine); hss_project_store_destroy(store);
+    sc = store_config(root, HSS_PROJECT_STORE_OPEN_EXISTING);
+    check(hss_project_store_create(&sc, &store) == HSS_OK, "reopen targeted store");
+    check(hss_engine_create(&cfg, &engine) == HSS_OK, "replay targeted engine");
+    HSSProjectReplayResult replay{};
+    check(hss_project_store_replay(store, engine, &replay) == HSS_OK &&
+              replay.applied_event_count == sequence, "replay all targeted events");
+    check(scene_json(engine) == final_scene && result_json(engine) == final_result,
+          "target conflict and exact result survive byte-equivalent durable replay");
+    check(same_vertices(raw, mesh_vertices(engine)), "replay preserves refined raw measurements");
+    if (!undo_before_source) {
+      const std::string undo = "{\"schema_version\":\"1.1\",\"command_id\":\"dddddddd-dddd-5ddd-8ddd-ddddddddddd4\","
+          "\"project_id\":\"" + project + "\",\"expected_scene_revision\":\"" + std::to_string(revision) +
+          "\",\"event_sequence\":\"" + std::to_string(sequence + 1U) +
+          "\",\"targets\":[],\"user_intent\":\"undo protection\",\"type\":\"undo\","
+          "\"payload\":{\"original_command_id\":\"" + protect_id + "\"}}";
+      check(hss_engine_apply_command_json(engine,
+                {reinterpret_cast<const uint8_t *>(undo.data()), undo.size()}) == HSS_INVALID_ARGUMENT,
+            "post-refinement undo cannot copy a stale whole-scene snapshot");
+      check(result_json(engine).find("current topology diverged") != std::string::npos &&
+                scene_json(engine) == final_scene && same_vertices(raw, mesh_vertices(engine)),
+            "unsupported reversal explains lineage conflict and preserves newer geometry");
+    }
+    hss_engine_destroy(engine); hss_project_store_destroy(store);
+    std::filesystem::remove_all(root);
+  }
+  std::cout << "targeted protection refinement, conflict, undo and durable replay passed\n";
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc == 2 && std::string(argv[1]) == "--targeted-protection") {
+    targeted_protection_source_conflict();
+    return 0;
+  }
   publication_failure_is_atomic();
   retained_unknown_lifecycle();
   overlay_reservation_failure();

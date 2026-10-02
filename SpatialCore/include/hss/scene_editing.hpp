@@ -77,7 +77,9 @@ struct DynamicExclusion {
   uint64_t end_sequence{0U};
 };
 
-// Derived only from validated, applied zero-target mark_unknown commands.
+// Derived only from validated, applied zero-target mark_unknown commands or
+// unresolved protect_feature intent after source refinement. Conflict markers
+// contain no measured targets/geometry and never rebind an active constraint.
 // The JSON parts are serialized by the existing parser/writer, not user text.
 // Splitting the issue at its revision lets source serialization stay one
 // bounded record per quantum without parsing/replaying the command journal.

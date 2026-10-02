@@ -2862,7 +2862,8 @@ bool same_scene_payload_except_revision(const std::string &expected,
 }
 
 
-// Keep only exact command-owned, target-independent unknown annotations.
+// Keep exact command-owned nonmetric annotations: target-independent unknowns
+// and explicit unresolved protection intent when source lineage is unproven.
 // Candidate membership naturally handles existing strict undo/redo. No mutable
 // overlay sidecar is committed ahead of immutable scene publication.
 bool collect_retained_unknowns(const Object &scene,
@@ -2979,6 +2980,89 @@ bool collect_retained_unknowns(const Object &scene,
       return false;
   }
   if (!collect(current)) return false;
+
+  // Protection of a source-derived target has no proven identity across a
+  // rebuild. Stage a nonmetric unknown marker for that rebuild, not an active
+  // constraint rebound to a coincident/new edge. The exact accepted command
+  // and result remain in the journal. A pre-rebuild undo removes the active
+  // constraint, so no marker is staged. Once exposed, the marker must match
+  // its command-owned bytes before a later edit may retain it again.
+  const Index constraint_index = index_entities(constraints);
+  std::set<std::string> independent_features;
+  for (const auto &item : *retained) {
+    const Json feature = JsonParser(item.feature_json).parse();
+    independent_features.insert(member(feature.object(), "id")->string());
+  }
+  const auto collect_protection = [&](const CommandData &command) {
+    if (command.type != "protect_feature" || command.targets.size() != 1U ||
+        independent_features.contains(command.targets.front()))
+      return true;
+    const std::string constraint_id = deterministic_uuid(command.command_id, "topology-protection");
+    const std::string feature_id = deterministic_uuid(command.command_id, "protection-conflict-feature");
+    const std::string issue_id = deterministic_uuid(command.command_id, "protection-conflict-issue");
+    const Json *constraint = find_entity(constraint_index, constraint_id);
+    const Json *feature = find_entity(features, feature_id);
+    const Json *issue = find_entity(issues, issue_id);
+    if (!constraint && !feature && !issue)
+      return true; // Removed by an accepted reversal, not a live intent.
+    if (retained->size() >= kMaxRetainedUnknowns) {
+      *resource_limit = true;
+      return false;
+    }
+    const Json expected_feature(Object{
+        {"attachment", Json("unresolved")}, {"edge_ids", Json(Array{})},
+        {"id", Json(feature_id)}, {"kind", Json("unknown")},
+        {"protected_topology", Json(false)},
+        {"provenance", provenance("unknown", "user", {}, "needs_review")},
+        {"surface_ids", Json(Array{})}});
+    Json expected_issue = make_issue(issue_id, "HSS_TARGET_LINEAGE_UNRESOLVED",
+        {feature_id}, revision, "warning",
+        "Accepted user protect_feature command " + command.command_id +
+        " for historical target " + command.targets.front() +
+        " requires review after source refinement: target lineage is unproven. "
+        "No measured target was rebound and no protection is enforced on a replacement.",
+        "Inspect the refined geometry and explicitly confirm a current target; "
+        "retain this unresolved intent until its lineage is proven.", command.event_sequence_text);
+    if (constraint) {
+      const Json expected_constraint = make_constraint(constraint_id,
+          "topology_protection", command.targets, command.command_id,
+          Json(nullptr), "none", true, 0.0, "user_intent");
+      if (feature || issue || serialize(*constraint) != serialize(expected_constraint))
+        return false;
+    } else {
+      if (!feature || !issue)
+        return false;
+      expected_issue.object()["scene_revision"] = *member(issue->object(), "scene_revision");
+      if (serialize(*feature) != serialize(expected_feature) ||
+          serialize(*issue) != serialize(expected_issue))
+        return false;
+    }
+    RetainedUnknown item;
+    item.feature_json = serialize(expected_feature);
+    std::string *part = &item.issue_before_revision;
+    *part = "{";
+    bool first = true;
+    for (const auto &[key, value] : expected_issue.object()) {
+      if (!first) *part += ',';
+      first = false;
+      *part += serialize(Json(key)) + ':';
+      if (key == "scene_revision") part = &item.issue_after_revision;
+      else *part += serialize(value);
+    }
+    *part += '}';
+    retained->push_back(std::move(item));
+    return true;
+  };
+  for (const auto &record : journal) {
+    if (record.command_type != "protect_feature" ||
+        record.before_scene_revision == record.after_scene_revision)
+      continue;
+    const Json original = JsonParser(record.exact_command_utf8).parse();
+    CommandData original_data;
+    if (!command_base(original, &original_data) || !collect_protection(original_data))
+      return false;
+  }
+  if (!collect_protection(current)) return false;
   *output = std::move(retained);
   return true;
 }

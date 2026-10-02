@@ -622,6 +622,7 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_link_options(hss_engine_scene_editing_adapter_test PRIVATE -fsanitize=address,undefined)
 endif()
 add_test(NAME hss_engine_scene_editing_adapter COMMAND hss_engine_scene_editing_adapter_test)
+add_test(NAME hss_targeted_protection_refinement COMMAND hss_engine_scene_editing_adapter_test --targeted-protection)
 add_executable(hss_dynamic_runtime_integration_test
   tests/hss_dynamic_runtime_integration_test.cpp
 )
