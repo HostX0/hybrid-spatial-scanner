@@ -133,6 +133,11 @@ extern "C" HSSStatus hss_engine_apply_dynamic_evidence(
   return HSS_UNSUPPORTED_CAPABILITY;
 }
 
+// This test-only symbol is compiled by SpatialCore/src/project_store.cpp only
+// for this executable. It makes the allocation boundary before pending
+// push_back fail deterministically.
+extern "C" void hss_project_store_test_fail_next_pending_append();
+
 namespace {
 int failures = 0;
 void check(bool value, const char *message) {
@@ -414,6 +419,64 @@ void run() {
   check(hss_project_store_checkpoint(store, &checkpoint) == HSS_NOT_READY,
         "resource rejection creates no saved revision");
   hss_project_store_destroy(store);
+
+  // An allocation failure at the vector publication boundary must not consume
+  // source budget or advance stream state. Size the retry store exactly to one
+  // encoded epoch, so stale phantom pending_bytes would make the exact retry
+  // fail with HSS_RESOURCE_LIMIT.
+  const std::string allocation_baseline_root = root_path + "/allocation-baseline";
+  const std::string allocation_retry_root = root_path + "/allocation-retry";
+  std::filesystem::create_directories(allocation_baseline_root);
+  std::filesystem::create_directories(allocation_retry_root);
+  HSSProjectStore *allocation_baseline = nullptr;
+  auto allocation_baseline_config =
+      config(allocation_baseline_root, HSS_PROJECT_STORE_CREATE_NEW);
+  check(hss_project_store_create(&allocation_baseline_config,
+                                 &allocation_baseline) == HSS_OK,
+        "create allocation baseline project");
+  HSSProjectStoreReceipt allocation_baseline_receipt{};
+  check(hss_project_store_append_epoch(allocation_baseline, &limited_context,
+                                       &limited,
+                                       &allocation_baseline_receipt) == HSS_OK,
+        "append allocation baseline epoch");
+  check(allocation_baseline_receipt.pending_bytes > 0U,
+        "baseline encoded epoch has pending bytes");
+  hss_project_store_destroy(allocation_baseline);
+
+  HSSProjectStore *allocation_retry = nullptr;
+  auto allocation_retry_config = config(
+      allocation_retry_root, HSS_PROJECT_STORE_CREATE_NEW,
+      allocation_baseline_receipt.pending_bytes);
+  check(hss_project_store_create(&allocation_retry_config, &allocation_retry) ==
+            HSS_OK,
+        "create allocation retry project");
+  hss_project_store_test_fail_next_pending_append();
+  HSSProjectStoreReceipt allocation_failed_receipt{};
+  check(hss_project_store_append_epoch(allocation_retry, &limited_context,
+                                       &limited,
+                                       &allocation_failed_receipt) ==
+            HSS_RESOURCE_LIMIT,
+        "injected pending publication allocation failure is a resource limit");
+  HSSProjectResumeCursor allocation_cursor{};
+  allocation_cursor.abi_version = HSS_PROJECT_STORE_ABI_VERSION;
+  allocation_cursor.struct_size = sizeof(allocation_cursor);
+  check(hss_project_store_get_resume_cursor(allocation_retry,
+                                            &allocation_cursor) == HSS_OK &&
+            allocation_cursor.durable_event_count == 0U &&
+            allocation_cursor.last_event_sequence == 0U,
+        "injected append failure leaves the durable cursor unchanged");
+  HSSProjectStoreReceipt allocation_retry_receipt{};
+  check(hss_project_store_append_epoch(allocation_retry, &limited_context,
+                                       &limited,
+                                       &allocation_retry_receipt) == HSS_OK &&
+            allocation_retry_receipt.pending_event_count == 1U &&
+            allocation_retry_receipt.pending_bytes ==
+                allocation_baseline_receipt.pending_bytes,
+        "exact retry after injected append failure has no phantom pending bytes");
+  check(hss_project_store_checkpoint(allocation_retry, &checkpoint) == HSS_OK &&
+            checkpoint.durable_event_count == 1U,
+        "exact retry after injected append failure checkpoints once");
+  hss_project_store_destroy(allocation_retry);
   std::error_code error;
   std::filesystem::remove_all(root_path, error);
 }

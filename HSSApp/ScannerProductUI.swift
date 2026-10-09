@@ -143,6 +143,7 @@ struct ScannerWorkspacePresentation: Equatable {
     let canFinishCapture: Bool
     let canAssist: Bool
     let canUndo: Bool
+    let canRecordMissingEvidence: Bool
     let canSave: Bool
     let canExport: Bool
     let isExporting: Bool
@@ -158,6 +159,7 @@ struct ScannerWorkspaceActions {
     let finishCapture: () -> Void
     let assist: () -> Void
     let undo: () -> Void
+    let recordMissingEvidence: () -> Void
     let save: () -> Void
     let export: () -> Void
     let exportProjectArchive: () -> Void
@@ -423,6 +425,14 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
                             .background(ScannerProductTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                         }
                     }
+                }
+
+                if presentation.canRecordMissingEvidence {
+                    Button(action: actions.recordMissingEvidence) {
+                        Label("Record missing evidence", systemImage: "exclamationmark.bubble")
+                    }
+                    .buttonStyle(ScannerSecondaryButtonStyle())
+                    .accessibilityHint("Records an unknown-evidence note without modifying captured geometry")
                 }
 
                 if presentation.canSave {

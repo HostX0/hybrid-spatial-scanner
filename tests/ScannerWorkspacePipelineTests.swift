@@ -93,6 +93,179 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
         XCTAssertEqual(replay.lastMonotonicTime, 100_000.2, accuracy: 0.000_001)
     }
 
+    func testFrozenMissingEvidenceJournalIsExactAndReplayable() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hss-frozen-missing-evidence-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID()
+        let captureID = UUID()
+        let runtime = try HSSProjectRuntime(
+            projectID: projectID,
+            captureID: captureID,
+            sourceIsSynthetic: true,
+            trustedRoot: root,
+            openMode: .create
+        )
+        let transform = matrix().map(Double.init)
+        try await runtime.setEpoch(
+            CaptureEpochControl(
+                sessionEpoch: 7,
+                relationshipState: .unresolved,
+                projectFromWorld: transform,
+                transformRevision: 1
+            ),
+            eventSequence: 1,
+            monotonicTime: 1
+        )
+        try await runtime.setEpoch(
+            CaptureEpochControl(
+                sessionEpoch: 7,
+                relationshipState: .accepted,
+                projectFromWorld: transform,
+                transformRevision: 2
+            ),
+            eventSequence: 2,
+            monotonicTime: 2
+        )
+        let mesh = OwnedMeshAnchorEvent(
+            kind: .add,
+            anchorID: UUID(),
+            anchorRevision: 1,
+            generation: 1,
+            sessionEpoch: 7,
+            sequence: 3,
+            monotonicTimestamp: 3,
+            worldFromAnchor: matrix(),
+            payload: MeshAnchorPayload(
+                vertices: [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 1, 0)],
+                normals: [],
+                triangleIndices: [0, 1, 2],
+                classifications: [],
+                localBoundsMin: SIMD3(0, 0, 0),
+                localBoundsMax: SIMD3(1, 1, 0)
+            )
+        )
+        try await runtime.submitMeshEvent(mesh, eventSequence: 3, projectTime: 3)
+        let before = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+
+        let outcome = try await runtime.recordFrozenMissingEvidence(
+            reason: "North alcove lacks supporting capture.",
+            eventSequence: 4,
+            monotonicTime: 4
+        )
+        let application: HSSFrozenUnknownCommandApplication
+        switch outcome {
+        case .journaled(let value):
+            application = value
+        case .journalRetryRequired(_, let failure):
+            XCTFail("The local project store unexpectedly rejected the command journal: \(failure)")
+            return
+        case .resultRecoveryRequired(let failure):
+            XCTFail("The native command result unexpectedly needed recovery: \(failure)")
+            return
+        }
+        XCTAssertEqual(application.beforeSceneRevision, before.revision)
+        XCTAssertEqual(application.afterSceneRevision, before.revision + 1)
+        XCTAssertEqual(application.sessionEpoch, 7)
+        XCTAssertEqual(application.eventSequence, 4)
+        XCTAssertEqual(application.monotonicTime, 4)
+
+        let command = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: application.commandJSON) as? [String: Any]
+        )
+        XCTAssertEqual(command["schema_version"] as? String, "1.1")
+        XCTAssertEqual(command["project_id"] as? String, projectID.uuidString.lowercased())
+        XCTAssertEqual(command["expected_scene_revision"] as? String, String(before.revision))
+        XCTAssertEqual(command["event_sequence"] as? String, "4")
+        XCTAssertEqual(command["type"] as? String, "mark_unknown")
+        XCTAssertEqual(command["targets"] as? [String], [])
+        XCTAssertEqual((command["payload"] as? [String: Any])?["reason"] as? String,
+                       "North alcove lacks supporting capture.")
+
+        let result = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: application.resultJSON) as? [String: Any]
+        )
+        XCTAssertEqual(result["state"] as? String, "applied")
+        XCTAssertEqual(result["command_id"] as? String, command["command_id"] as? String)
+        XCTAssertEqual(result["durability"] as? String, "not_committed")
+        XCTAssertEqual(result["scene_revision"] as? String, String(application.afterSceneRevision))
+        let issueIDs = try XCTUnwrap(result["issue_ids"] as? [String])
+        XCTAssertEqual(issueIDs.count, 1)
+        XCTAssertNotNil(UUID(uuidString: try XCTUnwrap(issueIDs.first)))
+
+        let after = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(after.revision, application.afterSceneRevision)
+        XCTAssertEqual(after.verticesMetres, before.verticesMetres)
+        XCTAssertEqual(after.triangleIndices, before.triangleIndices)
+        let afterScene = try XCTUnwrap(String(data: after.sceneJSON, encoding: .utf8))
+        XCTAssertTrue(afterScene.contains("HSS_UNKNOWN_REGION"))
+        XCTAssertTrue(afterScene.contains("North alcove lacks supporting capture."))
+
+        let checkpoint = try await runtime.checkpoint()
+        XCTAssertEqual(checkpoint.durableEventCount, 4)
+        XCTAssertEqual(checkpoint.durableRevision, 1,
+                       "Manifest revisions are checkpoint generations, not scene revisions.")
+
+        let reopened = try HSSProjectRuntime(
+            projectID: projectID,
+            captureID: captureID,
+            sourceIsSynthetic: true,
+            trustedRoot: root,
+            openMode: .openExisting
+        )
+        let replay = try await reopened.replayCommittedSource()
+        XCTAssertEqual(replay.highestSessionEpoch, 7)
+        XCTAssertEqual(replay.lastEventSequence, 4)
+        XCTAssertEqual(replay.lastMonotonicTime, 4)
+        XCTAssertEqual(replay.acceptedSceneRevision, application.afterSceneRevision)
+        let restoredResult = try await reopened.latestCommandResultJSON()
+        XCTAssertEqual(restoredResult, application.resultJSON)
+        let replayed = try await reopened.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(replayed.revision, after.revision)
+        XCTAssertEqual(replayed.verticesMetres, after.verticesMetres)
+        XCTAssertEqual(replayed.triangleIndices, after.triangleIndices)
+        XCTAssertEqual(replayed.sceneJSON, after.sceneJSON)
+
+        let next = try await reopened.recordFrozenMissingEvidence(
+            reason: "A second frozen-review note verifies the recovered epoch.",
+            eventSequence: 5,
+            monotonicTime: 5
+        )
+        guard case .journaled(let nextApplication) = next else {
+            return XCTFail("The recovered runtime did not journal its next frozen-review command.")
+        }
+        XCTAssertEqual(nextApplication.sessionEpoch, 7)
+        XCTAssertEqual(nextApplication.beforeSceneRevision, replayed.revision)
+        XCTAssertEqual(nextApplication.afterSceneRevision, replayed.revision + 1)
+    }
+
+    func testFrozenMissingEvidenceRejectsWhitespaceBeforeNativeMutation() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hss-frozen-missing-evidence-whitespace-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtime = try HSSProjectRuntime(
+            projectID: UUID(),
+            captureID: UUID(),
+            sourceIsSynthetic: true,
+            trustedRoot: root,
+            openMode: .create
+        )
+        let before = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        do {
+            _ = try await runtime.recordFrozenMissingEvidence(
+                reason: " \n\t ",
+                eventSequence: 1,
+                monotonicTime: 1
+            )
+            XCTFail("Whitespace-only missing-evidence text must fail before native mutation.")
+        } catch {
+            // Expected: the bridge rejects whitespace before it calls the C ABI.
+        }
+        let after = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(after.revision, before.revision)
+        XCTAssertEqual(after.sceneJSON, before.sceneJSON)
+    }
+
     func testEmptyDraftCreatesAndReopensBeforeAnySourceEvent() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("hss-empty-draft-\(UUID().uuidString)", isDirectory: true)

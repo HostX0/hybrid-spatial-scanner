@@ -17,6 +17,7 @@
 #include <string>
 #include <utility>
 #include <map>
+#include <set>
 #include <sstream>
 #include <iomanip>
 #include <vector>
@@ -64,12 +65,19 @@ HSSEngineStats stats(HSSEngine *engine) {
 }
 
 void drain(HSSEngine *engine, uint64_t budget = 50U,
-           std::vector<double> *timings = nullptr) {
+           std::vector<double> *timings = nullptr,
+           uint64_t *peak_working_bytes = nullptr) {
   for (size_t step = 0; step < 200000U; ++step) {
-    if (stats(engine).lifecycle_state == 1U)
+    const auto before = stats(engine);
+    if (peak_working_bytes)
+      *peak_working_bytes = std::max(*peak_working_bytes, before.working_bytes);
+    if (before.lifecycle_state == 1U)
       return;
     const auto begin = std::chrono::steady_clock::now();
     require(hss_engine_step(engine, budget) == HSS_OK, "step");
+    if (peak_working_bytes)
+      *peak_working_bytes =
+          std::max(*peak_working_bytes, stats(engine).working_bytes);
     if (timings)
       timings->push_back(std::chrono::duration<double, std::micro>(
           std::chrono::steady_clock::now() - begin).count());
@@ -1105,9 +1113,1068 @@ void perturbed_characterization() {
   durable_perturbed_room(0.0001,-23.0,3U,7U);
 }
 
+// Frozen independent-seam characterization.  The profile below is an
+// authored metre-domain observation model, not a calibrated LiDAR model.  A
+// whole face receives a face/anchor-specific planar offset whose magnitude is
+// a declared function of a synthetic camera-to-face range.  This isolates
+// endpoint correspondence from high-frequency nonplanarity; the latter is
+// characterized separately below.  The scorer never feeds its references or
+// candidate information back into the engine.
+struct IndependentSeamProfile {
+  const char *name;
+  uint32_t seed;
+  uint32_t columns;
+  uint32_t rows;
+  double seam_bias_m;
+  double range_bias_m_per_m;
+  HSSVec3d camera_center_m;
+  bool nonidentity_anchor_transforms;
+  double fixture_association_radius_m;
+};
+
+struct IndependentAnchor {
+  Mesh mesh;
+  HSSMat4d T_world_anchor = identity();
+  std::vector<HSSVec3d> project_vertices;
+};
+
+struct IndependentEndpoint {
+  size_t segment{};
+  HSSVec3d point{};
+};
+
+struct IndependentScenario {
+  std::vector<IndependentAnchor> anchors;
+  std::vector<std::array<HSSVec3d, 4>> observed_faces;
+  std::vector<std::pair<HSSVec3d, HSSVec3d>> reference_cuts;
+  std::vector<IndependentEndpoint> fixture_endpoints;
+  double scoring_tolerance_m{};
+  double maximum_reference_range_offset_m{};
+  double fixture_association_radius_m{};
+  size_t intentionally_missing_ceiling_panels{};
+};
+
+HSSVec3d add3(HSSVec3d a, HSSVec3d b) {
+  return {a.x + b.x, a.y + b.y, a.z + b.z};
+}
+
+HSSVec3d scale3(HSSVec3d point, double scale) {
+  return {point.x * scale, point.y * scale, point.z * scale};
+}
+
+HSSVec3d unit3(HSSVec3d point) {
+  const double length = length3(point);
+  require(length > 0.0, "independent fixture has a nonzero direction");
+  return scale3(point, 1.0 / length);
+}
+
+HSSMat4d independent_anchor_transform(bool use_transform, size_t index) {
+  HSSMat4d transform = identity();
+  if (!use_transform)
+    return transform;
+  // Exact binary fractions keep the clean transformed control focused on
+  // correspondence, rather than a decimal serialization artefact.
+  transform.column_major[12] = 0.125 * double(1U + index % 4U);
+  transform.column_major[14] = -0.0625 * double(1U + (3U * index) % 5U);
+  return transform;
+}
+
+HSSVec3d independent_project_point(const HSSMat4d &transform,
+                                   HSSVec3d local_point) {
+  return {local_point.x + transform.column_major[12],
+          local_point.y + transform.column_major[13],
+          local_point.z + transform.column_major[14]};
+}
+
+HSSVec3d independent_local_point(const HSSMat4d &transform,
+                                 HSSVec3d project_point) {
+  return {project_point.x - transform.column_major[12],
+          project_point.y - transform.column_major[13],
+          project_point.z - transform.column_major[14]};
+}
+
+uint64_t independent_mix(uint64_t value) {
+  value ^= value >> 30U;
+  value *= 0xbf58476d1ce4e5b9ULL;
+  value ^= value >> 27U;
+  value *= 0x94d049bb133111ebULL;
+  return value ^ (value >> 31U);
+}
+
+HSSVec3d independent_face_bias(const IndependentSeamProfile &profile,
+                               size_t face_index,
+                               const std::array<HSSVec3d, 4> &face) {
+  const HSSVec3d tangent = unit3(delta(face[1], face[0]));
+  const HSSVec3d normal =
+      unit3(cross3(delta(face[1], face[0]), delta(face[3], face[0])));
+  HSSVec3d center{};
+  for (const auto point : face)
+    center = add3(center, scale3(point, 0.25));
+  const double range_m = length3(delta(center, profile.camera_center_m));
+  const uint64_t mixed = independent_mix(uint64_t(profile.seed) +
+                                         0x9e3779b97f4a7c15ULL * (face_index + 1U));
+  const double face_factor =
+      (double(mixed & 0xffffU) / 32767.5) - 1.0; // declared [-1, 1] factor.
+  const double normal_factor =
+      (double((mixed >> 16U) & 0xffffU) / 32767.5) - 1.0;
+  return add3(scale3(tangent, profile.seam_bias_m * face_factor),
+              scale3(normal, profile.range_bias_m_per_m *
+                                 (range_m - 2.0) * normal_factor));
+}
+
+double independent_face_range_offset_m(
+    const IndependentSeamProfile &profile,
+    const std::array<HSSVec3d, 4> &face) {
+  HSSVec3d center{};
+  for (const auto point : face)
+    center = add3(center, scale3(point, 0.25));
+  return std::abs(length3(delta(center, profile.camera_center_m)) - 2.0);
+}
+
+HSSVec3d independent_stored_project_point(const HSSMat4d &transform,
+                                          HSSVec3d project_point) {
+  const HSSVec3d local = independent_local_point(transform, project_point);
+  const HSSVec3d stored{double(float(local.x)), double(float(local.y)),
+                         double(float(local.z))};
+  return independent_project_point(transform, stored);
+}
+
+void add_independent_face(IndependentScenario &scenario,
+                          const IndependentSeamProfile &profile,
+                          std::array<HSSVec3d, 4> face,
+                          bool contributes_cut) {
+  IndependentAnchor anchor;
+  const size_t face_index = scenario.anchors.size();
+  anchor.T_world_anchor = independent_anchor_transform(
+      profile.nonidentity_anchor_transforms, face_index);
+  const HSSVec3d bias = independent_face_bias(profile, face_index, face);
+  const double range_offset_m = independent_face_range_offset_m(profile, face);
+  for (uint32_t row = 0U; row <= profile.rows; ++row) {
+    for (uint32_t column = 0U; column <= profile.columns; ++column) {
+      const double u = double(column) / double(profile.columns);
+      const double v = double(row) / double(profile.rows);
+      const HSSVec3d nominal{
+          std::lerp(std::lerp(face[0].x, face[1].x, u),
+                    std::lerp(face[3].x, face[2].x, u), v),
+          std::lerp(std::lerp(face[0].y, face[1].y, u),
+                    std::lerp(face[3].y, face[2].y, u), v),
+          std::lerp(std::lerp(face[0].z, face[1].z, u),
+                    std::lerp(face[3].z, face[2].z, u), v)};
+      const HSSVec3d observed = add3(nominal, bias);
+      const HSSVec3d local = independent_local_point(anchor.T_world_anchor,
+                                                       observed);
+      const HSSVec3d stored{double(float(local.x)), double(float(local.y)),
+                             double(float(local.z))};
+      anchor.mesh.vertices.insert(anchor.mesh.vertices.end(),
+                                  {float(local.x), float(local.y), float(local.z)});
+      anchor.project_vertices.push_back(
+          independent_project_point(anchor.T_world_anchor, stored));
+    }
+  }
+  for (uint32_t row = 0U; row < profile.rows; ++row) {
+    for (uint32_t column = 0U; column < profile.columns; ++column) {
+      const uint32_t a = row * (profile.columns + 1U) + column;
+      const uint32_t b = a + 1U;
+      const uint32_t c = a + profile.columns + 1U;
+      const uint32_t d = c + 1U;
+      if ((row + column) % 2U == 0U)
+        anchor.mesh.triangles.insert(anchor.mesh.triangles.end(), {a, b, d, a, d, c});
+      else
+        anchor.mesh.triangles.insert(anchor.mesh.triangles.end(), {a, b, c, b, d, c});
+    }
+  }
+  if (contributes_cut) {
+    scenario.maximum_reference_range_offset_m = std::max(
+        scenario.maximum_reference_range_offset_m, range_offset_m);
+    const HSSVec3d reference_start{face[0].x, 1.2, face[0].z};
+    const HSSVec3d reference_end{face[1].x, 1.2, face[1].z};
+    const size_t segment = scenario.reference_cuts.size();
+    scenario.reference_cuts.push_back({reference_start, reference_end});
+    scenario.fixture_endpoints.push_back(
+        {segment, independent_stored_project_point(anchor.T_world_anchor,
+                                                    add3(reference_start, bias))});
+    scenario.fixture_endpoints.push_back(
+        {segment, independent_stored_project_point(anchor.T_world_anchor,
+                                                    add3(reference_end, bias))});
+  }
+  scenario.observed_faces.push_back(face);
+  scenario.anchors.push_back(std::move(anchor));
+}
+
+IndependentScenario independent_ring(const IndependentSeamProfile &profile) {
+  IndependentScenario scenario;
+  scenario.fixture_association_radius_m = profile.fixture_association_radius_m;
+  const std::vector<std::pair<double, double>> contour{
+      {0.0, 0.0}, {5.6, 0.0}, {5.6, -3.8}, {3.4, -3.8},
+      {3.4, -3.3}, {3.25, -3.3}, {3.25, -3.8}, {0.0, -3.8}};
+  for (size_t index = 0U; index < contour.size(); ++index) {
+    const auto [x0, z0] = contour[index];
+    const auto [x1, z1] = contour[(index + 1U) % contour.size()];
+    add_independent_face(scenario, profile,
+                         {{{x0, 0.0, z0}, {x1, 0.0, z1},
+                           {x1, 3.2, z1}, {x0, 3.2, z0}}},
+                         true);
+  }
+  // One observed panel and one intentionally absent panel make missing
+  // ceiling evidence explicit without making it a cut/topology oracle.
+  add_independent_face(scenario, profile,
+                       {{{0.0, 2.7, 0.0}, {2.8, 2.7, 0.0},
+                         {2.8, 2.7, -3.8}, {0.0, 2.7, -3.8}}},
+                       false);
+  scenario.intentionally_missing_ceiling_panels = 1U;
+  // A measured cut is an intersection of two independently displaced faces.
+  // Bound the scorer from the profile's actual reference-face ranges, rather
+  // than treating the range coefficient as an unexplained one-metre scalar.
+  const double maximum_face_displacement_m = std::hypot(
+      std::abs(profile.seam_bias_m),
+      std::abs(profile.range_bias_m_per_m) *
+          scenario.maximum_reference_range_offset_m);
+  scenario.scoring_tolerance_m = 2.0 * maximum_face_displacement_m + 2e-5;
+  return scenario;
+}
+
+IndependentScenario permuted_independent_scenario(IndependentScenario scenario,
+                                                   uint32_t seed) {
+  for (auto &anchor : scenario.anchors) {
+    std::vector<std::array<uint32_t, 3>> faces;
+    for (size_t index = 0U; index < anchor.mesh.triangles.size(); index += 3U)
+      faces.push_back({anchor.mesh.triangles[index], anchor.mesh.triangles[index + 1U],
+                       anchor.mesh.triangles[index + 2U]});
+    std::mt19937 random(seed++);
+    std::shuffle(faces.begin(), faces.end(), random);
+    anchor.mesh.triangles.clear();
+    for (const auto &face : faces)
+      anchor.mesh.triangles.insert(anchor.mesh.triangles.end(), face.begin(), face.end());
+  }
+  return scenario;
+}
+
+struct IndependentResult {
+  Result core;
+  std::vector<HSSVec3d> project_vertices;
+  uint64_t peak_working_bytes{};
+  uint64_t final_working_bytes{};
+};
+
+IndependentResult reconstruct_independent(const IndependentScenario &scenario,
+                                         uint64_t step_budget) {
+  auto configuration = config();
+  HSSEngine *engine{};
+  require(hss_engine_create(&configuration, &engine) == HSS_OK,
+          "create independent-seam engine");
+  require(hss_engine_set_source_is_synthetic(engine, 1U) == HSS_OK,
+          "declare independent-seam synthetic source");
+  uint64_t peak_working_bytes = 0U;
+  std::vector<double> timings;
+  HSSEpoch epoch{};
+  epoch.abi_version = HSS_ABI_VERSION;
+  epoch.struct_size = sizeof(epoch);
+  epoch.capture_id = ident(2);
+  epoch.event_sequence = 1U;
+  epoch.relationship_state = 1U;
+  epoch.transform_revision = 1U;
+  epoch.T_project_world = identity();
+  require(hss_engine_set_epoch(engine, &epoch) == HSS_OK,
+          "independent-seam epoch");
+  drain(engine, step_budget, &timings, &peak_working_bytes);
+  const HSSMat4d floor = identity();
+  require(hss_engine_set_plan_reference(engine, &floor, 1.2) == HSS_OK,
+          "independent-seam floor");
+  drain(engine, step_budget, &timings, &peak_working_bytes);
+
+  std::vector<HSSVec3d> expected_vertices;
+  std::vector<uint32_t> expected_triangles;
+  for (size_t anchor_index = 0U; anchor_index < scenario.anchors.size(); ++anchor_index) {
+    const auto &anchor = scenario.anchors[anchor_index];
+    const uint32_t base = uint32_t(expected_vertices.size());
+    expected_vertices.insert(expected_vertices.end(), anchor.project_vertices.begin(),
+                             anchor.project_vertices.end());
+    for (const uint32_t index : anchor.mesh.triangles)
+      expected_triangles.push_back(base + index);
+    HSSMeshEvent event{};
+    event.abi_version = HSS_ABI_VERSION;
+    event.struct_size = sizeof(event);
+    event.capture_id = ident(2);
+    event.anchor_id = ident(uint8_t(30U + anchor_index));
+    event.event_sequence = 3U + anchor_index;
+    event.anchor_revision = 1U;
+    event.T_world_anchor = anchor.T_world_anchor;
+    event.vertices_xyz = anchor.mesh.vertices.data();
+    event.vertex_count = anchor.mesh.vertices.size() / 3U;
+    event.triangle_indices = anchor.mesh.triangles.data();
+    event.triangle_count = anchor.mesh.triangles.size() / 3U;
+    require(hss_engine_submit_mesh_event(engine, &event) == HSS_OK,
+            "independent-seam mesh event");
+    drain(engine, step_budget, &timings, &peak_working_bytes);
+  }
+  HSSSnapshot *snapshot{};
+  require(hss_engine_acquire_snapshot(engine, &snapshot) == HSS_OK,
+          "independent-seam snapshot");
+  std::vector<HSSVec3d> actual_vertices(expected_vertices.size());
+  uint64_t copied{};
+  require(hss_snapshot_copy_vertices(snapshot, actual_vertices.data(),
+                                     actual_vertices.size(), &copied) == HSS_OK &&
+              copied == actual_vertices.size(),
+          "independent-seam raw vertex copy");
+  hss_snapshot_release(snapshot);
+  for (size_t index = 0U; index < expected_vertices.size(); ++index) {
+    const auto &actual = actual_vertices[index];
+    const auto &expected = expected_vertices[index];
+    require(actual.x == expected.x && actual.y == expected.y &&
+                actual.z == expected.z,
+            "independent-seam raw project vertices remain exact");
+  }
+  const std::vector<uint32_t> actual_triangles = raw_triangles(engine);
+  require(actual_triangles == expected_triangles,
+          "independent-seam raw triangle indices remain exact");
+  IndependentResult result;
+  result.core.json = scene_json(engine);
+  result.core.triangles = actual_triangles;
+  result.core.planes = plane_count(result.core.json);
+  result.core.step_us = std::move(timings);
+  result.project_vertices = std::move(expected_vertices);
+  result.peak_working_bytes = peak_working_bytes;
+  result.final_working_bytes = stats(engine).working_bytes;
+  require(hss::scene_editing::scene_counts(result.core.json).has_value(),
+          "independent-seam scene remains valid");
+  hss_engine_destroy(engine);
+  return result;
+}
+
+std::vector<HSSVec3d> independent_expected_vertices(
+    const IndependentScenario &scenario) {
+  std::vector<HSSVec3d> expected;
+  for (const auto &anchor : scenario.anchors)
+    expected.insert(expected.end(), anchor.project_vertices.begin(),
+                    anchor.project_vertices.end());
+  return expected;
+}
+
+std::vector<uint32_t> independent_expected_triangles(
+    const IndependentScenario &scenario) {
+  std::vector<uint32_t> expected;
+  uint32_t base = 0U;
+  for (const auto &anchor : scenario.anchors) {
+    for (const uint32_t index : anchor.mesh.triangles)
+      expected.push_back(base + index);
+    base += uint32_t(anchor.project_vertices.size());
+  }
+  return expected;
+}
+
+struct IndependentRawSnapshot {
+  HSSCounts counts{};
+  std::vector<HSSVec3d> vertices;
+  std::vector<uint32_t> triangles;
+};
+
+IndependentRawSnapshot independent_raw_snapshot(HSSEngine *engine,
+                                                 const IndependentScenario &scenario) {
+  HSSSnapshot *snapshot{};
+  require(hss_engine_acquire_snapshot(engine, &snapshot) == HSS_OK,
+          "independent durable snapshot");
+  IndependentRawSnapshot result;
+  require(hss_snapshot_get_counts(snapshot, &result.counts) == HSS_OK,
+          "independent durable counts");
+  const auto expected_vertices = independent_expected_vertices(scenario);
+  const auto expected_triangles = independent_expected_triangles(scenario);
+  require(result.counts.vertex_count == expected_vertices.size() &&
+              result.counts.triangle_count * 3U == expected_triangles.size(),
+          "independent durable raw counts remain exact");
+  result.vertices.resize(expected_vertices.size());
+  result.triangles.resize(expected_triangles.size());
+  uint64_t copied{};
+  require(hss_snapshot_copy_vertices(snapshot, result.vertices.data(),
+                                     result.vertices.size(), &copied) == HSS_OK &&
+              copied == result.vertices.size(),
+          "independent durable raw vertex copy");
+  require(hss_snapshot_copy_triangles(snapshot, result.triangles.data(),
+                                      result.triangles.size(), &copied) == HSS_OK &&
+              copied == result.triangles.size(),
+          "independent durable raw triangle copy");
+  hss_snapshot_release(snapshot);
+  for (size_t index = 0U; index < expected_vertices.size(); ++index) {
+    const auto &actual = result.vertices[index];
+    const auto &expected = expected_vertices[index];
+    require(actual.x == expected.x && actual.y == expected.y &&
+                actual.z == expected.z,
+            "independent durable raw project vertex remains exact");
+  }
+  require(result.triangles == expected_triangles,
+          "independent durable raw triangle index remains exact");
+  return result;
+}
+
+hss::obj_mtl::Artifact export_independent(HSSEngine *engine,
+                                           const IndependentScenario &scenario) {
+  const auto raw = independent_raw_snapshot(engine, scenario);
+  const std::string json = scene_json(engine);
+  std::vector<std::string> vertex_support(raw.vertices.size());
+  std::set<std::string> source_supports;
+  hss::obj_mtl::Snapshot output;
+  output.export_id = "independent-seam-export";
+  output.project_id = record_text(json, "project_id");
+  output.scene_revision = raw.counts.scene_revision;
+  output.captured_mesh_id = "independent-seam-raw-snapshot";
+  output.source_is_synthetic = true;
+  output.quality_state = "provisional";
+  for (const auto &issue : scene_records(json, "issues")) {
+    const std::string code = record_text(issue, "code");
+    output.warnings.push_back(code);
+    if (code != "mesh_source")
+      continue;
+    const std::string reason = record_text(issue, "reason");
+    const size_t support_at = reason.find("support=");
+    const size_t range_at = reason.find("vertices=");
+    require(support_at != std::string::npos && range_at != std::string::npos,
+            "independent durable source mapping exists");
+    const size_t plus = reason.find('+', range_at);
+    require(plus != std::string::npos,
+            "independent durable source vertex range exists");
+    const size_t first = std::stoull(reason.substr(range_at + 9U));
+    const size_t count = std::stoull(reason.substr(plus + 1U));
+    require(first + count <= raw.vertices.size(),
+            "independent durable source range stays bounded");
+    const std::string support = reason.substr(support_at + 8U, 36U);
+    source_supports.insert(support);
+    for (size_t index = first; index < first + count; ++index) {
+      require(vertex_support[index].empty(),
+              "independent durable source ranges do not overlap");
+      vertex_support[index] = support;
+    }
+  }
+  require(scenario.intentionally_missing_ceiling_panels == 1U &&
+              source_supports.size() == scenario.anchors.size(),
+          "independent durable export retains only the declared observed sources");
+  for (const auto point : raw.vertices)
+    output.vertices_m.push_back({point.x, point.y, point.z});
+  for (size_t index = 0U; index < raw.triangles.size(); index += 3U) {
+    const uint32_t a = raw.triangles[index];
+    const uint32_t b = raw.triangles[index + 1U];
+    const uint32_t c = raw.triangles[index + 2U];
+    require(!vertex_support.at(a).empty() &&
+                vertex_support[a] == vertex_support.at(b) &&
+                vertex_support[a] == vertex_support.at(c),
+            "independent durable face retains one captured source support");
+    output.faces.push_back({"independent-raw-face-" + std::to_string(index / 3U),
+                            {a, b, c}, {vertex_support[a]}, "", std::nullopt});
+  }
+  hss::obj_mtl::Options options;
+  options.include_textures = false;
+  const auto exported = hss::obj_mtl::export_snapshot(output, options);
+  require(exported.status == hss::obj_mtl::Status::kOk && exported.artifact.has_value(),
+          "independent durable OBJ/MTL export accepts exact raw snapshot");
+  const auto &artifact = *exported.artifact;
+  require(artifact.texture_references.empty() &&
+              artifact.mtl_utf8.find("map_Kd") == std::string::npos,
+          "independent durable export never invents textures");
+  require(artifact.manifest_json.find("\"scene_revision\":\"" +
+                                      std::to_string(raw.counts.scene_revision) + "\"") !=
+              std::string::npos,
+          "independent durable export binds the exact scene revision");
+  std::istringstream lines(artifact.obj_utf8);
+  std::string line;
+  size_t vertex_index = 0U, triangle_index = 0U;
+  while (std::getline(lines, line)) {
+    if (line.starts_with("v ")) {
+      HSSVec3d point{};
+      std::istringstream values(line.substr(2U));
+      require(bool(values >> point.x >> point.y >> point.z) &&
+                  vertex_index < raw.vertices.size(),
+              "independent durable OBJ vertex parses");
+      const auto source = raw.vertices[vertex_index++];
+      require(point.x == source.x && point.y == source.y && point.z == source.z,
+              "independent durable OBJ preserves every raw coordinate");
+    } else if (line.starts_with("f ")) {
+      std::istringstream values(line.substr(2U));
+      for (size_t offset = 0U; offset < 3U; ++offset) {
+        uint64_t exported_index{};
+        require(bool(values >> exported_index) &&
+                    triangle_index < raw.triangles.size() &&
+                    exported_index == uint64_t(raw.triangles[triangle_index++]) + 1U,
+                "independent durable OBJ preserves raw one-based indices");
+      }
+    }
+  }
+  require(vertex_index == raw.vertices.size() &&
+              triangle_index == raw.triangles.size(),
+          "independent durable OBJ omits and adds no geometry");
+  return artifact;
+}
+
+void durable_independent_profile(const IndependentSeamProfile &profile) {
+  const auto scenario = independent_ring(profile);
+  char temporary[] = "/tmp/hss-independent-seam-XXXXXX";
+  require(::mkdtemp(temporary) != nullptr,
+          "private independent-seam project directory");
+  const std::string directory = temporary;
+  HSSProjectStoreConfig storage{};
+  storage.abi_version = HSS_PROJECT_STORE_ABI_VERSION;
+  storage.struct_size = sizeof(storage);
+  storage.project_id = ident(1);
+  storage.trusted_root_directory_utf8 = {
+      reinterpret_cast<const uint8_t *>(directory.data()), directory.size()};
+  storage.open_mode = HSS_PROJECT_STORE_CREATE_NEW;
+  storage.source_is_synthetic = 1U;
+  storage.max_epoch_records = storage.max_depth_records = 16U;
+  storage.max_mesh_records = storage.max_command_records = 16U;
+  storage.max_retained_bytes = 32U * 1024U * 1024U;
+  storage.max_record_bytes = 2U * 1024U * 1024U;
+  storage.max_pending_bytes = 16U * 1024U * 1024U;
+  HSSProjectStore *store{};
+  require(hss_project_store_create(&storage, &store) == HSS_OK,
+          "create independent-seam project store");
+  const auto configuration = config();
+  HSSEngine *engine{};
+  require(hss_engine_create(&configuration, &engine) == HSS_OK,
+          "create independent-seam durable engine");
+  require(hss_engine_set_source_is_synthetic(engine, 1U) == HSS_OK,
+          "declare independent-seam durable provenance");
+  uint64_t sequence = 0U;
+  auto context = [&]() {
+    HSSProjectEventContext value{};
+    value.abi_version = HSS_PROJECT_STORE_ABI_VERSION;
+    value.struct_size = sizeof(value);
+    value.capture_id = ident(2);
+    value.event_sequence = sequence;
+    value.accepted_scene_revision = sequence;
+    value.monotonic_time_s = double(sequence);
+    return value;
+  };
+  auto finish = [&]() {
+    drain(engine, sequence % 2U == 0U ? 50U : 1U);
+    require(stats(engine).scene_revision == sequence,
+            "independent-seam durable event publishes one revision");
+  };
+  HSSProjectStoreReceipt receipt{};
+  HSSEpoch epoch{};
+  epoch.abi_version = HSS_ABI_VERSION;
+  epoch.struct_size = sizeof(epoch);
+  epoch.capture_id = ident(2);
+  epoch.event_sequence = ++sequence;
+  epoch.relationship_state = 1U;
+  epoch.transform_revision = 1U;
+  epoch.T_project_world = identity();
+  require(hss_engine_set_epoch(engine, &epoch) == HSS_OK,
+          "independent-seam durable epoch");
+  finish();
+  auto event_context = context();
+  require(hss_project_store_append_epoch(store, &event_context, &epoch, &receipt) == HSS_OK,
+          "persist independent-seam epoch");
+
+  HSSProjectPlanReference plan{};
+  plan.abi_version = HSS_PROJECT_STORE_ABI_VERSION;
+  plan.struct_size = sizeof(plan);
+  plan.T_project_floor = identity();
+  plan.cut_height_m = 1.2;
+  plan.before_scene_revision = sequence;
+  plan.after_scene_revision = ++sequence;
+  require(hss_engine_set_plan_reference(engine, &plan.T_project_floor,
+                                        plan.cut_height_m) == HSS_OK,
+          "independent-seam durable floor");
+  finish();
+  event_context = context();
+  require(hss_project_store_append_plan_reference(store, &event_context, &plan,
+                                                  &receipt) == HSS_OK,
+          "persist independent-seam floor");
+
+  for (size_t index = 0U; index < scenario.anchors.size(); ++index) {
+    const auto &anchor = scenario.anchors[index];
+    HSSMeshEvent event{};
+    event.abi_version = HSS_ABI_VERSION;
+    event.struct_size = sizeof(event);
+    event.capture_id = ident(2);
+    event.anchor_id = ident(uint8_t(30U + index));
+    event.event_sequence = ++sequence;
+    event.anchor_revision = 1U;
+    event.T_world_anchor = anchor.T_world_anchor;
+    event.vertices_xyz = anchor.mesh.vertices.data();
+    event.vertex_count = anchor.mesh.vertices.size() / 3U;
+    event.triangle_indices = anchor.mesh.triangles.data();
+    event.triangle_count = anchor.mesh.triangles.size() / 3U;
+    require(hss_engine_submit_mesh_event(engine, &event) == HSS_OK,
+            "independent-seam durable mesh event");
+    finish();
+    event_context = context();
+    require(hss_project_store_append_mesh_event(store, &event_context, &event,
+                                                &receipt) == HSS_OK,
+            "persist independent-seam mesh event");
+  }
+  const auto baseline_export = export_independent(engine, scenario);
+  const uint64_t before_command = sequence;
+  const uint64_t command_sequence = ++sequence;
+  const std::string command =
+      "{\"schema_version\":\"1.1\",\"command_id\":\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\","
+      "\"project_id\":\"" + record_text(scene_json(engine), "project_id") +
+      "\",\"expected_scene_revision\":\"" + std::to_string(before_command) +
+      "\",\"event_sequence\":\"" + std::to_string(command_sequence) +
+      "\",\"targets\":[],\"user_intent\":\"record independent seam uncertainty\","
+      "\"type\":\"mark_unknown\",\"payload\":{\"reason\":\"independent seam observations remain open\"}}";
+  require(hss_engine_apply_command_json(
+              engine, {reinterpret_cast<const uint8_t *>(command.data()), command.size()}) ==
+              HSS_OK,
+          "independent-seam durable zero-target correction");
+  finish();
+  uint64_t result_bytes{};
+  require(hss_engine_copy_command_result_json(engine, nullptr, 0U, &result_bytes) ==
+              HSS_BUFFER_TOO_SMALL,
+          "independent-seam durable command result size");
+  std::string command_result(result_bytes, '\0');
+  require(hss_engine_copy_command_result_json(
+              engine, reinterpret_cast<uint8_t *>(command_result.data()),
+              command_result.size(), &result_bytes) == HSS_OK,
+          "independent-seam durable command result copy");
+  HSSProjectCommandRecord command_record{};
+  command_record.abi_version = HSS_PROJECT_STORE_ABI_VERSION;
+  command_record.struct_size = sizeof(command_record);
+  command_record.context = context();
+  command_record.before_scene_revision = before_command;
+  command_record.after_scene_revision = sequence;
+  command_record.disposition = HSS_PROJECT_COMMAND_APPLIED;
+  command_record.command_json = {
+      reinterpret_cast<const uint8_t *>(command.data()), command.size()};
+  command_record.result_json = {reinterpret_cast<const uint8_t *>(command_result.data()),
+                                command_result.size()};
+  require(hss_project_store_append_command_record(store, &command_record, &receipt) == HSS_OK,
+          "persist independent-seam exact command and result");
+  const std::string accepted_scene = scene_json(engine);
+  const auto accepted_export = export_independent(engine, scenario);
+  require(accepted_export != baseline_export,
+          "independent-seam correction is visible in its export sidecar");
+  HSSProjectCheckpointResult checkpoint{};
+  require(hss_project_store_checkpoint(store, &checkpoint) == HSS_OK &&
+              checkpoint.durability_state == 1U &&
+              checkpoint.durable_event_count == sequence,
+          "independent-seam checkpoint is durable");
+  HSSProjectResumeCursor cursor{};
+  cursor.abi_version = HSS_PROJECT_STORE_ABI_VERSION;
+  cursor.struct_size = sizeof(cursor);
+  require(hss_project_store_get_resume_cursor(store, &cursor) == HSS_OK &&
+              cursor.last_event_sequence == sequence &&
+              cursor.accepted_scene_revision == sequence,
+          "independent-seam checkpoint exposes exact resume cursor");
+
+  hss_engine_destroy(engine);
+  hss_project_store_destroy(store);
+  storage.open_mode = HSS_PROJECT_STORE_OPEN_EXISTING;
+  require(hss_project_store_create(&storage, &store) == HSS_OK &&
+              hss_engine_create(&configuration, &engine) == HSS_OK,
+          "reopen independent-seam project");
+  HSSProjectReplayResult replay{};
+  require(hss_project_store_replay(store, engine, &replay) == HSS_OK &&
+              replay.engine_status == HSS_OK && replay.applied_event_count == sequence,
+          "replay independent-seam project stream");
+  require(scene_json(engine) == accepted_scene,
+          "independent-seam Scene remains byte-equivalent after replay");
+  require(export_independent(engine, scenario) == accepted_export,
+          "independent-seam OBJ/MTL artifact remains byte-equivalent after replay");
+  std::string replay_result(command_result.size(), '\0');
+  require(hss_engine_copy_command_result_json(
+              engine, reinterpret_cast<uint8_t *>(replay_result.data()),
+              replay_result.size(), &result_bytes) == HSS_OK &&
+              replay_result == command_result,
+          "independent-seam exact command result remains after replay");
+  hss_engine_destroy(engine);
+  hss_project_store_destroy(store);
+  std::filesystem::remove_all(directory);
+  std::cout << "independent_seam durable profile=" << profile.name
+            << " events=" << sequence << " checkpoint_reopen_obj=passed\n";
+}
+
+struct IndependentMetrics {
+  size_t plane_count{};
+  size_t mesh_patch_count{};
+  size_t partial_plane_support_count{};
+  size_t open_issue_count{};
+  size_t nodes{};
+  size_t edges{};
+  size_t open_endpoints{};
+  size_t non_manifold_degrees{};
+  size_t connected_components{};
+  size_t regions{};
+  size_t false_bridge_edges{};
+  size_t ambiguous_fixture_endpoints{};
+  size_t max_fixture_candidates{};
+  double cut_coverage_m{};
+  double minimum_cut_coverage_ratio{1.0};
+  double max_reference_deviation_m{};
+  double max_fit_residual_m{};
+};
+
+size_t issue_count_with_code(const std::string &json, const std::string &code) {
+  size_t count = 0U;
+  for (const auto &issue : scene_records(json, "issues"))
+    if (record_text(issue, "code") == code)
+      ++count;
+  return count;
+}
+
+IndependentMetrics measure_independent(const IndependentScenario &scenario,
+                                       const IndependentResult &result) {
+  IndependentMetrics metrics;
+  const auto surfaces = scene_records(result.core.json, "surfaces");
+  for (const auto &surface : surfaces) {
+    if (record_text(surface, "kind") == "plane") {
+      ++metrics.plane_count;
+      metrics.max_fit_residual_m =
+          std::max(metrics.max_fit_residual_m, record_number(surface, "fit_residual_m"));
+    } else {
+      ++metrics.mesh_patch_count;
+    }
+  }
+  metrics.partial_plane_support_count =
+      issue_count_with_code(result.core.json, "partial_plane_support");
+  metrics.open_issue_count =
+      issue_count_with_code(result.core.json, "open_or_ambiguous_slice");
+  metrics.regions = scene_records(result.core.json, "regions").size();
+  std::map<std::string, HSSVec3d> nodes;
+  std::map<std::string, size_t> degrees;
+  std::map<std::string, std::vector<std::string>> adjacency;
+  for (const auto &node : scene_records(result.core.json, "nodes"))
+    nodes.emplace(record_text(node, "id"), record_point(node, "position_m"));
+  std::vector<std::vector<std::pair<double, double>>> spans(
+      scenario.reference_cuts.size());
+  for (const auto &edge : scene_records(result.core.json, "edges")) {
+    const auto start = record_text(edge, "start_node_id");
+    const auto end = record_text(edge, "end_node_id");
+    ++degrees[start];
+    ++degrees[end];
+    adjacency[start].push_back(end);
+    adjacency[end].push_back(start);
+    const HSSVec3d a = nodes.at(start), b = nodes.at(end);
+    size_t matched = 0U;
+    for (size_t index = 0U; index < scenario.reference_cuts.size(); ++index) {
+      const auto &[p, q] = scenario.reference_cuts[index];
+      const HSSVec3d direction = delta(q, p);
+      const double length_squared = product3(direction, direction);
+      const double endpoint_tolerance =
+          scenario.scoring_tolerance_m / std::sqrt(length_squared);
+      const double ta = product3(delta(a, p), direction) / length_squared;
+      const double tb = product3(delta(b, p), direction) / length_squared;
+      const double ea = length3(cross3(delta(a, p), direction)) /
+                        std::sqrt(length_squared);
+      const double eb = length3(cross3(delta(b, p), direction)) /
+                        std::sqrt(length_squared);
+      if (ea <= scenario.scoring_tolerance_m && eb <= scenario.scoring_tolerance_m &&
+          std::min(ta, tb) >= -endpoint_tolerance &&
+          std::max(ta, tb) <= 1.0 + endpoint_tolerance) {
+        ++matched;
+        spans[index].push_back(std::minmax(ta, tb));
+        metrics.max_reference_deviation_m =
+            std::max({metrics.max_reference_deviation_m, ea, eb});
+      }
+    }
+    if (matched != 1U) {
+      ++metrics.false_bridge_edges;
+      std::cout << std::setprecision(12)
+                << "independent_seam unmatched_edge matches=" << matched
+                << " start_m=" << a.x << ',' << a.y << ',' << a.z
+                << " end_m=" << b.x << ',' << b.y << ',' << b.z << '\n';
+    }
+  }
+  metrics.nodes = nodes.size();
+  metrics.edges = scene_records(result.core.json, "edges").size();
+  for (const auto &[id, degree] : degrees) {
+    (void)id;
+    if (degree == 1U)
+      ++metrics.open_endpoints;
+    else if (degree != 2U)
+      ++metrics.non_manifold_degrees;
+  }
+  std::map<std::string, bool> visited;
+  for (const auto &[id, point] : nodes) {
+    (void)point;
+    if (visited[id])
+      continue;
+    ++metrics.connected_components;
+    std::vector<std::string> pending{id};
+    visited[id] = true;
+    while (!pending.empty()) {
+      const std::string current = std::move(pending.back());
+      pending.pop_back();
+      for (const auto &next : adjacency[current]) {
+        if (!visited[next]) {
+          visited[next] = true;
+          pending.push_back(next);
+        }
+      }
+    }
+  }
+  for (size_t index = 0U; index < spans.size(); ++index) {
+    auto &intervals = spans[index];
+    std::sort(intervals.begin(), intervals.end());
+    double cursor = 0.0;
+    double covered = 0.0;
+    for (const auto &[first, second] : intervals) {
+      const double begin = std::clamp(first, 0.0, 1.0);
+      const double end = std::clamp(second, 0.0, 1.0);
+      if (end > cursor) {
+        covered += end - std::max(cursor, begin);
+        cursor = end;
+      }
+    }
+    const double length = length3(delta(scenario.reference_cuts[index].second,
+                                        scenario.reference_cuts[index].first));
+    metrics.cut_coverage_m += covered * length;
+    metrics.minimum_cut_coverage_ratio =
+        std::min(metrics.minimum_cut_coverage_ratio, covered);
+  }
+  for (size_t index = 0U; index < scenario.fixture_endpoints.size(); ++index) {
+    size_t candidates = 0U;
+    for (size_t other = 0U; other < scenario.fixture_endpoints.size(); ++other) {
+      if (index == other || scenario.fixture_endpoints[index].segment ==
+                                scenario.fixture_endpoints[other].segment)
+        continue;
+      if (length3(delta(scenario.fixture_endpoints[index].point,
+                        scenario.fixture_endpoints[other].point)) <=
+          scenario.fixture_association_radius_m)
+        ++candidates;
+    }
+    metrics.max_fixture_candidates = std::max(metrics.max_fixture_candidates, candidates);
+    if (candidates > 1U)
+      ++metrics.ambiguous_fixture_endpoints;
+  }
+  return metrics;
+}
+
+bool same_independent_metrics(const IndependentMetrics &left,
+                              const IndependentMetrics &right) {
+  return left.plane_count == right.plane_count &&
+         left.mesh_patch_count == right.mesh_patch_count &&
+         left.partial_plane_support_count == right.partial_plane_support_count &&
+         left.open_issue_count == right.open_issue_count && left.nodes == right.nodes &&
+         left.edges == right.edges && left.open_endpoints == right.open_endpoints &&
+         left.non_manifold_degrees == right.non_manifold_degrees &&
+         left.connected_components == right.connected_components &&
+         left.regions == right.regions &&
+         left.false_bridge_edges == right.false_bridge_edges &&
+         left.ambiguous_fixture_endpoints == right.ambiguous_fixture_endpoints &&
+         left.max_fixture_candidates == right.max_fixture_candidates &&
+         std::abs(left.cut_coverage_m - right.cut_coverage_m) < 1e-12 &&
+         std::abs(left.minimum_cut_coverage_ratio -
+                  right.minimum_cut_coverage_ratio) < 1e-12 &&
+         std::abs(left.max_reference_deviation_m - right.max_reference_deviation_m) <
+             1e-12 &&
+         std::abs(left.max_fit_residual_m - right.max_fit_residual_m) < 1e-12;
+}
+
+void print_independent_metrics(const IndependentSeamProfile &profile,
+                               const IndependentScenario &scenario,
+                               const IndependentResult &result,
+                               const IndependentMetrics &metrics) {
+  std::vector<double> timings = result.core.step_us;
+  std::sort(timings.begin(), timings.end());
+  const double p95 = timings.empty() ? 0.0 : timings[timings.size() * 95U / 100U];
+  const double maximum = timings.empty() ? 0.0 : timings.back();
+  std::cout << std::setprecision(12) << "independent_seam profile=" << profile.name
+            << " planes=" << metrics.plane_count << " mesh_patches="
+            << metrics.mesh_patch_count << " endpoints=" << metrics.open_endpoints
+            << " components=" << metrics.connected_components
+            << " regions=" << metrics.regions << " false_bridges="
+            << metrics.false_bridge_edges << " fixture_ambiguous_endpoints="
+            << metrics.ambiguous_fixture_endpoints << " max_fixture_candidates="
+            << metrics.max_fixture_candidates << " cut_coverage_m="
+            << metrics.cut_coverage_m << " max_reference_deviation_m="
+            << metrics.max_reference_deviation_m << " min_cut_coverage_ratio="
+            << metrics.minimum_cut_coverage_ratio << " max_fit_residual_m="
+            << metrics.max_fit_residual_m << " peak_working_bytes="
+            << result.peak_working_bytes << " steps=" << timings.size()
+            << " p95_step_us=" << p95 << " max_step_us=" << maximum
+            << " scorer_tolerance_m=" << scenario.scoring_tolerance_m
+            << " max_reference_range_offset_m="
+            << scenario.maximum_reference_range_offset_m
+            << " engine_candidate_ambiguity=unavailable\n";
+}
+
+void characterize_independent_profile(const IndependentSeamProfile &profile,
+                                      bool expect_closed_control) {
+  const auto scenario = independent_ring(profile);
+  require(scenario.intentionally_missing_ceiling_panels == 1U,
+          "independent seam fixture retains a missing ceiling panel");
+  const auto tiny = reconstruct_independent(scenario, 1U);
+  const auto normal = reconstruct_independent(scenario, 50U);
+  const auto tiny_metrics = measure_independent(scenario, tiny);
+  const auto normal_metrics = measure_independent(scenario, normal);
+  require(tiny.core.json == normal.core.json,
+          "independent-seam output is invariant to 1us/50us cooperative requests");
+  require(same_independent_metrics(tiny_metrics, normal_metrics),
+          "independent-seam metrics are invariant to work slicing");
+  const auto permuted_scenario =
+      permuted_independent_scenario(scenario, profile.seed ^ 0x5a17U);
+  const auto permuted_tiny = reconstruct_independent(permuted_scenario, 1U);
+  const auto permuted = reconstruct_independent(permuted_scenario, 50U);
+  const auto permuted_metrics = measure_independent(scenario, permuted);
+  // Emit the frozen profile's measurements before applying its assertions, so
+  // a failed characterization still leaves actionable local evidence.
+  print_independent_metrics(profile, scenario, normal, normal_metrics);
+  require(normal.core.json == permuted.core.json,
+          "independent-seam derived Scene is triangle-permutation invariant");
+  require(same_independent_metrics(normal_metrics, permuted_metrics),
+          "independent-seam metrics are triangle-permutation invariant");
+  require(permuted_tiny.core.json == permuted.core.json,
+          "permuted independent-seam output is invariant to 1us/50us cooperative requests");
+  require(same_independent_metrics(
+              measure_independent(scenario, permuted_tiny), permuted_metrics),
+          "permuted independent-seam metrics are invariant to work slicing");
+  require(normal_metrics.false_bridge_edges == 0U,
+          "independent seam never manufactures a cross-reference bridge");
+  require(normal_metrics.non_manifold_degrees == 0U,
+          "independent seam never manufactures a branch node");
+  require(normal_metrics.minimum_cut_coverage_ratio >= 0.98,
+          "independent seam retains each declared reference cut within its bound");
+  if (expect_closed_control) {
+    require(normal_metrics.open_endpoints == 0U && normal_metrics.regions == 1U &&
+                normal_metrics.connected_components == 1U,
+            "clean transformed control remains a closed measured loop");
+  } else {
+    require(normal_metrics.open_endpoints != 0U && normal_metrics.regions == 0U,
+            "independent face observations expose an open conservative cut");
+  }
+}
+
+IndependentScenario independent_negative_controls() {
+  const IndependentSeamProfile profile{"negative-controls", 0x7a31U, 3U, 4U,
+                                       0.0, 0.0, {0.0, 1.0, 2.0}, false, 0.001};
+  IndependentScenario scenario;
+  scenario.fixture_association_radius_m = profile.fixture_association_radius_m;
+  scenario.scoring_tolerance_m = 2e-5;
+  // The first two faces have a real 0.45mm source gap.  The next two are
+  // disconnected near-parallel faces; their endpoint cluster deliberately
+  // supplies more than one fixture-side association candidate inside 1mm.
+  add_independent_face(scenario, profile,
+                       {{{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0},
+                         {1.0, 3.0, 0.0}, {0.0, 3.0, 0.0}}}, true);
+  add_independent_face(scenario, profile,
+                       {{{1.00045, 0.0, 0.0}, {2.0, 0.0, 0.0},
+                         {2.0, 3.0, 0.0}, {1.00045, 3.0, 0.0}}}, true);
+  add_independent_face(scenario, profile,
+                       {{{0.0, 0.0, -0.00055}, {1.0, 0.0, -0.00055},
+                         {1.0, 3.0, -0.00055}, {0.0, 3.0, -0.00055}}}, true);
+  add_independent_face(scenario, profile,
+                       {{{0.0, 0.0, 0.00042}, {1.0, 0.0, 0.00042},
+                         {1.0, 3.0, 0.00042}, {0.0, 3.0, 0.00042}}}, true);
+  return scenario;
+}
+
+Mesh high_frequency_nonplanar_wall() {
+  Mesh mesh;
+  constexpr uint32_t columns = 9U, rows = 7U;
+  for (uint32_t row = 0U; row <= rows; ++row) {
+    for (uint32_t column = 0U; column <= columns; ++column) {
+      const uint64_t value = independent_mix(0x84a1U + 31U * row + column);
+      const double signed_step = double(value % 5U) - 2.0;
+      mesh.vertices.insert(mesh.vertices.end(),
+                           {0.35F * float(column), 0.42F * float(row),
+                            float(0.0015 * signed_step)});
+    }
+  }
+  for (uint32_t row = 0U; row < rows; ++row) {
+    for (uint32_t column = 0U; column < columns; ++column) {
+      const uint32_t a = row * (columns + 1U) + column;
+      const uint32_t b = a + 1U;
+      const uint32_t c = a + columns + 1U;
+      const uint32_t d = c + 1U;
+      mesh.triangles.insert(mesh.triangles.end(), {a, b, d, a, d, c});
+    }
+  }
+  return mesh;
+}
+
+void characterize_high_frequency_nonplanarity() {
+  const Mesh source = high_frequency_nonplanar_wall();
+  const auto tiny = reconstruct_many({source}, 1U, true);
+  const auto normal = reconstruct_many({source}, 50U, true);
+  require(tiny.json == normal.json,
+          "high-frequency fallback is invariant to cooperative work slicing");
+  std::vector<std::array<uint32_t, 3>> faces;
+  for (size_t index = 0U; index < source.triangles.size(); index += 3U)
+    faces.push_back({source.triangles[index], source.triangles[index + 1U],
+                     source.triangles[index + 2U]});
+  std::mt19937 random(0x91a5U);
+  std::shuffle(faces.begin(), faces.end(), random);
+  Mesh permuted = source;
+  permuted.triangles.clear();
+  for (const auto &face : faces)
+    permuted.triangles.insert(permuted.triangles.end(), face.begin(), face.end());
+  const auto shuffled = reconstruct_many({permuted}, 50U, true);
+  require(normal.json == shuffled.json,
+          "high-frequency fallback is triangle-permutation invariant");
+  const size_t partial = issue_count_with_code(normal.json, "partial_plane_support");
+  const size_t patches = scene_records(normal.json, "surfaces").size() - normal.planes;
+  std::cout << "independent_seam high_frequency_nonplanarity planes=" << normal.planes
+            << " mesh_patches=" << patches << " partial_plane_support=" << partial
+            << " raw_triangles=" << normal.triangles.size() / 3U
+            << " (conservative fallback is characterization, not failure)\n";
+}
+
+void independent_seam_characterization() {
+  // Both profiles are declared before either is executed. The second variant
+  // changes seed, camera/range relationship, tessellation, and face offsets;
+  // it is a predeclared synthetic variant, not an independent physical set.
+  // No production tolerance is tuned from either result.
+  // This is a transform-only control: all observations are exact, but every
+  // anchor has a nonidentity translation.  Rotations are deliberately out of
+  // scope for this frozen translation-only seam characterization.
+  const IndependentSeamProfile clean{"clean-translation-control", 0x1101U, 4U,
+                                     5U, 0.0, 0.0, {1.5, 1.2, 2.0}, true, 0.001};
+  const IndependentSeamProfile development{"independent-development", 0x22d7U,
+                                            4U, 5U, 0.00042, 0.00009,
+                                            {1.5, 1.2, 2.0}, true, 0.001};
+  const IndependentSeamProfile variant{"independent-predeclared-variant", 0x5b39U,
+                                        3U, 7U, 0.00031, 0.00012,
+                                        {4.7, 1.5, 1.7}, true, 0.001};
+  characterize_independent_profile(clean, true);
+  characterize_independent_profile(development, false);
+  characterize_independent_profile(variant, false);
+  durable_independent_profile(clean);
+  durable_independent_profile(variant);
+
+  const auto negatives = independent_negative_controls();
+  const auto tiny = reconstruct_independent(negatives, 1U);
+  const auto normal = reconstruct_independent(negatives, 50U);
+  const auto tiny_metrics = measure_independent(negatives, tiny);
+  const auto normal_metrics = measure_independent(negatives, normal);
+  require(tiny.core.json == normal.core.json &&
+              same_independent_metrics(tiny_metrics, normal_metrics),
+          "negative controls are invariant to cooperative work slicing");
+  const auto permuted_scenario =
+      permuted_independent_scenario(negatives, 0x6331U);
+  const auto permuted_tiny = reconstruct_independent(permuted_scenario, 1U);
+  const auto permuted = reconstruct_independent(permuted_scenario, 50U);
+  const auto permuted_metrics = measure_independent(negatives, permuted);
+  require(normal.core.json == permuted.core.json &&
+              same_independent_metrics(normal_metrics, permuted_metrics),
+          "negative controls are triangle-permutation invariant");
+  require(permuted_tiny.core.json == permuted.core.json &&
+              same_independent_metrics(measure_independent(negatives, permuted_tiny),
+                                       permuted_metrics),
+          "permuted negative controls are invariant to cooperative work slicing");
+  require(normal_metrics.max_fixture_candidates >= 2U &&
+              normal_metrics.ambiguous_fixture_endpoints != 0U,
+          "negative controls contain predeclared ambiguous proximity candidates");
+  require(normal_metrics.false_bridge_edges == 0U && normal_metrics.regions == 0U &&
+              normal_metrics.open_endpoints != 0U &&
+              normal_metrics.non_manifold_degrees == 0U &&
+              normal_metrics.connected_components == negatives.reference_cuts.size(),
+          "sub-millimetre real gaps and parallel faces remain open without false closure");
+  std::cout << std::setprecision(12)
+            << "independent_seam negative_controls radius_m="
+            << negatives.fixture_association_radius_m << " real_gap_m=0.00045"
+            << " endpoints=" << normal_metrics.open_endpoints
+            << " components=" << normal_metrics.connected_components
+            << " false_bridges=" << normal_metrics.false_bridge_edges
+            << " max_fixture_candidates=" << normal_metrics.max_fixture_candidates
+            << " engine_candidate_ambiguity=unavailable\n";
+  characterize_high_frequency_nonplanarity();
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
+  if (argc == 2 && std::string(argv[1]) == "--independent-seams") {
+    independent_seam_characterization();
+    return 0;
+  }
   if (argc == 2 && std::string(argv[1]) == "--perturbed-room") { perturbed_characterization(); return 0; }
   if (argc == 2 && std::string(argv[1]) == "--mixed-room") { mixed_room_characterization(); return 0; }
   if (argc == 2 && std::string(argv[1]) == "--full-component-support") {

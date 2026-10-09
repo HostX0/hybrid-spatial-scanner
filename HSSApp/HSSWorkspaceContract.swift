@@ -115,6 +115,7 @@ enum ScannerWorkspaceSaveState: Equatable, Sendable {
 
 enum ScannerWorkspaceRecoveryAction: Equatable, Sendable {
     case retrySave
+    case retryCommandJournal
     case reopenProject
     case returnToProjectList
     case stopCaptureAndSaveDraft
@@ -162,6 +163,9 @@ protocol ScannerWorkspaceModeling: ObservableObject {
     var canShowLibrary: Bool { get }
     var canExport: Bool { get }
     var canExportProjectArchive: Bool { get }
+    /// A review-only, zero-target uncertainty marker. It never activates
+    /// target editing or undo from the live camera surface.
+    var canRecordMissingEvidence: Bool { get }
 
     func reloadProjects()
     func createProject(named name: String)
@@ -177,6 +181,7 @@ protocol ScannerWorkspaceModeling: ObservableObject {
     /// Applies only a caller-confirmed observed floor reference. It never uses
     /// the arbitrary AR world origin as an automatic physical-floor claim.
     func confirmPlanReference(projectFromFloor: simd_double4x4, cutHeightMetres: Double)
+    func recordMissingEvidence(reason: String)
     func recoverFromCurrentIssue()
 }
 

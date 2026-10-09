@@ -354,6 +354,7 @@ add_executable(hss_project_store_test
   SpatialCore/src/project_store.cpp
 )
 target_include_directories(hss_project_store_test PRIVATE include SpatialCore/include)
+target_compile_definitions(hss_project_store_test PRIVATE HSS_PROJECT_STORE_TESTING=1)
 add_executable(hss_provisional_plan_test tests/hss_provisional_plan_test.cpp)
 target_link_libraries(hss_provisional_plan_test PRIVATE SpatialCore)
 target_compile_definitions(hss_provisional_plan_test PRIVATE HSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
@@ -600,6 +601,9 @@ add_test(NAME hss_live_permutation_regression
 )
 add_test(NAME hss_full_component_plane_support
   COMMAND hss_live_permutation_regression_test --full-component-support
+)
+add_test(NAME hss_independent_seam_characterization
+  COMMAND hss_live_permutation_regression_test --independent-seams
 )
 add_executable(hss_plan_annotation_runtime_test
   tests/hss_plan_annotation_runtime_test.cpp

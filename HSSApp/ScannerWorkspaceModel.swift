@@ -58,6 +58,9 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             && latestSnapshot?.verticesMetres.isEmpty == false
             && captureCoordinator.epochRelocalization.currentEpoch != nil
             && !drainScheduled
+            && !pendingCommandJournal
+            && !frozenCommandInFlight
+            && !reviewSnapshotRefreshRequired
             && phase != .capturing
             && phase != .captureInterrupted
             && phase != .stoppingCapture
@@ -66,6 +69,8 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     var canShowLibrary: Bool {
         !captureCoordinator.isSessionRunning
             && !drainScheduled
+            && !pendingCommandJournal
+            && !frozenCommandInFlight
             && (saveState == .clean || isSavedState)
             && phase != .saving
             && phase != .openingProject
@@ -76,14 +81,30 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             project: selectedCatalogEntry?.summary,
             saveState: saveState,
             phase: phase
-        ) && exportState != .exporting
+        ) && !pendingCommandJournal && !frozenCommandInFlight && exportState != .exporting
     }
     var canExportProjectArchive: Bool {
         selectedProjectID != nil
             && selectedCatalogEntry != nil
+            && !pendingCommandJournal
+            && !frozenCommandInFlight
+            && !reviewSnapshotRefreshRequired
             && phase == .frozen
             && (saveState == .clean || isSavedState)
             && projectArchiveExportState != .exporting
+    }
+    var canRecordMissingEvidence: Bool {
+        runtime != nil
+            && selectedProjectID != nil
+            && latestSnapshot?.isFrozen == true
+            && latestSnapshot?.verticesMetres.isEmpty == false
+            && !captureCoordinator.isSessionRunning
+            && !drainScheduled
+            && !pendingCommandJournal
+            && !frozenCommandInFlight
+            && !reviewSnapshotRefreshRequired
+            && phase == .frozen
+            && saveState != .saving
     }
 
     private enum PendingNativeEvent: Sendable {
@@ -132,6 +153,12 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     private let sourceIsSynthetic: Bool
     private let resourceMonitor = ScannerIOSResourceMonitor()
     private var runtime: HSSProjectRuntime?
+    private var pendingCommandJournal = false
+    private var frozenCommandInFlight = false
+    /// A command journaled successfully, but the review snapshot could not be
+    /// refreshed. Saving or reopening can recover the view; new corrections
+    /// remain blocked so stale UI state cannot drive another operation.
+    private var reviewSnapshotRefreshRequired = false
     private var selectedCatalogEntry: WorkspaceCatalogEntry?
     private var pendingEvents: [SequencedNativeEvent] = []
     private var nextEventSequence: UInt64 = 1
@@ -269,6 +296,9 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 observedProvenance = sourceIsSynthetic ? [.syntheticTest] : []
                 nextEventSequence = 1
                 lastDurableEventTime = 0
+                pendingCommandJournal = false
+                frozenCommandInFlight = false
+                reviewSnapshotRefreshRequired = false
                 acceptedEpochProjectTransforms.removeAll()
                 keyframeSelector.reset()
                 captureAccounting = .zero
@@ -381,6 +411,9 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 observedProvenance = provenance
                 nextEventSequence = adopted.1.lastEventSequence + 1
                 lastDurableEventTime = adopted.1.lastMonotonicTime
+                pendingCommandJournal = false
+                frozenCommandInFlight = false
+                reviewSnapshotRefreshRequired = false
                 acceptedEpochProjectTransforms.removeAll()
                 resetTargetSelection()
                 saveState = .clean
@@ -395,7 +428,9 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     func startCapture() {
-        guard runtime != nil, selectedProjectID != nil, !captureCoordinator.isSessionRunning else { return }
+        guard runtime != nil, selectedProjectID != nil, !captureCoordinator.isSessionRunning,
+              !pendingCommandJournal, !frozenCommandInFlight,
+              !reviewSnapshotRefreshRequired else { return }
         guard !resourcePauseLatched else {
             showResourcePauseIssue(checkpointSucceeded: resourceCheckpointSucceeded)
             return
@@ -439,6 +474,11 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
 
     func saveSelectedProject() {
         guard runtime != nil, selectedProjectID != nil else { return }
+        if pendingCommandJournal {
+            retryPendingCommandJournal()
+            return
+        }
+        guard !frozenCommandInFlight else { return }
         if resourcePauseInProgress {
             saveRequested = true
             return
@@ -523,7 +563,8 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     func openProject(id: UUID) {
-        guard !captureCoordinator.isSessionRunning, !drainScheduled else { return }
+        guard !captureCoordinator.isSessionRunning, !drainScheduled,
+              !pendingCommandJournal, !frozenCommandInFlight else { return }
         guard let entry = (try? loadCatalog().projects.first(where: { $0.id == id })) ?? nil else {
             fail(title: "Project is unavailable", message: "The selected project is not present in the local catalog.", recovery: .returnToProjectList)
             return
@@ -566,6 +607,9 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 observedProvenance = provenance
                 nextEventSequence = replay.lastEventSequence + 1
                 lastDurableEventTime = replay.lastMonotonicTime
+                pendingCommandJournal = false
+                frozenCommandInFlight = false
+                reviewSnapshotRefreshRequired = false
                 acceptedEpochProjectTransforms.removeAll()
                 resetTargetSelection()
                 saveState = .clean
@@ -581,6 +625,9 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     func showLibrary() {
         guard canShowLibrary else { return }
         runtime = nil
+        pendingCommandJournal = false
+        frozenCommandInFlight = false
+        reviewSnapshotRefreshRequired = false
         selectedCatalogEntry = nil
         selectedProjectID = nil
         assignSelectedName("")
@@ -664,11 +711,165 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         ))
     }
 
+    /// This review-only command does not claim that the live-camera target
+    /// selection maps to a durable core entity. It records a zero-target
+    /// unknown-evidence note and leaves raw captured geometry unchanged.
+    func recordMissingEvidence(reason: String) {
+        guard canRecordMissingEvidence, let runtime else { return }
+        let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedReason.isEmpty else {
+            currentIssue = ScannerWorkspaceIssue(
+                id: UUID(),
+                title: "Missing-evidence note needs a reason",
+                message: "Describe what remains unobserved before recording it.",
+                recoveryAction: nil
+            )
+            return
+        }
+        guard nextEventSequence < UInt64.max else {
+            currentIssue = ScannerWorkspaceIssue(
+                id: UUID(),
+                title: "Project event identity exhausted",
+                message: "Start a new local project before recording another review note.",
+                recoveryAction: .returnToProjectList
+            )
+            return
+        }
+        let sequence = nextEventSequence
+        let eventTime = max(lastDurableEventTime, ProcessInfo.processInfo.systemUptime)
+        frozenCommandInFlight = true
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let outcome = try await runtime.recordFrozenMissingEvidence(
+                    reason: trimmedReason,
+                    eventSequence: sequence,
+                    monotonicTime: eventTime
+                )
+                switch outcome {
+                case .journaled(let application):
+                    await publishJournaledMissingEvidence(application, runtime: runtime)
+                case .journalRetryRequired(let application, let failure):
+                    guard application.eventSequence == sequence else {
+                        throw HSSBridgeError.invalidValue(
+                            "The pending command returned a different event sequence."
+                        )
+                    }
+                    frozenCommandInFlight = false
+                    pendingCommandJournal = true
+                    saveState = .failed("The applied review note is not yet journaled: \(failure)")
+                    currentIssue = ScannerWorkspaceIssue(
+                        id: UUID(),
+                        title: "Review note needs a journal retry",
+                        message: "The note was applied locally but is not durable yet. Retry the exact local journal before saving, leaving, or starting capture.",
+                        recoveryAction: .retryCommandJournal
+                    )
+                case .resultRecoveryRequired(let failure):
+                    frozenCommandInFlight = false
+                    pendingCommandJournal = true
+                    saveState = .failed("The applied review note needs exact-result recovery: \(failure)")
+                    currentIssue = ScannerWorkspaceIssue(
+                        id: UUID(),
+                        title: "Review note needs result recovery",
+                        message: "The note was applied locally but its exact native result must be recovered before it can be journaled. Retry the exact local command before saving, leaving, or starting capture.",
+                        recoveryAction: .retryCommandJournal
+                    )
+                }
+            } catch {
+                frozenCommandInFlight = false
+                currentIssue = ScannerWorkspaceIssue(
+                    id: UUID(),
+                    title: "Missing evidence was not recorded",
+                    message: describe(error),
+                    recoveryAction: nil
+                )
+            }
+        }
+    }
+
+    private func retryPendingCommandJournal() {
+        guard pendingCommandJournal, !frozenCommandInFlight, let runtime else { return }
+        frozenCommandInFlight = true
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let application = try await runtime.retryPendingCommandJournal()
+                await publishJournaledMissingEvidence(application, runtime: runtime)
+            } catch {
+                frozenCommandInFlight = false
+                currentIssue = ScannerWorkspaceIssue(
+                    id: UUID(),
+                    title: "Review note still needs a journal retry",
+                    message: describe(error),
+                    recoveryAction: .retryCommandJournal
+                )
+            }
+        }
+    }
+
+    private func publishJournaledMissingEvidence(
+        _ application: HSSFrozenUnknownCommandApplication,
+        runtime: HSSProjectRuntime
+    ) async {
+        let sequenceMatchedReservation = application.eventSequence == nextEventSequence
+            && application.eventSequence < UInt64.max
+        // The native store already owns this exact command when this method is
+        // reached. Commit the main-actor cursor before attempting a fallible
+        // snapshot refresh, so a refresh error cannot reuse its sequence or
+        // falsely present the project as clean.
+        nextEventSequence = application.eventSequence + 1
+        lastDurableEventTime = max(lastDurableEventTime, application.monotonicTime)
+        pendingCommandJournal = false
+        frozenCommandInFlight = false
+        saveState = .hasUnsavedChanges
+        exportState = .idle
+        projectArchiveExportState = .idle
+        phase = .frozen
+        guard sequenceMatchedReservation else {
+            reviewSnapshotRefreshRequired = true
+            currentIssue = ScannerWorkspaceIssue(
+                id: UUID(),
+                title: "Review state needs recovery",
+                message: "The journaled review note did not match the reserved local event sequence. Save or reopen the project before any other review action.",
+                recoveryAction: .retrySave
+            )
+            return
+        }
+        do {
+            let snapshot = try await runtime.snapshot(provenance: observedProvenance, frozen: true)
+            guard snapshot.revision == application.afterSceneRevision else {
+                throw HSSBridgeError.invalidValue(
+                    "The journaled review command snapshot does not match its accepted revision."
+                )
+            }
+            latestSnapshot = snapshot
+            reviewSnapshotRefreshRequired = false
+            refreshTargetRevisionBinding()
+        } catch {
+            reviewSnapshotRefreshRequired = true
+            currentIssue = ScannerWorkspaceIssue(
+                id: UUID(),
+                title: "Review note needs a snapshot refresh",
+                message: "The note is journaled locally, but its refreshed review view is unavailable. Save or reopen the project before another review action.",
+                recoveryAction: .retrySave
+            )
+            return
+        }
+        currentIssue = ScannerWorkspaceIssue(
+            id: UUID(),
+            title: "Missing evidence recorded",
+            message: "Applied locally. Save this draft to make the review note durable.",
+            recoveryAction: nil
+        )
+    }
+
     func recoverFromCurrentIssue() {
         guard let action = currentIssue?.recoveryAction else { return }
         switch action {
         case .retrySave:
             saveSelectedProject()
+        case .retryCommandJournal:
+            retryPendingCommandJournal()
         case .reopenProject:
             if let selectedProjectID { openProject(id: selectedProjectID) }
         case .returnToProjectList:
@@ -1127,6 +1328,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 selectedCatalogEntry = entry
                 assignSelectedName(entry.name)
                 latestSnapshot = snapshot
+                reviewSnapshotRefreshRequired = false
                 refreshTargetRevisionBinding()
                 saveState = .saved(entry.updatedAt)
                 exportState = .idle

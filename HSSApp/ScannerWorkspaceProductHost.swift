@@ -18,6 +18,8 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
     @State private var completedObjectArtifact: ObjectCaptureArtifact?
     @State private var currentCameraViewport: OverlayViewport?
     @State private var projectArchiveToShare: URL?
+    @State private var isRecordingMissingEvidence = false
+    @State private var missingEvidenceReason = ""
 
     var body: some View {
         ScannerWorkspaceView(
@@ -61,6 +63,37 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
                 workspace.importProjectArchive(at: url)
             }
             .ignoresSafeArea()
+        }
+        .sheet(isPresented: $isRecordingMissingEvidence, onDismiss: {
+            missingEvidenceReason = ""
+        }) {
+            NavigationStack {
+                Form {
+                    Section {
+                        Text("This records an unknown-evidence note for the frozen review. It does not draw, close, or otherwise modify captured geometry.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Section("What remains unobserved?") {
+                        TextEditor(text: $missingEvidenceReason)
+                            .frame(minHeight: 120)
+                            .accessibilityLabel("Missing evidence reason")
+                    }
+                }
+                .navigationTitle("Record missing evidence")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { isRecordingMissingEvidence = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Record") {
+                            workspace.recordMissingEvidence(reason: missingEvidenceReason)
+                            isRecordingMissingEvidence = false
+                        }
+                        .disabled(missingEvidenceReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+            }
         }
         .sheet(isPresented: $isObjectCapturePresented) {
             // This is deliberately a separate RealityKit-owned workflow. It is
@@ -116,6 +149,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             canFinishCapture: isCaptureActive,
             canAssist: false,
             canUndo: false,
+            canRecordMissingEvidence: workspace.canRecordMissingEvidence,
             canSave: workspace.saveState == .hasUnsavedChanges,
             canExport: workspace.canExport,
             isExporting: workspace.exportState == .exporting,
@@ -139,6 +173,10 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             finishCapture: workspace.stopCapture,
             assist: {},
             undo: {},
+            recordMissingEvidence: {
+                missingEvidenceReason = ""
+                isRecordingMissingEvidence = true
+            },
             save: workspace.saveSelectedProject,
             export: workspace.exportSelectedProject,
             exportProjectArchive: workspace.exportSelectedProjectArchive,
@@ -332,6 +370,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
     private func recoveryTitle(for action: ScannerWorkspaceRecoveryAction?) -> String? {
         switch action {
         case .retrySave: String(localized: "Try again")
+        case .retryCommandJournal: String(localized: "Retry journal")
         case .reopenProject: String(localized: "Reopen project")
         case .returnToProjectList: String(localized: "View projects")
         case .stopCaptureAndSaveDraft: String(localized: "Save draft")

@@ -330,7 +330,7 @@ enum HSSCommandJournalDisposition: Sendable, Equatable {
     }
 }
 
-struct HSSCommandJournalEntry: Sendable {
+struct HSSCommandJournalEntry: Sendable, Equatable {
     let disposition: HSSCommandJournalDisposition
     let commandJSON: Data
     let resultJSON: Data
@@ -359,6 +359,57 @@ struct HSSCommandJournalEntry: Sendable {
     }
 }
 
+/// Parsed only for validation and presentation; the journal retains the
+/// original result bytes rather than re-encoding this representation.
+enum HSSCommandResultState: String, Sendable, Equatable {
+    case applied
+    case conflict
+    case rejected
+    case superseded
+}
+
+/// One accepted frozen-review command. The command/result fields are the exact
+/// UTF-8 bytes submitted to and returned by the core, respectively.
+struct HSSFrozenUnknownCommandApplication: Sendable, Equatable {
+    let commandJSON: Data
+    let resultJSON: Data
+    let beforeSceneRevision: UInt64
+    let afterSceneRevision: UInt64
+    let sessionEpoch: UInt32
+    let eventSequence: UInt64
+    let monotonicTime: TimeInterval
+}
+
+/// A command whose core mutation succeeded but whose journal append failed is
+/// deliberately not treated as saved. Its exact bytes remain owned by the
+/// runtime and must be retried before another command or source event is sent.
+enum HSSFrozenUnknownCommandOutcome: Sendable, Equatable {
+    case journaled(HSSFrozenUnknownCommandApplication)
+    case journalRetryRequired(
+        application: HSSFrozenUnknownCommandApplication,
+        failure: String
+    )
+    /// The core accepted the command, but its exact result could not yet be
+    /// copied and validated. The runtime owns the original command bytes and
+    /// accepts only an exact retry to recover that result before journaling.
+    case resultRecoveryRequired(failure: String)
+}
+
+/// Private pre-mutation record. It is installed before the C ABI is called so
+/// a successful native mutation cannot be orphaned if result-copying fails.
+private struct HSSFrozenUnknownCommandIntent: Sendable, Equatable {
+    let commandJSON: Data
+    let beforeSceneRevision: UInt64
+    let sessionEpoch: UInt32
+    let eventSequence: UInt64
+    let monotonicTime: TimeInterval
+}
+
+private enum HSSFrozenUnknownCommandPendingState: Sendable, Equatable {
+    case awaitingResult(HSSFrozenUnknownCommandIntent)
+    case awaitingJournal(HSSFrozenUnknownCommandApplication)
+}
+
 /// Serial owner of the native engine and its selected durable source store.
 /// Engine mutation, persistence append, stepping, checkpoint and replay cannot
 /// race because all entry points are isolated to this actor.
@@ -367,6 +418,8 @@ actor HSSProjectRuntime {
     private var storeAddress: UInt?
     private var nextResourceSequence: UInt64 = 1
     private var lastResourceTime: TimeInterval = 0
+    private var highestPersistedSessionEpoch: UInt32 = 0
+    private var pendingCommandJournal: HSSFrozenUnknownCommandPendingState?
     let projectID: UUID
     private(set) var captureID: UUID
     let sourceIsSynthetic: Bool
@@ -554,6 +607,7 @@ actor HSSProjectRuntime {
         var receipt = HSSProjectStoreReceipt()
         let storeStatus = hss_project_store_append_epoch(store, &context, &epoch, &receipt)
         guard storeStatus == HSS_OK else { throw HSSBridgeError.native(storeStatus) }
+        highestPersistedSessionEpoch = max(highestPersistedSessionEpoch, epoch.session_epoch)
     }
 
     func submitFrame(_ normalized: NormalizedSceneDepthFrame, eventSequence: UInt64, projectTime: TimeInterval) throws {
@@ -621,6 +675,7 @@ actor HSSProjectRuntime {
             }
         }
         guard storeStatus == HSS_OK else { throw HSSBridgeError.native(storeStatus) }
+        highestPersistedSessionEpoch = max(highestPersistedSessionEpoch, frame.session_epoch)
     }
 
     func submitMeshEvent(_ event: OwnedMeshAnchorEvent, eventSequence: UInt64, projectTime: TimeInterval) throws {
@@ -684,6 +739,7 @@ actor HSSProjectRuntime {
             }
         }
         guard storeStatus == HSS_OK else { throw HSSBridgeError.native(storeStatus) }
+        highestPersistedSessionEpoch = max(highestPersistedSessionEpoch, native.session_epoch)
     }
 
     func setPlanReference(
@@ -734,6 +790,7 @@ actor HSSProjectRuntime {
         var receipt = HSSProjectStoreReceipt()
         let storeStatus = hss_project_store_append_plan_reference(store, &context, &reference, &receipt)
         guard storeStatus == HSS_OK else { throw HSSBridgeError.native(storeStatus) }
+        highestPersistedSessionEpoch = max(highestPersistedSessionEpoch, UInt32(sessionEpoch))
     }
 
     /// Persists a processor journal record after its result is known. The
@@ -784,6 +841,298 @@ actor HSSProjectRuntime {
             }
         }
         guard storeStatus == HSS_OK else { throw HSSBridgeError.native(storeStatus) }
+    }
+
+    /// Records a review-only uncertainty marker. It has no target IDs and
+    /// therefore cannot pretend that a calibrated screen selection identifies
+    /// a stable core entity. The core changes only its command-owned unknown
+    /// feature/issue; captured raw geometry remains untouched.
+    func recordFrozenMissingEvidence(
+        reason: String,
+        eventSequence: UInt64,
+        monotonicTime: TimeInterval
+    ) throws -> HSSFrozenUnknownCommandOutcome {
+        guard pendingCommandJournal == nil else {
+            throw HSSBridgeError.invalidValue(
+                "A locally applied command still needs its exact journal retry."
+            )
+        }
+        guard eventSequence < UInt64.max,
+              monotonicTime.isFinite,
+              monotonicTime >= 0 else {
+            throw HSSBridgeError.invalidValue("Frozen-review command metadata is invalid.")
+        }
+        let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedReason.isEmpty, trimmedReason.count <= 512 else {
+            throw HSSBridgeError.invalidValue(
+                "Missing-evidence notes must contain 1 to 512 non-whitespace characters."
+            )
+        }
+        try drain()
+        let beforeRevision = try stats().scene_revision
+        let commandJSON = try Self.frozenUnknownCommand(
+            projectID: projectID,
+            expectedSceneRevision: beforeRevision,
+            eventSequence: eventSequence,
+            reason: trimmedReason
+        )
+        let intent = HSSFrozenUnknownCommandIntent(
+            commandJSON: commandJSON,
+            beforeSceneRevision: beforeRevision,
+            sessionEpoch: highestPersistedSessionEpoch,
+            eventSequence: eventSequence,
+            monotonicTime: monotonicTime
+        )
+        // This must precede apply_command_json. From this point forward the
+        // runtime owns exactly one recovery path even if a result-copy or
+        // validation operation fails after the core publishes its mutation.
+        pendingCommandJournal = .awaitingResult(intent)
+        guard let engine else {
+            pendingCommandJournal = nil
+            throw HSSBridgeError.closed
+        }
+        let status = commandJSON.withUnsafeBytes { bytes in
+            hss_engine_apply_command_json(
+                engine,
+                HSSBytes(
+                    data: bytes.bindMemory(to: UInt8.self).baseAddress,
+                    length: UInt64(bytes.count)
+                )
+            )
+        }
+        guard status == HSS_OK else {
+            pendingCommandJournal = nil
+            throw HSSBridgeError.native(status)
+        }
+        do {
+            let application = try recoveredApplication(from: intent)
+            // Retain this before any fallible validation or store call. A
+            // failed append must retry these exact bytes, never mint another
+            // UUID or reserialize the result.
+            pendingCommandJournal = .awaitingJournal(application)
+            try Self.validateAppliedCommandResult(
+                application.resultJSON,
+                commandJSON: application.commandJSON,
+                expectedRevision: application.afterSceneRevision
+            )
+            try appendFrozenUnknownCommand(application)
+            pendingCommandJournal = nil
+            return .journaled(application)
+        } catch {
+            if case .some(.awaitingResult) = pendingCommandJournal {
+                return .resultRecoveryRequired(failure: String(describing: error))
+            }
+            if case .some(.awaitingJournal(let application)) = pendingCommandJournal {
+                return .journalRetryRequired(
+                    application: application,
+                    failure: String(describing: error)
+                )
+            }
+            throw error
+        }
+    }
+
+    /// Re-applies the exact command once to verify the core's stored result,
+    /// then appends the same command/result metadata that previously failed.
+    /// This is the only allowed recovery after an apply-before-journal fault.
+    func retryPendingCommandJournal() throws -> HSSFrozenUnknownCommandApplication {
+        guard let pendingCommandJournal else {
+            throw HSSBridgeError.invalidValue("There is no pending command journal to retry.")
+        }
+        guard let engine else { throw HSSBridgeError.closed }
+        try drain()
+        let application: HSSFrozenUnknownCommandApplication
+        switch pendingCommandJournal {
+        case .awaitingResult(let intent):
+            guard intent.beforeSceneRevision < UInt64.max,
+                  try stats().scene_revision == intent.beforeSceneRevision + 1 else {
+                throw HSSBridgeError.invalidValue(
+                    "The native revision changed before the exact command result could be recovered."
+                )
+            }
+            let status = intent.commandJSON.withUnsafeBytes { bytes in
+                hss_engine_apply_command_json(
+                    engine,
+                    HSSBytes(
+                        data: bytes.bindMemory(to: UInt8.self).baseAddress,
+                        length: UInt64(bytes.count)
+                    )
+                )
+            }
+            guard status == HSS_OK else { throw HSSBridgeError.native(status) }
+            application = try recoveredApplication(from: intent)
+            self.pendingCommandJournal = .awaitingJournal(application)
+        case .awaitingJournal(let pendingApplication):
+            guard try stats().scene_revision == pendingApplication.afterSceneRevision else {
+                throw HSSBridgeError.invalidValue(
+                    "The native revision changed before the exact command journal could be retried."
+                )
+            }
+            let status = pendingApplication.commandJSON.withUnsafeBytes { bytes in
+                hss_engine_apply_command_json(
+                    engine,
+                    HSSBytes(
+                        data: bytes.bindMemory(to: UInt8.self).baseAddress,
+                        length: UInt64(bytes.count)
+                    )
+                )
+            }
+            guard status == HSS_OK else { throw HSSBridgeError.native(status) }
+            let replayedResult = try copyLatestCommandResult()
+            guard replayedResult == pendingApplication.resultJSON,
+                  try stats().scene_revision == pendingApplication.afterSceneRevision else {
+                throw HSSBridgeError.invalidValue(
+                    "The native retry did not preserve the exact applied command result."
+                )
+            }
+            application = pendingApplication
+        }
+        try Self.validateAppliedCommandResult(
+            application.resultJSON,
+            commandJSON: application.commandJSON,
+            expectedRevision: application.afterSceneRevision
+        )
+        try appendFrozenUnknownCommand(application)
+        self.pendingCommandJournal = nil
+        return application
+    }
+
+    private func recoveredApplication(
+        from intent: HSSFrozenUnknownCommandIntent
+    ) throws -> HSSFrozenUnknownCommandApplication {
+        let resultJSON = try copyLatestCommandResult()
+        let afterRevision = try stats().scene_revision
+        guard intent.beforeSceneRevision < UInt64.max,
+              afterRevision == intent.beforeSceneRevision + 1 else {
+            throw HSSBridgeError.invalidValue(
+                "A frozen-review command did not publish exactly one scene revision."
+            )
+        }
+        return HSSFrozenUnknownCommandApplication(
+            commandJSON: intent.commandJSON,
+            resultJSON: resultJSON,
+            beforeSceneRevision: intent.beforeSceneRevision,
+            afterSceneRevision: afterRevision,
+            sessionEpoch: intent.sessionEpoch,
+            eventSequence: intent.eventSequence,
+            monotonicTime: intent.monotonicTime
+        )
+    }
+
+    private func appendFrozenUnknownCommand(
+        _ application: HSSFrozenUnknownCommandApplication
+    ) throws {
+        let entry = try HSSCommandJournalEntry(
+            disposition: .applied,
+            commandJSON: application.commandJSON,
+            resultJSON: application.resultJSON,
+            beforeSceneRevision: application.beforeSceneRevision,
+            afterSceneRevision: application.afterSceneRevision
+        )
+        do {
+            try appendCommandJournal(
+                entry,
+                sessionEpoch: UInt64(application.sessionEpoch),
+                eventSequence: application.eventSequence,
+                monotonicTime: application.monotonicTime
+            )
+        } catch HSSBridgeError.native(let status)
+            where status == HSSStatus(HSS_RESOURCE_LIMIT) {
+            // The command has not entered the store. A checkpoint can commit
+            // the earlier pending source records, after which the unchanged
+            // command/result bytes are appended in their original order.
+            _ = try checkpoint()
+            try appendCommandJournal(
+                entry,
+                sessionEpoch: UInt64(application.sessionEpoch),
+                eventSequence: application.eventSequence,
+                monotonicTime: application.monotonicTime
+            )
+        }
+    }
+
+    func latestCommandResultJSON() throws -> Data {
+        try copyLatestCommandResult()
+    }
+
+    private func copyLatestCommandResult() throws -> Data {
+        guard let engine else { throw HSSBridgeError.closed }
+        var required: UInt64 = 0
+        let query = hss_engine_copy_command_result_json(engine, nil, 0, &required)
+        guard (query == HSS_BUFFER_TOO_SMALL || (query == HSS_OK && required == 0)),
+              required <= UInt64(Int.max) else {
+            throw HSSBridgeError.native(query)
+        }
+        var result = Data(repeating: 0, count: Int(required))
+        let copy = result.withUnsafeMutableBytes { bytes in
+            hss_engine_copy_command_result_json(
+                engine,
+                bytes.bindMemory(to: UInt8.self).baseAddress,
+                required,
+                &required
+            )
+        }
+        guard copy == HSS_OK, required == UInt64(result.count) else {
+            throw HSSBridgeError.native(copy == HSS_OK ? HSSStatus(HSS_INTERNAL_ERROR) : copy)
+        }
+        return result
+    }
+
+    private static func frozenUnknownCommand(
+        projectID: UUID,
+        expectedSceneRevision: UInt64,
+        eventSequence: UInt64,
+        reason: String
+    ) throws -> Data {
+        let command: [String: Any] = [
+            "schema_version": "1.1",
+            "command_id": UUID().uuidString.lowercased(),
+            "project_id": projectID.uuidString.lowercased(),
+            "expected_scene_revision": String(expectedSceneRevision),
+            "event_sequence": String(eventSequence),
+            "targets": [],
+            "user_intent": "record missing evidence from frozen review",
+            "type": "mark_unknown",
+            "payload": ["reason": reason]
+        ]
+        guard JSONSerialization.isValidJSONObject(command) else {
+            throw HSSBridgeError.invalidValue("Frozen-review command could not be encoded.")
+        }
+        return try JSONSerialization.data(withJSONObject: command, options: [.sortedKeys])
+    }
+
+    private static func validateAppliedCommandResult(
+        _ data: Data,
+        commandJSON: Data,
+        expectedRevision: UInt64
+    ) throws {
+        guard let command = try JSONSerialization.jsonObject(with: commandJSON) as? [String: Any],
+              let expectedCommandID = command["command_id"] as? String,
+              UUID(uuidString: expectedCommandID) != nil,
+              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              root["schema_version"] as? String == "1.1",
+              let stateText = root["state"] as? String,
+              let state = HSSCommandResultState(rawValue: stateText),
+              state == .applied,
+              let commandID = root["command_id"] as? String,
+              commandID == expectedCommandID,
+              let revisionText = root["scene_revision"] as? String,
+              let revision = UInt64(revisionText),
+              String(revision) == revisionText,
+              revision == expectedRevision,
+              let issueIDs = root["issue_ids"] as? [String],
+              issueIDs.count == 1,
+              UUID(uuidString: issueIDs[0]) != nil,
+              let conflictIDs = root["conflict_constraint_ids"] as? [String],
+              conflictIDs.isEmpty,
+              let diagnostic = root["diagnostic"] as? String,
+              !diagnostic.isEmpty,
+              root["durability"] as? String == "not_committed",
+              root["journal_commit_id"] is NSNull else {
+            throw HSSBridgeError.invalidValue(
+                "The native result did not describe one applied frozen-review command."
+            )
+        }
     }
 
     func step(workBudgetUs: UInt32 = 5_000) throws {
@@ -857,6 +1206,7 @@ actor HSSProjectRuntime {
         let recoveredCaptureID = cursor.has_capture_id == 1
             ? Self.uuid(cursor.capture_id) : captureID
         captureID = recoveredCaptureID
+        highestPersistedSessionEpoch = cursor.highest_session_epoch
         return HSSProjectReplay(
             durableRevision: result.durable_revision,
             durableEventCount: result.durable_event_count,
