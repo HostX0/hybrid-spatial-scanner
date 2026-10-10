@@ -164,6 +164,7 @@ struct ScannerWorkspacePresentation: Equatable {
     let isExportingProjectArchive: Bool
     let canOpenLibrary: Bool
     let canCaptureObject: Bool
+    var canConfirmPlanReference: Bool = false
 }
 
 struct ScannerWorkspaceActions {
@@ -184,6 +185,7 @@ struct ScannerWorkspaceActions {
     let permanentlyDeleteProject: (UUID) -> Void
     let captureObject: () -> Void
     let recover: (ScannerWorkspacePresentation.Issue) -> Void
+    var confirmPlanReference: () -> Void = {}
 }
 
 enum ScannerProductTheme {
@@ -402,6 +404,14 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
                             ScannerIssueCard(issue: issue, action: { actions.recover(issue) })
                         }
                     }
+                }
+
+                if presentation.canConfirmPlanReference {
+                    Button(action: actions.confirmPlanReference) {
+                        Label("Set observed floor reference", systemImage: "square.3.layers.3d.down.right")
+                    }
+                    .buttonStyle(ScannerSecondaryButtonStyle())
+                    .accessibilityHint("Choose retained floor support; measurement precision remains unverified")
                 }
 
                 if let plan = presentation.plan {

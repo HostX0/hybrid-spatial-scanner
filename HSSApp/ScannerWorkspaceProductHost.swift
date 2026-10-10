@@ -15,6 +15,8 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
     @State private var isCreatingProject = false
     @State private var isImportingProject = false
     @State private var isObjectCapturePresented = false
+    @State private var isFloorReferencePresented = false
+    @State private var floorReferenceSnapshot: ScannerSceneSnapshot?
     @State private var currentCameraViewport: OverlayViewport?
     @State private var projectArchiveToShare: URL?
     @State private var isRecordingMissingEvidence = false
@@ -100,6 +102,18 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             // workspace's metric scene or project save path.
             ObjectCaptureLibraryView()
         }
+        .sheet(isPresented: $isFloorReferencePresented, onDismiss: { floorReferenceSnapshot = nil }) {
+            if let snapshot = floorReferenceSnapshot {
+                ScannerFloorReferenceSheet(
+                    snapshot: snapshot,
+                    isCurrent: workspace.canConfirmPlanReference && workspace.latestSnapshot?.revision == snapshot.revision
+                ) { transform, height in
+                    guard workspace.canConfirmPlanReference, workspace.latestSnapshot?.revision == snapshot.revision else { return }
+                    workspace.confirmPlanReference(projectFromFloor: transform, cutHeightMetres: height)
+                    isFloorReferencePresented = false
+                }
+            }
+        }
         .sheet(isPresented: Binding(
             get: { projectArchiveToShare != nil },
             set: { if !$0 { projectArchiveToShare = nil } }
@@ -155,7 +169,8 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             canExportProjectArchive: workspace.canExportProjectArchive,
             isExportingProjectArchive: workspace.projectArchiveExportState == .exporting,
             canOpenLibrary: workspace.canShowLibrary,
-            canCaptureObject: canCaptureObject
+            canCaptureObject: canCaptureObject,
+            canConfirmPlanReference: workspace.canConfirmPlanReference && assessment?.hasCapturedGeometry == true
         )
     }
 
@@ -186,7 +201,13 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             restoreProject: workspace.restoreProject,
             permanentlyDeleteProject: workspace.permanentlyDeleteProject,
             captureObject: { if canCaptureObject { isObjectCapturePresented = true } },
-            recover: { _ in workspace.recoverFromCurrentIssue() }
+            recover: { _ in workspace.recoverFromCurrentIssue() },
+            confirmPlanReference: {
+                guard workspace.canConfirmPlanReference, let snapshot = workspace.latestSnapshot,
+                      ScannerSceneAssessment.decode(snapshot).hasCapturedGeometry else { return }
+                floorReferenceSnapshot = snapshot
+                isFloorReferencePresented = true
+            }
         )
     }
 
@@ -612,6 +633,172 @@ private struct ScannerSnapshotMeshPreview: UIViewRepresentable {
             admittedAppearanceBinding: admittedAppearanceBinding,
             appearanceTextures: appearanceTextures
         )
+    }
+}
+
+/// A reference proposal from three exact retained vertices, never world Y=0.
+/// The fit is geometric, not a calibrated physical measurement or room semantic.
+struct ScannerFloorReferenceProposal {
+    let sceneRevision: UInt64
+    let vertexIndices: [Int]
+    let projectFromFloor: simd_double4x4
+
+    static func nearestVisibleVertex(snapshot: ScannerSceneSnapshot, faceIndex: Int, localPoint: SIMD3<Double>) -> Int? {
+        guard localPoint.x.isFinite, localPoint.y.isFinite, localPoint.z.isFinite,
+              let indices = ScannerMeshSceneBuilder.displayTriangleIndices(from: snapshot),
+              faceIndex >= 0, faceIndex < indices.count / 3 else { return nil }
+        let offset = faceIndex * 3
+        let candidates = indices[offset..<(offset + 3)].map(Int.init)
+        guard candidates.allSatisfy({ snapshot.verticesMetres.indices.contains($0) }) else { return nil }
+        return candidates.min {
+            simd_length_squared(snapshot.verticesMetres[$0] - localPoint) < simd_length_squared(snapshot.verticesMetres[$1] - localPoint)
+        }
+    }
+
+    static func make(snapshot: ScannerSceneSnapshot, vertexIndices: [Int]) -> Self? {
+        guard vertexIndices.count == 3, Set(vertexIndices).count == 3,
+              vertexIndices.allSatisfy({ snapshot.verticesMetres.indices.contains($0) }),
+              let visibleIndices = ScannerMeshSceneBuilder.displayTriangleIndices(from: snapshot),
+              vertexIndices.allSatisfy({ $0 <= Int(UInt32.max) && visibleIndices.contains(UInt32($0)) }) else { return nil }
+        let points = vertexIndices.map { snapshot.verticesMetres[$0] }
+        guard points.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.z.isFinite }) else { return nil }
+        let first = points[1] - points[0], second = points[2] - points[0]
+        let firstLength = simd_length(first), secondLength = simd_length(second)
+        let product = firstLength * secondLength
+        let cross = simd_cross(first, second), crossLength = simd_length(cross)
+        // Numeric conditioning only. This is not a sensor-accuracy tolerance.
+        guard product.isFinite, product > 0, crossLength.isFinite,
+              crossLength / product > 1e-8 else { return nil }
+        var normal = cross / crossLength
+        guard abs(normal.y) > 1e-8 else { return nil } // A vertical plane is not a floor reference.
+        if normal.y < 0 { normal = -normal }
+        let u = first / firstLength
+        let v = simd_cross(normal, u)
+        let origin = points[0]
+        return Self(sceneRevision: snapshot.revision, vertexIndices: vertexIndices,
+            projectFromFloor: simd_double4x4(columns: (
+                SIMD4(u.x, u.y, u.z, 0), SIMD4(normal.x, normal.y, normal.z, 0),
+                SIMD4(-v.x, -v.y, -v.z, 0), SIMD4(origin.x, origin.y, origin.z, 1)
+            )))
+    }
+}
+
+@MainActor
+private struct ScannerFloorReferenceSheet: View {
+    let snapshot: ScannerSceneSnapshot
+    let isCurrent: Bool
+    let confirm: (simd_double4x4, Double) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedVertices: [Int] = []
+    @State private var confirmsPhysicalFloor = false
+    @State private var cutHeight = 1.2
+
+    private var proposal: ScannerFloorReferenceProposal? {
+        ScannerFloorReferenceProposal.make(snapshot: snapshot, vertexIndices: selectedVertices)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Text("Select three distinct points spread across the visible physical floor. Rotate the captured model to inspect it; do not select a table, shelf or ceiling.")
+                    ScannerFloorVertexPicker(snapshot: snapshot, selectedVertices: selectedVertices) { index in
+                        guard isCurrent, selectedVertices.count < 3, !selectedVertices.contains(index) else { return }
+                        selectedVertices.append(index)
+                        confirmsPhysicalFloor = false
+                    }
+                    .frame(height: 320).clipShape(RoundedRectangle(cornerRadius: 20))
+                    .accessibilityLabel("Captured geometry for floor selection")
+                    Text("\(selectedVertices.count) of 3 retained points selected").font(.headline)
+                    Button("Clear selection") { selectedVertices = []; confirmsPhysicalFloor = false }
+                        .buttonStyle(.bordered).disabled(selectedVertices.isEmpty)
+                    if selectedVertices.count == 3 && proposal == nil {
+                        Label("These points do not define a conditioned nonvertical plane. Clear the selection and choose more widely separated floor points.", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(ScannerProductTheme.warning)
+                    }
+                    if !isCurrent {
+                        Label("The accepted revision changed. Close this view and select the floor again.", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(ScannerProductTheme.warning)
+                    }
+                    Stepper(value: $cutHeight, in: 0.1...100, step: 0.05) {
+                        Text("Architectural cut: \(cutHeight.formatted(.number.precision(.fractionLength(2)))) m")
+                    }
+                    Toggle("I confirm these selected points lie on the physical floor", isOn: $confirmsPhysicalFloor)
+                    Text("This changes only the plan's reference plane and cut height. Captured geometry is unchanged. Floor precision, room semantics and area remain unverified until supported separately.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Button("Apply reference") {
+                        if let proposal, isCurrent, confirmsPhysicalFloor {
+                            confirm(proposal.projectFromFloor, cutHeight)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .foregroundStyle(ScannerProductTheme.canvas)
+                    .disabled(proposal == nil || !isCurrent || !confirmsPhysicalFloor)
+                    Text("Applied is not Saved. Save the updated draft after the native engine accepts this reference.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.padding(24).frame(maxWidth: 740).frame(maxWidth: .infinity)
+            }
+            .navigationTitle("Observed floor reference")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }.tint(ScannerProductTheme.accent)
+    }
+}
+
+@MainActor
+private struct ScannerFloorVertexPicker: UIViewRepresentable {
+    let snapshot: ScannerSceneSnapshot
+    let selectedVertices: [Int]
+    let select: (Int) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(snapshot: snapshot, select: select) }
+
+    func makeUIView(context: Context) -> SCNView {
+        let view = SCNView()
+        view.backgroundColor = UIColor(ScannerProductTheme.canvas)
+        view.allowsCameraControl = true
+        view.autoenablesDefaultLighting = true
+        view.addGestureRecognizer(UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tap(_:))))
+        rebuild(view)
+        return view
+    }
+
+    func updateUIView(_ view: SCNView, context: Context) {
+        context.coordinator.snapshot = snapshot
+        context.coordinator.select = select
+        rebuild(view)
+    }
+
+    private func rebuild(_ view: SCNView) {
+        let pose = view.pointOfView?.simdTransform
+        let scene = ScannerMeshSceneBuilder.scene(from: snapshot)
+        let mesh = scene.rootNode.childNodes.first { $0.geometry != nil }
+        mesh?.name = "retained-floor-selection-mesh"
+        for index in selectedVertices where snapshot.verticesMetres.indices.contains(index) {
+            let point = snapshot.verticesMetres[index]
+            let marker = SCNNode(geometry: SCNSphere(radius: 0.025))
+            marker.name = "selection-marker-not-metric-geometry"
+            marker.geometry?.firstMaterial?.diffuse.contents = UIColor(ScannerProductTheme.warning)
+            marker.position = SCNVector3(Float(point.x), Float(point.y), Float(point.z))
+            scene.rootNode.addChildNode(marker)
+        }
+        view.scene = scene
+        let camera = scene.rootNode.childNodes.first { $0.camera != nil }
+        if let pose { camera?.simdTransform = pose }
+        view.pointOfView = camera
+    }
+
+    @MainActor final class Coordinator: NSObject {
+        var snapshot: ScannerSceneSnapshot
+        var select: (Int) -> Void
+        init(snapshot: ScannerSceneSnapshot, select: @escaping (Int) -> Void) {
+            self.snapshot = snapshot; self.select = select
+        }
+        @objc func tap(_ gesture: UITapGestureRecognizer) {
+            guard let view = gesture.view as? SCNView,
+                  let hit = view.hitTest(gesture.location(in: view)).first(where: { $0.node.name == "retained-floor-selection-mesh" }) else { return }
+            let point = SIMD3(Double(hit.localCoordinates.x), Double(hit.localCoordinates.y), Double(hit.localCoordinates.z))
+            if let index = ScannerFloorReferenceProposal.nearestVisibleVertex(snapshot: snapshot, faceIndex: hit.faceIndex, localPoint: point) { select(index) }
+        }
     }
 }
 

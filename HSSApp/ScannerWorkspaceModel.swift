@@ -31,6 +31,39 @@ struct ProjectCaptureClock {
     }
 }
 
+/// An idle review control uses the accepted snapshot's coordinate context,
+/// not the presence of an active camera session. It never registers a new epoch
+/// or invents a relationship to an old world's arbitrary origin.
+enum ScannerRetainedPlanEpoch {
+    private struct Document: Decodable {
+        let project_id: UUID
+        let scene_revision: String
+        let units: String
+        let epochs: [Epoch]
+    }
+    private struct Epoch: Decodable {
+        let capture_id: UUID
+        let session_epoch: UInt64
+        let transform_revision: String
+        let relationship_state: String
+        let T_project_world: [Double]?
+    }
+
+    static func resolve(snapshot: ScannerSceneSnapshot, projectID: UUID, captureID: UUID) -> UInt64? {
+        guard let document = try? JSONDecoder().decode(Document.self, from: snapshot.sceneJSON),
+              document.project_id == projectID, document.units == "m",
+              document.scene_revision == String(snapshot.revision), document.epochs.count <= 32,
+              document.epochs.allSatisfy({ epoch in
+                  epoch.session_epoch > 0 && epoch.session_epoch <= UInt64(UInt32.max)
+                      && UInt64(epoch.transform_revision).map { $0 > 0 && String($0) == epoch.transform_revision } == true
+                      && ["accepted", "unresolved"].contains(epoch.relationship_state)
+                      && (epoch.relationship_state != "accepted" || (epoch.T_project_world?.count == 16 && epoch.T_project_world?.allSatisfy(\.isFinite) == true))
+              }) else { return nil }
+        return document.epochs.filter { $0.capture_id == captureID && $0.relationship_state == "accepted" }
+            .map(\.session_epoch).max()
+    }
+}
+
 @MainActor
 final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     @Published private(set) var localProjects: [ScannerProjectSummary] = []
@@ -55,18 +88,21 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     @Published private(set) var targetSelectionState: NativeTargetSelectionState = .awaitingSelection
 
     var captureSession: ARSession? { captureCoordinator.captureSession }
+    private var retainedPlanEpoch: UInt64? {
+        guard let snapshot = latestSnapshot, let entry = selectedCatalogEntry else { return nil }
+        return ScannerRetainedPlanEpoch.resolve(snapshot: snapshot, projectID: entry.id, captureID: entry.captureID)
+    }
     var canConfirmPlanReference: Bool {
-        selectedProjectID != nil
+        phase == .frozen
+            && runtime != nil
+            && selectedProjectID != nil
             && latestSnapshot?.verticesMetres.isEmpty == false
-            && captureCoordinator.epochRelocalization.currentEpoch != nil
+            && retainedPlanEpoch != nil
+            && !captureCoordinator.isSessionRunning
             && !drainScheduled
             && !pendingCommandJournal
             && !frozenCommandInFlight
             && !reviewSnapshotRefreshRequired
-            && phase != .capturing
-            && phase != .captureInterrupted
-            && phase != .stoppingCapture
-            && phase != .saving
     }
     var canShowLibrary: Bool {
         !captureCoordinator.isSessionRunning
@@ -790,14 +826,20 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
 
     func confirmPlanReference(projectFromFloor: simd_double4x4, cutHeightMetres: Double) {
         guard canConfirmPlanReference,
-              cutHeightMetres.isFinite, cutHeightMetres > 0,
-              let epoch = captureCoordinator.epochRelocalization.currentEpoch else { return }
+              cutHeightMetres.isFinite, cutHeightMetres > 0, cutHeightMetres <= 100,
+              let epoch = retainedPlanEpoch else { return }
         let matrix = [
             projectFromFloor.columns.0.x, projectFromFloor.columns.0.y, projectFromFloor.columns.0.z, projectFromFloor.columns.0.w,
             projectFromFloor.columns.1.x, projectFromFloor.columns.1.y, projectFromFloor.columns.1.z, projectFromFloor.columns.1.w,
             projectFromFloor.columns.2.x, projectFromFloor.columns.2.y, projectFromFloor.columns.2.z, projectFromFloor.columns.2.w,
             projectFromFloor.columns.3.x, projectFromFloor.columns.3.y, projectFromFloor.columns.3.z, projectFromFloor.columns.3.w,
         ]
+        // Preserve the review-only lifecycle after the queued control drains.
+        // An intermediate mutable snapshot must not remain the frozen review.
+        // Reopened projects have no live capture clock; start an ordered review
+        // control clock at the verified durable cursor, never at arbitrary zero.
+        captureClock = ProjectCaptureClock(lastDurableTime: lastDurableEventTime)
+        freezeRequested = true
         enqueue(.planReference(
             matrix: matrix, cutHeightMetres: cutHeightMetres,
             epoch: epoch, monotonicTime: ProcessInfo.processInfo.systemUptime

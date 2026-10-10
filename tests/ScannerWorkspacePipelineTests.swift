@@ -1,8 +1,140 @@
 import XCTest
 import UniformTypeIdentifiers
+import simd
 @testable import HybridSpatialScanner
 
 final class ScannerWorkspacePipelineTests: XCTestCase {
+    func testFloorTapMapsVisibleFaceToRawRetainedVerticesWithoutRetargetingHiddenMesh() {
+        let points: [SIMD3<Double>] = [SIMD3(0, 2, 0), SIMD3(1, 2, 0), SIMD3(0, 2, -1),
+            SIMD3(5, 2, 0), SIMD3(6, 2, 0), SIMD3(5, 2, -1)]
+        let snapshot = ScannerSceneSnapshot(revision: 9, verticesMetres: points, triangleIndices: [0, 1, 2, 3, 4, 5],
+            reviewTriangleInclusion: [0, 1], sceneJSON: Data(), provenance: [.syntheticTest], isFrozen: true)
+        XCTAssertEqual(ScannerFloorReferenceProposal.nearestVisibleVertex(snapshot: snapshot, faceIndex: 0, localPoint: SIMD3(5.1, 2, -0.1)), 3)
+        XCTAssertNil(ScannerFloorReferenceProposal.nearestVisibleVertex(snapshot: snapshot, faceIndex: 1, localPoint: SIMD3(5, 2, 0)))
+        XCTAssertNil(ScannerFloorReferenceProposal.nearestVisibleVertex(snapshot: snapshot, faceIndex: 0, localPoint: SIMD3(.nan, 2, 0)))
+        XCTAssertNil(ScannerFloorReferenceProposal.make(snapshot: snapshot, vertexIndices: [0, 1, 2]))
+        XCTAssertNotNil(ScannerFloorReferenceProposal.make(snapshot: snapshot, vertexIndices: [3, 4, 5]))
+        XCTAssertEqual(snapshot.triangleIndices, [0, 1, 2, 3, 4, 5])
+    }
+
+    func testFloorProposalUsesRetainedPointsAndRightHandedArbitrarySlope() throws {
+        let points: [SIMD3<Double>] = [SIMD3(10, 2, -5), SIMD3(11, 2.3, -5), SIMD3(10, 2.1, -6)]
+        let snapshot = floorProposalFixture(points: points)
+        let proposal = try XCTUnwrap(ScannerFloorReferenceProposal.make(snapshot: snapshot, vertexIndices: [0, 1, 2]))
+        XCTAssertEqual(proposal.sceneRevision, snapshot.revision)
+        XCTAssertEqual(proposal.projectFromFloor.columns.3.y, 2, "Physical floor is not the arbitrary world Y=0.")
+        let transform = proposal.projectFromFloor
+        let rotation = simd_double3x3(columns: (SIMD3(transform.columns.0.x, transform.columns.0.y, transform.columns.0.z),
+            SIMD3(transform.columns.1.x, transform.columns.1.y, transform.columns.1.z),
+            SIMD3(transform.columns.2.x, transform.columns.2.y, transform.columns.2.z)))
+        XCTAssertEqual(simd_determinant(rotation), 1, accuracy: 1e-12)
+        XCTAssertGreaterThan(transform.columns.1.y, 0)
+        for point in points {
+            let floor = transform.inverse * SIMD4(point.x, point.y, point.z, 1)
+            XCTAssertEqual(floor.y, 0, accuracy: 1e-12, "Numerical plane fit, not a physical precision claim.")
+        }
+        XCTAssertEqual(snapshot.verticesMetres, points, "The proposal never edits retained observations.")
+    }
+
+    func testFloorProposalRejectsDegenerateUnretainedAndVerticalSelection() {
+        let ordinary = floorProposalFixture(points: [SIMD3(0, 2, 0), SIMD3(1, 2, 0), SIMD3(0, 2, -1)])
+        for selection in [[0, 0, 2], [0, 1], [0, 1, 3], [-1, 1, 2]] {
+            XCTAssertNil(ScannerFloorReferenceProposal.make(snapshot: ordinary, vertexIndices: selection))
+        }
+        for points: [SIMD3<Double>] in [
+            [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(2, 0, 0)],
+            [SIMD3(0, 0, 0), SIMD3(0, 1, 0), SIMD3(0, 0, 1)],
+            [SIMD3(.nan, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 0, -1)]
+        ] {
+            XCTAssertNil(ScannerFloorReferenceProposal.make(snapshot: floorProposalFixture(points: points), vertexIndices: [0, 1, 2]))
+        }
+    }
+
+    private func floorProposalFixture(points: [SIMD3<Double>]) -> ScannerSceneSnapshot {
+        ScannerSceneSnapshot(revision: 9, verticesMetres: points, triangleIndices: [0, 1, 2],
+            sceneJSON: Data(), provenance: [.syntheticTest], isFrozen: true)
+    }
+
+    func testReopenedProjectAcceptsExplicitPlanReferenceWithoutStartingCamera() async throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID(), captureID = UUID()
+        let before = try await createSyntheticProject(root: root, projectID: projectID, captureID: captureID)
+        let catalog = try JSONSerialization.data(withJSONObject: ["projects": [[
+            "id": projectID.uuidString, "captureID": captureID.uuidString, "name": "Retained reference fixture",
+            "updatedAt": 0, "sceneRevision": before.revision, "state": "frozen", "sourceIsSynthetic": true
+        ]]])
+        try catalog.write(to: root.appendingPathComponent("workspace-catalog.json"))
+        let workspace = await MainActor.run { ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true) }
+        await MainActor.run { workspace.openProject(id: projectID) }
+        for _ in 0..<100 {
+            if await MainActor.run(body: { workspace.phase == .frozen }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let mayConfirm = await MainActor.run { workspace.canConfirmPlanReference }
+        let initialPhase = await MainActor.run { workspace.phase }
+        XCTAssertEqual(initialPhase, .frozen)
+        XCTAssertTrue(mayConfirm, "Retained accepted epochs must not require a running camera.")
+        guard mayConfirm else { return }
+        await MainActor.run { workspace.confirmPlanReference(projectFromFloor: matrix_identity_double4x4, cutHeightMetres: 1.2) }
+        for _ in 0..<200 {
+            if await MainActor.run(body: { workspace.latestSnapshot?.revision == before.revision + 1 && workspace.latestSnapshot?.isFrozen == true }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let capturedAfter = await MainActor.run { workspace.latestSnapshot }
+        let after = try XCTUnwrap(capturedAfter)
+        XCTAssertEqual(after.revision, before.revision + 1)
+        XCTAssertTrue(after.isFrozen)
+        XCTAssertEqual(after.verticesMetres, before.verticesMetres)
+        XCTAssertEqual(after.triangleIndices, before.triangleIndices)
+        let unsaved = await MainActor.run { workspace.saveState }
+        XCTAssertEqual(unsaved, .hasUnsavedChanges)
+        await MainActor.run { workspace.saveSelectedProject() }
+        for _ in 0..<200 {
+            if await MainActor.run(body: { workspace.phase == .frozen && workspace.saveState != .saving }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let reopened = await MainActor.run { ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true) }
+        await MainActor.run { reopened.openProject(id: projectID) }
+        for _ in 0..<100 {
+            if await MainActor.run(body: { reopened.phase == .frozen }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let reopenedSnapshot = await MainActor.run { reopened.latestSnapshot }
+        let canConfirmAgain = await MainActor.run { reopened.canConfirmPlanReference }
+        XCTAssertEqual(reopenedSnapshot?.revision, after.revision)
+        XCTAssertEqual(reopenedSnapshot?.sceneJSON, after.sceneJSON)
+        XCTAssertTrue(canConfirmAgain)
+    }
+
+    func testRetainedPlanEpochRejectsUnrelatedStaleAndUnresolvedContexts() async throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID(), captureID = UUID()
+        let snapshot = try await createSyntheticProject(root: root, projectID: projectID, captureID: captureID)
+        XCTAssertEqual(ScannerRetainedPlanEpoch.resolve(snapshot: snapshot, projectID: projectID, captureID: captureID), 1)
+        XCTAssertNil(ScannerRetainedPlanEpoch.resolve(snapshot: snapshot, projectID: UUID(), captureID: captureID))
+        XCTAssertNil(ScannerRetainedPlanEpoch.resolve(snapshot: snapshot, projectID: projectID, captureID: UUID()))
+        let original = try XCTUnwrap(JSONSerialization.jsonObject(with: snapshot.sceneJSON) as? [String: Any])
+        for mutation in ["revision", "unresolved", "matrix", "transformRevision"] {
+            var document = original
+            if mutation == "revision" {
+                document["scene_revision"] = String(snapshot.revision + 1)
+            } else {
+                var epochs = try XCTUnwrap(document["epochs"] as? [[String: Any]])
+                if mutation == "unresolved" { epochs[0]["relationship_state"] = "unresolved" }
+                if mutation == "matrix" { epochs[0]["T_project_world"] = NSNull() }
+                if mutation == "transformRevision" { epochs[0]["transform_revision"] = "01" }
+                document["epochs"] = epochs
+            }
+            let changed = ScannerSceneSnapshot(
+                revision: snapshot.revision, verticesMetres: snapshot.verticesMetres,
+                triangleIndices: snapshot.triangleIndices,
+                sceneJSON: try JSONSerialization.data(withJSONObject: document), provenance: [.syntheticTest], isFrozen: true)
+            XCTAssertNil(ScannerRetainedPlanEpoch.resolve(snapshot: changed, projectID: projectID, captureID: captureID), mutation)
+        }
+    }
+
     func testObjectLibraryDiscoversLegacyPhotosWithoutMetricAuthority() throws {
         let root = try objectRoot()
         defer { try? FileManager.default.removeItem(at: root) }
