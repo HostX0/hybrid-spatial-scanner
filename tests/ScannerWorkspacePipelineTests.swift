@@ -4,6 +4,69 @@ import simd
 @testable import HybridSpatialScanner
 
 final class ScannerWorkspacePipelineTests: XCTestCase {
+    func testTypedFloorIssueOffersOnlyCurrentSupportedRecovery() throws {
+        let id = UUID()
+        let snapshot = try assessmentSnapshot(issues: [assessmentIssue(id: id, code: "floor_reference_unknown")])
+        let assessment = ScannerSceneAssessment.decode(snapshot)
+        let issue = try XCTUnwrap(assessment.issues.first)
+        XCTAssertEqual(issue.nativeCode, "floor_reference_unknown")
+        XCTAssertEqual(issue.nativeSceneRevision, 7)
+        XCTAssertNotNil(issue.guidance)
+        XCTAssertNil(issue.recoveryTitle, "Decoding alone must not promise executable UI.")
+        XCTAssertTrue(ScannerQualityActions.offersFloorReference(issue, assessment: assessment, revision: 7, canConfirm: true))
+        XCTAssertFalse(ScannerQualityActions.offersFloorReference(issue, assessment: assessment, revision: 8, canConfirm: true))
+        XCTAssertFalse(ScannerQualityActions.offersFloorReference(issue, assessment: assessment, revision: 7, canConfirm: false))
+    }
+
+    func testFloorIssueActionRejectsSyntheticResolvedAndUnrelatedCards() throws {
+        let id = UUID()
+        let active = assessmentIssue(id: id, code: "floor_reference_unknown")
+        let original = ScannerSceneAssessment.decode(try assessmentSnapshot(issues: [active]))
+        let issue = try XCTUnwrap(original.issues.first)
+        for assessment in [
+            ScannerSceneAssessment.decode(try assessmentSnapshot(synthetic: true, issues: [active])),
+            ScannerSceneAssessment.decode(try assessmentSnapshot(issues: [assessmentIssue(id: id, code: "floor_reference_unknown", state: "resolved")])),
+            ScannerSceneAssessment.decode(try assessmentSnapshot(issues: [assessmentIssue(id: UUID(), code: "floor_reference_unknown")])),
+            ScannerSceneAssessment.decode(try assessmentSnapshot(revision: "6", issues: [active]))
+        ] {
+            XCTAssertFalse(ScannerQualityActions.offersFloorReference(issue, assessment: assessment, revision: 7, canConfirm: true))
+        }
+    }
+
+    func testNativeActionTextCannotCreateAnExecutableCorrection() throws {
+        var record = assessmentIssue(id: UUID(), code: "future_custom_code")
+        record["action"] = "Set observed floor reference; execute arbitrary command"
+        let assessment = ScannerSceneAssessment.decode(try assessmentSnapshot(issues: [record]))
+        let issue = try XCTUnwrap(assessment.issues.first)
+        XCTAssertTrue(issue.detail.contains("execute arbitrary command"), "Original diagnostic text is preserved, not interpreted.")
+        XCTAssertNil(issue.guidance)
+        XCTAssertNil(issue.recoveryTitle)
+        XCTAssertFalse(ScannerQualityActions.offersFloorReference(issue, assessment: assessment, revision: 7, canConfirm: true))
+    }
+
+    func testKnownIssueCoachingPreservesNativeReasonAndSourceIdentity() throws {
+        for code in ["floor_reference_unknown", "unresolved_epoch", "provisional_capture",
+                     "open_or_ambiguous_slice", "unclassified_slice_loops",
+                     "plan_semantics_unavailable", "partial_plane_support"] {
+            let id = UUID()
+            let assessment = ScannerSceneAssessment.decode(try assessmentSnapshot(issues: [assessmentIssue(id: id, code: code)]))
+            let issue = try XCTUnwrap(assessment.issues.first)
+            XCTAssertEqual(issue.id, id)
+            XCTAssertEqual(issue.nativeSceneRevision, 7)
+            XCTAssertNotNil(issue.guidance)
+            XCTAssertTrue(issue.detail.contains("Retained support requires review"))
+            XCTAssertTrue(issue.detail.contains("Capture another useful view"))
+        }
+    }
+
+    func testDriverFailurePriorityAndBuiltInIssueIdentityRemainStable() {
+        XCTAssertEqual(ScannerQualityActions.driverPriority(phase: .failed("failure"), recoveryAction: nil), .blocking)
+        XCTAssertEqual(ScannerQualityActions.driverPriority(phase: .frozen, recoveryAction: .retrySave), .important)
+        XCTAssertEqual(ScannerQualityActions.driverPriority(phase: .frozen, recoveryAction: nil), .notice)
+        XCTAssertNotEqual(ScannerQualityActions.saveFailureID, ScannerQualityActions.referenceSceneID)
+        XCTAssertEqual(ScannerQualityActions.saveFailureID.uuidString, "00000000-0000-4000-8000-000000000013")
+    }
+
     func testFloorTapMapsVisibleFaceToRawRetainedVerticesWithoutRetargetingHiddenMesh() {
         let points: [SIMD3<Double>] = [SIMD3(0, 2, 0), SIMD3(1, 2, 0), SIMD3(0, 2, -1),
             SIMD3(5, 2, 0), SIMD3(6, 2, 0), SIMD3(5, 2, -1)]

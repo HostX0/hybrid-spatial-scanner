@@ -67,7 +67,10 @@ struct ScannerWorkspacePresentation: Equatable {
         let title: String
         let detail: String
         let priority: Priority
-        let recoveryTitle: String?
+        var recoveryTitle: String?
+        var nativeCode: String? = nil
+        var nativeSceneRevision: UInt64? = nil
+        var guidance: String? = nil
     }
 
     struct Measurement: Equatable, Identifiable {
@@ -958,17 +961,28 @@ private struct ScannerIssueCard: View {
                 Spacer()
                 Text(priorityLabel).font(.caption.weight(.semibold)).foregroundStyle(priorityColor)
             }
-            Text(issue.detail).font(.subheadline).foregroundStyle(ScannerProductTheme.muted)
+            if let guidance = issue.guidance {
+                Text(guidance).font(.subheadline).foregroundStyle(ScannerProductTheme.muted)
+                DisclosureGroup("Engine details") {
+                    Text(issue.detail).font(.caption).textSelection(.enabled)
+                        .foregroundStyle(ScannerProductTheme.muted)
+                }
+                .font(.caption)
+            } else {
+                Text(issue.detail).font(.subheadline).foregroundStyle(ScannerProductTheme.muted)
+            }
             if let recoveryTitle = issue.recoveryTitle {
                 Button(recoveryTitle, action: action)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(ScannerProductTheme.accent)
                     .frame(minHeight: 44, alignment: .leading)
+                    .accessibilityIdentifier("quality-issue.action." + issue.id.uuidString)
             }
         }
         .padding(16)
         .background(ScannerProductTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("quality-issue." + issue.id.uuidString)
     }
 
     private var priorityLabel: LocalizedStringKey {

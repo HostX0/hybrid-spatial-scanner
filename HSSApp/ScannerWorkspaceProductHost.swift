@@ -146,7 +146,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             projects: workspace.localProjects.map(projectPresentation),
             deletedProjects: workspace.deletedProjects.map(projectPresentation),
             isManagingLibrary: workspace.isManagingLibrary,
-            issues: issues,
+            issues: issues(assessment: assessment, isReferenceScene: isReferenceScene),
             measurements: reviewData?.measurements ?? [],
             provenanceFields: reviewData?.provenanceFields ?? [],
             provenanceLanguage: locale.language.languageCode?.identifier == "ar" ? .arabic : .english,
@@ -201,13 +201,8 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             restoreProject: workspace.restoreProject,
             permanentlyDeleteProject: workspace.permanentlyDeleteProject,
             captureObject: { if canCaptureObject { isObjectCapturePresented = true } },
-            recover: { _ in workspace.recoverFromCurrentIssue() },
-            confirmPlanReference: {
-                guard workspace.canConfirmPlanReference, let snapshot = workspace.latestSnapshot,
-                      ScannerSceneAssessment.decode(snapshot).hasCapturedGeometry else { return }
-                floorReferenceSnapshot = snapshot
-                isFloorReferencePresented = true
-            }
+            recover: recover,
+            confirmPlanReference: presentFloorReference
         )
     }
 
@@ -342,7 +337,29 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
         }
     }
 
-    private var issues: [ScannerWorkspacePresentation.Issue] {
+    private func presentFloorReference() {
+        guard workspace.canConfirmPlanReference, let snapshot = workspace.latestSnapshot,
+              ScannerSceneAssessment.decode(snapshot).hasCapturedGeometry else { return }
+        floorReferenceSnapshot = snapshot
+        isFloorReferencePresented = true
+    }
+
+    private func recover(_ issue: ScannerWorkspacePresentation.Issue) {
+        // Never dispatch the current driver recovery for a different card.
+        if issue.nativeCode == nil, issue.id == workspace.currentIssue?.id {
+            workspace.recoverFromCurrentIssue()
+        } else if issue.nativeCode == nil, issue.id == ScannerQualityActions.saveFailureID,
+                  workspace.currentIssue == nil, case .failed = workspace.saveState {
+            workspace.saveSelectedProject()
+        } else if let snapshot = workspace.latestSnapshot,
+                  ScannerQualityActions.offersFloorReference(
+                    issue, assessment: ScannerSceneAssessment.decode(snapshot),
+                    revision: snapshot.revision, canConfirm: workspace.canConfirmPlanReference) {
+            presentFloorReference()
+        }
+    }
+
+    private func issues(assessment: ScannerSceneAssessment?, isReferenceScene: Bool) -> [ScannerWorkspacePresentation.Issue] {
         var visible: [ScannerWorkspacePresentation.Issue] = []
         if let issue = workspace.currentIssue {
             visible.append(
@@ -350,7 +367,8 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
                     id: issue.id,
                     title: issue.title,
                     detail: issue.message,
-                    priority: .notice,
+                    priority: ScannerQualityActions.driverPriority(
+                        phase: workspace.phase, recoveryAction: issue.recoveryAction),
                     recoveryTitle: recoveryTitle(for: issue.recoveryAction)
                 )
             )
@@ -358,7 +376,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
         if case .failed(let message) = workspace.saveState, workspace.currentIssue == nil {
             visible.append(
                 ScannerWorkspacePresentation.Issue(
-                    id: UUID(),
+                    id: ScannerQualityActions.saveFailureID,
                     title: String(localized: "Local save needs attention"),
                     detail: message,
                     priority: .important,
@@ -366,11 +384,10 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
                 )
             )
         }
-        if workspace.latestSnapshot?.provenance.contains(.syntheticTest) == true
-            || workspace.latestSnapshot.flatMap({ ScannerAcceptedPlanDecoder.decode($0, language: locale.language.languageCode?.identifier == "ar" ? .arabic : .english) })?.isSynthetic == true {
+        if isReferenceScene {
             visible.append(
                 ScannerWorkspacePresentation.Issue(
-                    id: UUID(),
+                    id: ScannerQualityActions.referenceSceneID,
                     title: String(localized: "Reference scene"),
                     detail: String(localized: "This local reference data is not a captured room scan."),
                     priority: .notice,
@@ -378,10 +395,21 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
                 )
             )
         }
-        if let snapshot = workspace.latestSnapshot {
-            visible.append(contentsOf: ScannerSceneAssessment.decode(snapshot).issues)
+        if let snapshot = workspace.latestSnapshot, let assessment {
+            visible.append(contentsOf: assessment.issues.map { original in
+                var issue = original
+                if ScannerQualityActions.offersFloorReference(
+                    issue, assessment: assessment, revision: snapshot.revision,
+                    canConfirm: workspace.canConfirmPlanReference) {
+                    issue.recoveryTitle = String(localized: "Set observed floor reference")
+                }
+                return issue
+            })
         }
-        return visible.sorted { $0.priority.rank < $1.priority.rank }
+        return visible.sorted {
+            $0.priority.rank == $1.priority.rank ? $0.id.uuidString < $1.id.uuidString
+                : $0.priority.rank < $1.priority.rank
+        }
     }
 
     private func projectPresentation(_ project: ScannerProjectSummary) -> ScannerWorkspacePresentation.Project {
@@ -967,7 +995,9 @@ struct ScannerSceneAssessment: Equatable {
                 visible.append(.init(
                     id: issue.id, title: title(for: issue.code),
                     detail: String(issue.reason.prefix(2048)) + "\n" + String(issue.action.prefix(512)),
-                    priority: priority, recoveryTitle: nil
+                    priority: priority, recoveryTitle: nil,
+                    nativeCode: issue.code, nativeSceneRevision: snapshot.revision,
+                    guidance: guidance(for: issue.code)
                 ))
             }
         } else {
@@ -1004,6 +1034,24 @@ struct ScannerSceneAssessment: Equatable {
         )
     }
 
+    private static func guidance(for code: String) -> String? {
+        switch code {
+        case "floor_reference_unknown":
+            String(localized: "Select three spread-out points on the observed floor and confirm the surface. A starting camera position is not a floor reference. Area remains unavailable until room interpretation is valid.")
+        case "unresolved_epoch":
+            String(localized: "This capture has an unresolved coordinate relationship. Keep it as evidence; do not combine dimensions across unrelated capture frames.")
+        case "provisional_capture":
+            String(localized: "Use these values as estimates only. Sensor calibration, an independent reference and physical validation are still required for certified dimensions.")
+        case "open_or_ambiguous_slice":
+            String(localized: "Review the unsupported boundary and capture it from another useful angle. Missing geometry is not filled, and an open section is not a room-area result.")
+        case "unclassified_slice_loops", "plan_semantics_unavailable":
+            String(localized: "Retained surfaces can be inspected in 3D, but separate boundaries are not yet a verified room interpretation. Do not treat them as finished-room area.")
+        case "partial_plane_support":
+            String(localized: "Only part of this surface supports the fit. Review the observed extent before relying on the estimate; a fitted plane does not extend the captured surface.")
+        default: nil
+        }
+    }
+
     private static func title(for code: String) -> String {
         switch code {
         case "unresolved_epoch": String(localized: "Coordinate relationship unresolved")
@@ -1017,6 +1065,33 @@ struct ScannerSceneAssessment: Equatable {
         case "plan_semantics_unavailable": String(localized: "Plan interpretation unavailable")
         default: String(localized: "Engine review: \(code)")
         }
+    }
+}
+
+/// Closed allowlist of implemented native actions. Native reason/action text is
+/// retained diagnostic data, never parsed as a command or an executable route.
+enum ScannerQualityActions {
+    static let saveFailureID = UUID(uuidString: "00000000-0000-4000-8000-000000000013")!
+    static let referenceSceneID = UUID(uuidString: "00000000-0000-4000-8000-000000000014")!
+
+    static func driverPriority(
+        phase: ScannerWorkspacePhase, recoveryAction: ScannerWorkspaceRecoveryAction?
+    ) -> ScannerWorkspacePresentation.Issue.Priority {
+        if case .failed = phase { return .blocking }
+        return recoveryAction == nil ? .notice : .important
+    }
+
+    static func offersFloorReference(
+        _ issue: ScannerWorkspacePresentation.Issue, assessment: ScannerSceneAssessment,
+        revision: UInt64, canConfirm: Bool
+    ) -> Bool {
+        canConfirm && assessment.hasCapturedGeometry
+            && issue.nativeCode == "floor_reference_unknown"
+            && issue.nativeSceneRevision == revision
+            && assessment.issues.contains {
+                $0.id == issue.id && $0.nativeCode == issue.nativeCode
+                    && $0.nativeSceneRevision == revision
+            }
     }
 }
 
