@@ -1,5 +1,6 @@
 import RealityKit
 import SwiftUI
+import QuickLook
 
 /// A self-contained, offline small-object workflow.
 ///
@@ -8,10 +9,12 @@ import SwiftUI
 @MainActor
 public struct ObjectCaptureWorkflowView: View {
   @StateObject private var model: ObjectCaptureWorkflowModel
+  private let isResuming: Bool
 
-  public init(onComplete: @escaping (ObjectCaptureArtifact) -> Void) {
+  public init(resumingSessionID: UUID? = nil, onComplete: @escaping (ObjectCaptureArtifact) -> Void) {
+    isResuming = resumingSessionID != nil
     _model = StateObject(
-      wrappedValue: ObjectCaptureWorkflowModel(onComplete: onComplete)
+      wrappedValue: ObjectCaptureWorkflowModel(resumingSessionID: resumingSessionID, onComplete: onComplete)
     )
   }
 
@@ -21,7 +24,14 @@ public struct ObjectCaptureWorkflowView: View {
       case .unavailable(let reason):
         UnavailableObjectCaptureView(reason: reason)
       case .ready:
-        ObjectCaptureIntroductionView(start: model.start)
+        if isResuming {
+          ObjectCaptureMessageView(
+            title: String(localized: "Rebuild retained object"),
+            message: String(localized: "Reconstruction uses the photos already saved in this session. Missing views remain missing; no new camera capture is started."),
+            actionTitle: String(localized: "Rebuild from photos"), action: model.start)
+        } else {
+          ObjectCaptureIntroductionView(start: model.start)
+        }
       case .preparing, .selectingObject, .detecting, .startingCapture, .capturing,
         .waitingForFlip, .finishingCapture:
         captureView
@@ -53,6 +63,7 @@ public struct ObjectCaptureWorkflowView: View {
     }
     .navigationTitle("Detailed Object")
     .navigationBarTitleDisplayMode(.inline)
+    .onDisappear { model.cancel() }
   }
 
   @ViewBuilder
@@ -114,7 +125,7 @@ private struct ObjectCaptureControls: View {
 
       if !model.feedbackMessages.isEmpty {
         ForEach(model.feedbackMessages, id: \.self) { message in
-          Label(message, systemImage: "viewfinder")
+          Label(LocalizedStringKey(message), systemImage: "viewfinder")
             .font(.callout)
         }
       }
@@ -240,7 +251,7 @@ private struct ObjectReconstructionProgressView: View {
 
   var body: some View {
     VStack(spacing: 18) {
-      Text(stage ?? "Processing object")
+      Text(LocalizedStringKey(stage ?? "Processing object"))
         .font(.headline)
 
       if let progress {
@@ -270,6 +281,7 @@ private struct ObjectReconstructionProgressView: View {
 private struct ObjectCaptureCompletedView: View {
   let artifact: ObjectCaptureArtifact
   let warnings: [String]
+  @State private var previewURL: URL?
 
   var body: some View {
     ScrollView {
@@ -278,7 +290,7 @@ private struct ObjectCaptureCompletedView: View {
           .font(.title2.bold())
           .foregroundStyle(.green)
 
-        Text(artifact.photoRetentionPolicy.userFacingDescription)
+        Text(LocalizedStringKey(artifact.photoRetentionPolicy.userFacingDescription))
 
         Label(
           "The result remains separate from canonical measured room geometry.",
@@ -293,9 +305,158 @@ private struct ObjectCaptureCompletedView: View {
 
         LabeledContent("Captured photos", value: "\(artifact.capturedImageCount)")
         LabeledContent("Model", value: artifact.modelURL.lastPathComponent)
+        Button("Preview object", systemImage: "cube.transparent") { previewURL = artifact.modelURL }
+          .buttonStyle(.borderedProminent)
+        ShareLink(item: artifact.modelURL) { Label("Share USDZ model", systemImage: "square.and.arrow.up") }
+        Text("Only the visual model is shared here, not the source photos. Shared copies are retained by their destination.")
+          .font(.caption).foregroundStyle(.secondary)
       }
       .padding()
     }
+    .quickLookPreview($previewURL)
+  }
+}
+
+/// An independent library. It never inserts photogrammetry into metric room geometry.
+@MainActor
+struct ObjectCaptureLibraryView: View {
+  @Environment(\.dismiss) private var dismiss
+  @State private var entries: [ObjectCaptureLibraryEntry] = []
+  @State private var isWorking = false
+  @State private var errorMessage: String?
+  @State private var deleting: ObjectCaptureLibraryEntry?
+  @State private var workflow: Workflow?
+  @State private var previewURL: URL?
+
+  private struct Workflow: Identifiable {
+    let id = UUID()
+    let sessionID: UUID?
+  }
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 20) {
+          Label("Visual detail, separate from room measurements", systemImage: "ruler")
+            .font(.subheadline).foregroundStyle(.secondary)
+          Button { workflow = Workflow(sessionID: nil) } label: {
+            Label("New object capture", systemImage: "camera.viewfinder")
+              .foregroundStyle(ScannerProductTheme.canvas)
+              .frame(maxWidth: .infinity, minHeight: 48)
+          }.buttonStyle(.borderedProminent).accessibilityIdentifier("object-library.new-capture")
+          Text("Photos, checkpoints and models stay in each local session until you delete it. Deleting a room does not remove object captures.")
+            .font(.callout).foregroundStyle(.secondary)
+          if isWorking { ProgressView("Loading local sessions…") }
+          if let errorMessage {
+            Label(errorMessage, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+            Button("Try again") { Task { await reload() } }
+          }
+          if entries.isEmpty && !isWorking && errorMessage == nil {
+            ContentUnavailableView("Your object library", systemImage: "cube.transparent",
+              description: Text("Capture a small object or return here to rebuild retained photos."))
+          }
+          LazyVStack(spacing: 16) {
+            ForEach(entries) { entry in
+              VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top) {
+                  Label(stateTitle(entry), systemImage: entry.artifact == nil ? "photo.stack" : "cube.transparent.fill")
+                    .font(.headline)
+                  Spacer()
+                  Button(role: .destructive) { deleting = entry } label: {
+                    Image(systemName: "trash").frame(width: 44, height: 44)
+                  }.accessibilityLabel("Delete object session")
+                }
+                if let date = entry.createdAt {
+                  Text(date, format: .dateTime.day().month().year().hour().minute()).font(.subheadline)
+                }
+                Text(entry.id.uuidString).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                if entry.state == .retainedPhotos || entry.state == .completed {
+                  Text("\(entry.photoCount) source photos retained").font(.callout)
+                }
+                if let artifact = entry.artifact {
+                  ViewThatFits(in: .horizontal) {
+                    HStack { objectActions(artifact) }
+                    VStack(alignment: .leading) { objectActions(artifact) }
+                  }
+                } else if entry.state == .retainedPhotos && entry.photoCount > 0 {
+                  Button("Rebuild from photos") { workflow = Workflow(sessionID: entry.id) }
+                    .buttonStyle(.bordered)
+                }
+              }
+              .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+              .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20))
+            }
+          }
+        }.padding(24).frame(maxWidth: 740).frame(maxWidth: .infinity)
+      }
+      .navigationTitle("Object library")
+      .toolbar { ToolbarItem(placement: .confirmationAction) {
+        Button("Done") { dismiss() }.accessibilityIdentifier("object-library.done")
+      } }
+      .disabled(isWorking)
+      .task { await reload() }
+      .refreshable { await reload() }
+      .quickLookPreview($previewURL)
+      .sheet(item: $workflow, onDismiss: { Task { await reload() } }) { selected in
+        NavigationStack {
+          ObjectCaptureWorkflowView(resumingSessionID: selected.sessionID) { _ in }
+            .toolbar { ToolbarItem(placement: .cancellationAction) {
+              Button("Close") { workflow = nil }.accessibilityIdentifier("object-capture.close")
+            } }
+        }
+      }
+      .alert("Delete object and source photos?", isPresented: Binding(
+        get: { deleting != nil }, set: { if !$0 { deleting = nil } }
+      )) {
+        Button("Delete permanently", role: .destructive) {
+          if let deleting { Task { await remove(deleting.id) } }
+          deleting = nil
+        }
+        Button("Cancel", role: .cancel) { deleting = nil }
+      } message: {
+        Text("This permanently removes this session's photos, checkpoints, provenance and model. Room projects, other object sessions, backups and shared copies are not removed. This cannot be undone.")
+      }
+    }
+    .tint(ScannerProductTheme.accent)
+    .interactiveDismissDisabled(isWorking)
+  }
+
+  @ViewBuilder private func objectActions(_ artifact: ObjectCaptureArtifact) -> some View {
+    Button("Preview object", systemImage: "cube.transparent") { previewURL = artifact.modelURL }
+      .buttonStyle(.bordered)
+    ShareLink(item: artifact.modelURL) { Label("Share USDZ model", systemImage: "square.and.arrow.up") }
+  }
+
+  private func stateTitle(_ entry: ObjectCaptureLibraryEntry) -> String {
+    switch entry.state {
+    case .completed: String(localized: "Visual model saved")
+    case .retainedPhotos: String(localized: "Retained source photos")
+    case .unavailable: String(localized: "Session unavailable — files retained")
+    case .deleting: String(localized: "Deletion started — retry to finish")
+    }
+  }
+
+  private func reload() async {
+    guard !isWorking else { return }
+    isWorking = true
+    defer { isWorking = false }
+    do {
+      entries = try await Task.detached(priority: .utility) { try ObjectCaptureStorage.library() }.value
+      errorMessage = nil
+    } catch { errorMessage = String(localized: "Object sessions could not be read. No files were deleted.") }
+  }
+
+  private func remove(_ id: UUID) async {
+    guard !isWorking else { return }
+    isWorking = true
+    do {
+      try await Task.detached(priority: .utility) { try ObjectCaptureStorage.deleteSession(id: id) }.value
+      errorMessage = nil
+    } catch { errorMessage = String(localized: "Deletion could not finish safely. Files remain local; retry after resolving storage access.") }
+    // Do not clear a deletion failure while refreshing the retryable library row.
+    do { entries = try await Task.detached(priority: .utility) { try ObjectCaptureStorage.library() }.value }
+    catch { errorMessage = String(localized: "Object sessions could not be read. No files were deleted.") }
+    isWorking = false
   }
 }
 
@@ -320,12 +481,12 @@ private struct ObjectCaptureMessageView: View {
 
   var body: some View {
     ContentUnavailableView {
-      Label(title, systemImage: "cube.transparent")
+      Label(LocalizedStringKey(title), systemImage: "cube.transparent")
     } description: {
-      Text(message)
+      Text(LocalizedStringKey(message))
     } actions: {
       if let actionTitle, let action {
-        Button(actionTitle, action: action)
+        Button(LocalizedStringKey(actionTitle), action: action)
           .buttonStyle(.borderedProminent)
       }
     }

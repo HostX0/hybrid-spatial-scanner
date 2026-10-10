@@ -15,7 +15,6 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
     @State private var isCreatingProject = false
     @State private var isImportingProject = false
     @State private var isObjectCapturePresented = false
-    @State private var completedObjectArtifact: ObjectCaptureArtifact?
     @State private var currentCameraViewport: OverlayViewport?
     @State private var projectArchiveToShare: URL?
     @State private var isRecordingMissingEvidence = false
@@ -99,9 +98,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             // This is deliberately a separate RealityKit-owned workflow. It is
             // offered only after room capture has stopped and never enters the
             // workspace's metric scene or project save path.
-            ObjectCaptureWorkflowView { artifact in
-                completedObjectArtifact = artifact
-            }
+            ObjectCaptureLibraryView()
         }
         .sheet(isPresented: Binding(
             get: { projectArchiveToShare != nil },
@@ -144,9 +141,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             hasCapturedScene: assessment?.hasCapturedGeometry == true,
             isReferenceScene: isReferenceScene,
             assessment: assessment,
-            objectDetailDescription: completedObjectArtifact.map { _ in
-                String(localized: "A detailed object model was saved separately on this device.")
-            },
+            objectDetailDescription: nil,
             exportStatus: exportStatus,
             projectArchiveExportStatus: projectArchiveExportStatus,
             canStartCapture: !workspace.isManagingLibrary && (workspace.phase == .ready || workspace.phase == .browsing),
@@ -190,7 +185,7 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             trashProject: workspace.moveProjectToTrash,
             restoreProject: workspace.restoreProject,
             permanentlyDeleteProject: workspace.permanentlyDeleteProject,
-            captureObject: { isObjectCapturePresented = true },
+            captureObject: { if canCaptureObject { isObjectCapturePresented = true } },
             recover: { _ in workspace.recoverFromCurrentIssue() }
         )
     }
@@ -392,9 +387,11 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
 
     private var canCaptureObject: Bool {
         switch workspace.phase {
-        case .frozen, .saving, .openingProject:
-            true
-        case .browsing, .preparingProject, .ready, .startingCapture, .capturing,
+        case .browsing:
+            !workspace.isManagingLibrary
+        case .frozen:
+            workspace.canShowLibrary
+        case .saving, .openingProject, .preparingProject, .ready, .startingCapture, .capturing,
              .captureLimited, .captureInterrupted, .stoppingCapture, .captureUnsupported, .failed:
             false
         }

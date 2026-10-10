@@ -657,6 +657,13 @@ private struct ScannerLibraryScreen: View {
                     }
                 }
                 if !showingTrash {
+                    if presentation.canCaptureObject {
+                        Button(action: actions.captureObject) {
+                            Label("Object library", systemImage: "cube.transparent")
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                        }.buttonStyle(ScannerSecondaryButtonStyle())
+                        .accessibilityIdentifier("object-library.open")
+                    }
                     Button(action: actions.importProject) {
                         Label("Import HSSCAN archive", systemImage: "square.and.arrow.down")
                             .frame(maxWidth: .infinity, minHeight: 48)

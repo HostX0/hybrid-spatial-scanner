@@ -3,6 +3,122 @@ import UniformTypeIdentifiers
 @testable import HybridSpatialScanner
 
 final class ScannerWorkspacePipelineTests: XCTestCase {
+    func testObjectLibraryDiscoversLegacyPhotosWithoutMetricAuthority() throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Existing ISO8601 records intentionally have second precision.
+        let paths = try ObjectCaptureStorage.createSession(now: Date(timeIntervalSince1970: 1_700_000_000), capturesRootDirectory: root)
+        try Data([1, 2, 3]).write(to: paths.imagesDirectory.appendingPathComponent("sample.HEIC"))
+        try Data([4]).write(to: paths.imagesDirectory.appendingPathComponent("metadata.json"))
+        let entry = try XCTUnwrap(ObjectCaptureStorage.library(capturesRootDirectory: root).first)
+        XCTAssertEqual(entry.id, paths.id)
+        XCTAssertEqual(entry.state, .retainedPhotos)
+        XCTAssertEqual(entry.photoCount, 1)
+        XCTAssertNil(entry.artifact)
+        XCTAssertEqual(try ObjectCaptureStorage.reconstructionPaths(id: paths.id, capturesRootDirectory: root), paths)
+        XCTAssertThrowsError(try ObjectCaptureStorage.createSession(id: paths.id, capturesRootDirectory: root))
+    }
+
+    func testObjectArtifactRebasesUntrustedAbsolutePathsIntoOwnedSession() throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = try ObjectCaptureStorage.createSession(capturesRootDirectory: root)
+        try Data([1, 2, 3]).write(to: paths.modelURL)
+        let artifact = ObjectCaptureArtifact(
+            id: paths.id, sessionDirectory: URL(fileURLWithPath: "/outside/session"),
+            modelURL: URL(fileURLWithPath: "/outside/private.usdz"), imagesDirectory: URL(fileURLWithPath: "/outside/photos"),
+            createdAt: paths.createdAt, completedAt: Date(), capturedImageCount: 8,
+            photoRetentionPolicy: .retainedUntilExplicitSessionDeletion,
+            provenance: .realityKitObjectCapture(), processingWarnings: ["Hidden surfaces remain unknown"])
+        try ObjectCaptureStorage.persistManifest(for: artifact, at: paths.manifestURL)
+        let entry = try XCTUnwrap(ObjectCaptureStorage.library(capturesRootDirectory: root).first)
+        XCTAssertEqual(entry.state, .completed)
+        XCTAssertEqual(entry.artifact?.modelURL, paths.modelURL)
+        XCTAssertEqual(entry.artifact?.imagesDirectory, paths.imagesDirectory)
+        XCTAssertEqual(entry.artifact?.provenance.metricAuthority, false)
+        XCTAssertEqual(entry.artifact?.processingWarnings, artifact.processingWarnings)
+    }
+
+    func testObjectDeletionRemovesOnlyUUIDOwnedFilesAndDoesNotFollowNestedLinks() throws {
+        let root = try objectRoot(), outside = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: outside) }
+        let first = try ObjectCaptureStorage.createSession(capturesRootDirectory: root)
+        let other = try ObjectCaptureStorage.createSession(capturesRootDirectory: root)
+        let external = outside.appendingPathComponent("shared.usdz")
+        try Data([3]).write(to: external)
+        try FileManager.default.createSymbolicLink(at: first.imagesDirectory.appendingPathComponent("redirect"), withDestinationURL: outside)
+        XCTAssertThrowsError(try ObjectCaptureStorage.reconstructionPaths(id: first.id, capturesRootDirectory: root))
+        try ObjectCaptureStorage.deleteSession(id: first.id, capturesRootDirectory: root)
+        try ObjectCaptureStorage.deleteSession(id: first.id, capturesRootDirectory: root)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: external.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: other.sessionDirectory.path))
+        XCTAssertEqual(try ObjectCaptureStorage.library(capturesRootDirectory: root).map(\.id), [other.id])
+    }
+
+    func testObjectDeletionIntentSurvivesPartialCleanupAndBlocksReconstruction() throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = try ObjectCaptureStorage.createSession(capturesRootDirectory: root)
+        try Data([1]).write(to: paths.imagesDirectory.appendingPathComponent("sample.heic"))
+        let intent = root.appendingPathComponent(".deleting-" + paths.id.uuidString)
+        try Data("{}".utf8).write(to: intent)
+        XCTAssertEqual(try ObjectCaptureStorage.library(capturesRootDirectory: root).first?.state, .deleting)
+        XCTAssertThrowsError(try ObjectCaptureStorage.reconstructionPaths(id: paths.id, capturesRootDirectory: root))
+        try FileManager.default.removeItem(at: paths.sessionDirectory)
+        XCTAssertEqual(try ObjectCaptureStorage.library(capturesRootDirectory: root).first?.state, .deleting)
+        try ObjectCaptureStorage.deleteSession(id: paths.id, capturesRootDirectory: root)
+        XCTAssertTrue(try ObjectCaptureStorage.library(capturesRootDirectory: root).isEmpty)
+    }
+
+    func testObjectLibraryRejectsRedirectedRootSessionAndCheckpoint() throws {
+        let root = try objectRoot(), outside = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: outside) }
+        let redirect = root.appendingPathComponent("redirect")
+        try FileManager.default.createSymbolicLink(at: redirect, withDestinationURL: outside)
+        XCTAssertThrowsError(try ObjectCaptureStorage.library(capturesRootDirectory: redirect))
+        XCTAssertThrowsError(try ObjectCaptureStorage.createSession(capturesRootDirectory: redirect))
+        let id = UUID()
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent(id.uuidString), withDestinationURL: outside)
+        XCTAssertEqual(try ObjectCaptureStorage.library(capturesRootDirectory: root).first?.state, .unavailable)
+        XCTAssertThrowsError(try ObjectCaptureStorage.deleteSession(id: id, capturesRootDirectory: root))
+        let paths = try ObjectCaptureStorage.createSession(capturesRootDirectory: root)
+        try Data([1]).write(to: paths.imagesDirectory.appendingPathComponent("sample.heic"))
+        try FileManager.default.removeItem(at: paths.captureCheckpointDirectory)
+        try FileManager.default.createSymbolicLink(at: paths.captureCheckpointDirectory, withDestinationURL: outside)
+        XCTAssertThrowsError(try ObjectCaptureStorage.reconstructionPaths(id: paths.id, capturesRootDirectory: root))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path))
+    }
+
+    func testObjectCorruptRecordIsVisibleButCannotResume() throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = try ObjectCaptureStorage.createSession(capturesRootDirectory: root)
+        try Data("broken".utf8).write(to: paths.sessionRecordURL)
+        let entry = try XCTUnwrap(ObjectCaptureStorage.library(capturesRootDirectory: root).first)
+        XCTAssertEqual(entry.state, .unavailable)
+        XCTAssertThrowsError(try ObjectCaptureStorage.reconstructionPaths(id: paths.id, capturesRootDirectory: root))
+        try ObjectCaptureStorage.deleteSession(id: paths.id, capturesRootDirectory: root)
+        XCTAssertTrue(try ObjectCaptureStorage.library(capturesRootDirectory: root).isEmpty)
+    }
+
+    func testObjectDanglingSessionLinkIsNotReportedAsSuccessfulDeletion() throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID()
+        let session = root.appendingPathComponent(id.uuidString)
+        try FileManager.default.createSymbolicLink(at: session, withDestinationURL: root.appendingPathComponent("missing"))
+        XCTAssertEqual(try ObjectCaptureStorage.library(capturesRootDirectory: root).first?.state, .unavailable)
+        XCTAssertThrowsError(try ObjectCaptureStorage.deleteSession(id: id, capturesRootDirectory: root))
+        XCTAssertThrowsError(try ObjectCaptureStorage.createSession(id: id, capturesRootDirectory: root))
+        XCTAssertNoThrow(try FileManager.default.destinationOfSymbolicLink(atPath: session.path))
+    }
+
+    private func objectRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hss-object-test-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
     func testCapturedMeshReviewDoesNotDependOnSemanticPlan() throws {
         let snapshot = try assessmentSnapshot()
         XCTAssertNil(ScannerAcceptedPlanDecoder.decode(snapshot))

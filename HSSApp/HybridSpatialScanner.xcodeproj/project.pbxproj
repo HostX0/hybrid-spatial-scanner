@@ -75,6 +75,15 @@
 		A10000000000000000000049 /* annotation_geometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000049 /* annotation_geometry.cpp */; };
 		A1000000000000000000004A /* ResourceCaptureMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000004A /* ResourceCaptureMonitor.swift */; };
 /* End PBXBuildFile section */
+		B10000000000000000000001 = {isa = PBXBuildFile; fileRef = B20000000000000000000001; };
+		B20000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ../tests/ScannerProductJourneyUITests.swift; sourceTree = SOURCE_ROOT; };
+		B20000000000000000000002 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = HybridSpatialScannerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B30000000000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = ( B10000000000000000000001, ); runOnlyForDeploymentPostprocessing = 0; };
+		B30000000000000000000002 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		B40000000000000000000001 = {isa = PBXNativeTarget; buildConfigurationList = B50000000000000000000001; buildPhases = ( B30000000000000000000001, B30000000000000000000002, ); buildRules = (); dependencies = ( AB00000000000000000000002, ); name = HybridSpatialScannerUITests; productName = HybridSpatialScannerUITests; productReference = B20000000000000000000002; productType = "com.apple.product-type.bundle.ui-testing"; };
+		B50000000000000000000001 = {isa = XCConfigurationList; buildConfigurations = ( B60000000000000000000001, B60000000000000000000002, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		B60000000000000000000001 = {isa = XCBuildConfiguration; buildSettings = { GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = org.hybridspatialscanner.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 6.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = HybridSpatialScanner; }; name = Debug; };
+		B60000000000000000000002 = {isa = XCBuildConfiguration; buildSettings = { GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = org.hybridspatialscanner.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 6.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = HybridSpatialScanner; }; name = Release; };
 
 /* Original app identity asset */
 		A1000000000000000000004B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000004B /* Assets.xcassets */; };
@@ -188,7 +197,7 @@
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		A50000000000000000000001 /* Project object */ = {isa = PBXProject; attributes = { BuildIndependentTargetsInParallel = YES; LastSwiftUpdateCheck = 2700; LastUpgradeCheck = 2700; TargetAttributes = { A60000000000000000000001 = { CreatedOnToolsVersion = 27.0; }; A60000000000000000000003 = { CreatedOnToolsVersion = 27.0; TestTargetID = A60000000000000000000001; }; }; }; buildConfigurationList = A90000000000000000000004 /* Build configuration list for PBXProject "HybridSpatialScanner" */; compatibilityVersion = "Xcode 16.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = ( en, ar, Base, ); mainGroup = A80000000000000000000001; productRefGroup = A80000000000000000000005 /* Products */; projectDirPath = ""; projectRoot = ""; targets = ( A60000000000000000000001 /* HybridSpatialScanner */, A60000000000000000000002 /* SpatialCore */, A60000000000000000000003 /* HybridSpatialScannerTests */, ); };
+		A50000000000000000000001 /* Project object */ = {isa = PBXProject; attributes = { BuildIndependentTargetsInParallel = YES; LastSwiftUpdateCheck = 2700; LastUpgradeCheck = 2700; TargetAttributes = { A60000000000000000000001 = { CreatedOnToolsVersion = 27.0; }; A60000000000000000000003 = { CreatedOnToolsVersion = 27.0; TestTargetID = A60000000000000000000001; }; B40000000000000000000001 = { CreatedOnToolsVersion = 27.0; TestTargetID = A60000000000000000000001; }; }; }; buildConfigurationList = A90000000000000000000004 /* Build configuration list for PBXProject "HybridSpatialScanner" */; compatibilityVersion = "Xcode 16.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = ( en, ar, Base, ); mainGroup = A80000000000000000000001; productRefGroup = A80000000000000000000005 /* Products */; projectDirPath = ""; projectRoot = ""; targets = ( A60000000000000000000001 /* HybridSpatialScanner */, A60000000000000000000002 /* SpatialCore */, A60000000000000000000003 /* HybridSpatialScannerTests */, B40000000000000000000001 /* HybridSpatialScannerUITests */, ); };
 /* End PBXProject section */
 
 /* Begin PBXSourcesBuildPhase section */
