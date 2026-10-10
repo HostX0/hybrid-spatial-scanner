@@ -4,6 +4,56 @@ import simd
 @testable import HybridSpatialScanner
 
 final class ScannerWorkspacePipelineTests: XCTestCase {
+    func testFreshProjectClockRecordsElapsedEventsNotSystemBootOrigin() throws {
+        var clock = ProjectCaptureClock(lastDurableTime: 0)
+        XCTAssertEqual(clock.projectTime(for: 1_000_000), 0)
+        XCTAssertEqual(clock.projectTime(for: 1_000_000.25), 0.25)
+        XCTAssertEqual(clock.projectTime(for: 1_000_000.5), 0.5)
+        var laterSession = ProjectCaptureClock(lastDurableTime: clock.lastTime)
+        XCTAssertEqual(laterSession.projectTime(for: 2_000_000), 0.5)
+        XCTAssertEqual(laterSession.projectTime(for: 2_000_000.5), 1)
+    }
+
+    func testReopenedReviewNoteRetainsDurableOrderingWithoutDeviceUptime() async throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID(), captureID = UUID()
+        let before = try await createSyntheticProject(root: root, projectID: projectID, captureID: captureID)
+        let original = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        let cursorBefore = try await original.replayCommittedSource()
+        let catalog = try JSONSerialization.data(withJSONObject: ["projects": [[
+            "id": projectID.uuidString, "captureID": captureID.uuidString, "name": "Clock fixture",
+            "updatedAt": 0, "sceneRevision": before.revision, "state": "frozen", "sourceIsSynthetic": true
+        ]]])
+        try catalog.write(to: root.appendingPathComponent("workspace-catalog.json"))
+        let workspace = await MainActor.run { ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true) }
+        await MainActor.run { workspace.openProject(id: projectID) }
+        for _ in 0..<100 {
+            if await MainActor.run(body: { workspace.canRecordMissingEvidence }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await MainActor.run { workspace.recordMissingEvidence(reason: "Unobserved doorway; no geometry invented") }
+        for _ in 0..<200 {
+            if await MainActor.run(body: { workspace.latestSnapshot?.revision == before.revision + 1 }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let after = await MainActor.run { workspace.latestSnapshot }
+        XCTAssertEqual(after?.revision, before.revision + 1)
+        XCTAssertEqual(after?.verticesMetres, before.verticesMetres)
+        await MainActor.run { workspace.saveSelectedProject() }
+        for _ in 0..<200 {
+            if await MainActor.run(body: { if case .saved = workspace.saveState { return true }; return false }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let reopened = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        let cursorAfter = try await reopened.replayCommittedSource()
+        XCTAssertEqual(cursorAfter.lastMonotonicTime, cursorBefore.lastMonotonicTime,
+            "Review-only controls use event sequence, not device boot time or a physical elapsed-time claim.")
+        XCTAssertEqual(cursorAfter.lastEventSequence, cursorBefore.lastEventSequence + 1)
+    }
+
     func testTypedFloorIssueOffersOnlyCurrentSupportedRecovery() throws {
         let id = UUID()
         let snapshot = try assessmentSnapshot(issues: [assessmentIssue(id: id, code: "floor_reference_unknown")])

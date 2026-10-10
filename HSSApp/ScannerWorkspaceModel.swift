@@ -6,12 +6,14 @@ import UIKit
 import simd
 
 /// Maps one capture session's source clock into the durable project's ordered
-/// time axis. The offset is fixed by the first event; only delivery inversions
-/// are clamped. This time is an ordering key, not elapsed time across sessions.
+/// time axis. The first event anchors to the durable cursor, not device uptime.
+/// Only within-session event intervals advance it; delivery inversions are
+/// clamped. This is an ordering key, not physical elapsed time across sessions.
 struct ProjectCaptureClock {
     private static let maximumDeliverySkew: TimeInterval = 1
     private(set) var lastTime: TimeInterval
-    private var offset: TimeInterval?
+    private var sourceOrigin: TimeInterval?
+    private var projectOrigin: TimeInterval?
 
     init(lastDurableTime: TimeInterval) {
         lastTime = lastDurableTime
@@ -20,12 +22,14 @@ struct ProjectCaptureClock {
     mutating func projectTime(for sourceTime: TimeInterval) -> TimeInterval? {
         guard sourceTime.isFinite, sourceTime >= 0,
               lastTime.isFinite, lastTime >= 0 else { return nil }
-        let candidateOffset = offset ?? max(0, lastTime - sourceTime)
-        let shifted = sourceTime + candidateOffset
+        let origin = sourceOrigin ?? sourceTime
+        let durableOrigin = projectOrigin ?? lastTime
+        let shifted = durableOrigin + (sourceTime - origin)
         guard shifted.isFinite,
               shifted >= lastTime - Self.maximumDeliverySkew else { return nil }
         let mapped = max(lastTime, shifted)
-        offset = candidateOffset
+        sourceOrigin = origin
+        projectOrigin = durableOrigin
         lastTime = mapped
         return mapped
     }
@@ -871,7 +875,9 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             return
         }
         let sequence = nextEventSequence
-        let eventTime = max(lastDurableEventTime, ProcessInfo.processInfo.systemUptime)
+        // Review-only control ordering is defined by event sequence. Do not
+        // append device boot time or imply a physical capture interval here.
+        let eventTime = lastDurableEventTime
         frozenCommandInFlight = true
         Task { [weak self] in
             guard let self else { return }
