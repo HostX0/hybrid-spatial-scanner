@@ -126,26 +126,30 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
         let reviewData = workspace.latestSnapshot.flatMap { ScannerAcceptedPlanDecoder.decode($0, language: locale.language.languageCode?.identifier == "ar" ? .arabic : .english) }
         let isReferenceScene = reviewData?.isSynthetic == true
             || workspace.latestSnapshot?.provenance.contains(.syntheticTest) == true
+        let assessment = workspace.latestSnapshot.map(ScannerSceneAssessment.decode)
         return ScannerWorkspacePresentation(
             mode: mode,
             captureState: captureState,
             statusDetail: statusDetail,
             project: selectedProject.map(projectPresentation),
             projects: workspace.localProjects.map(projectPresentation),
+            deletedProjects: workspace.deletedProjects.map(projectPresentation),
+            isManagingLibrary: workspace.isManagingLibrary,
             issues: issues,
             measurements: reviewData?.measurements ?? [],
             provenanceFields: reviewData?.provenanceFields ?? [],
             provenanceLanguage: locale.language.languageCode?.identifier == "ar" ? .arabic : .english,
             targetGuidance: targetGuidance,
             plan: reviewData?.plan,
-            hasCapturedScene: reviewData != nil && !isReferenceScene,
+            hasCapturedScene: assessment?.hasCapturedGeometry == true,
             isReferenceScene: isReferenceScene,
+            assessment: assessment,
             objectDetailDescription: completedObjectArtifact.map { _ in
                 String(localized: "A detailed object model was saved separately on this device.")
             },
             exportStatus: exportStatus,
             projectArchiveExportStatus: projectArchiveExportStatus,
-            canStartCapture: workspace.phase == .ready || workspace.phase == .browsing,
+            canStartCapture: !workspace.isManagingLibrary && (workspace.phase == .ready || workspace.phase == .browsing),
             canFinishCapture: isCaptureActive,
             canAssist: false,
             canUndo: false,
@@ -182,6 +186,10 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             exportProjectArchive: workspace.exportSelectedProjectArchive,
             openLibrary: workspace.showLibrary,
             openProject: workspace.openProject,
+            renameProject: workspace.renameProject,
+            trashProject: workspace.moveProjectToTrash,
+            restoreProject: workspace.restoreProject,
+            permanentlyDeleteProject: workspace.permanentlyDeleteProject,
             captureObject: { isObjectCapturePresented = true },
             recover: { _ in workspace.recoverFromCurrentIssue() }
         )
@@ -354,7 +362,10 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
                 )
             )
         }
-        return visible
+        if let snapshot = workspace.latestSnapshot {
+            visible.append(contentsOf: ScannerSceneAssessment.decode(snapshot).issues)
+        }
+        return visible.sorted { $0.priority.rank < $1.priority.rank }
     }
 
     private func projectPresentation(_ project: ScannerProjectSummary) -> ScannerWorkspacePresentation.Project {
@@ -363,7 +374,8 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             name: project.name,
             revision: String(project.sceneRevision),
             savedDescription: project.updatedAt.formatted(date: .abbreviated, time: .shortened),
-            quality: project.state == .draft ? .draft : .ready
+            quality: project.state == .draft ? .draft : .ready,
+            canRestore: project.canRestore
         )
     }
 
@@ -708,6 +720,119 @@ enum ScannerMeshSceneBuilder {
         material.diffuse.contents = texture
         material.fillMode = .fill
         return material
+    }
+}
+
+/// Read-only assessment of a single accepted snapshot. Native issue IDs and
+/// revision bindings survive presentation; source-lineage records are not
+/// misrepresented as user-facing quality failures. No automatic repair runs.
+struct ScannerSceneAssessment: Equatable {
+    let hasCapturedGeometry: Bool
+    let geometryDescription: String
+    let referenceDescription: String
+    let boundaryDescription: String
+    let issues: [ScannerWorkspacePresentation.Issue]
+
+    private struct Document: Decodable {
+        let scene_revision: String
+        let source_is_synthetic: Bool
+        let units: String
+        let issues: [NativeIssue]
+    }
+    private struct NativeIssue: Decodable {
+        let id: UUID
+        let code: String
+        let scene_revision: String
+        let severity: String
+        let reason: String
+        let action: String
+        let state: String
+    }
+
+    static func decode(_ snapshot: ScannerSceneSnapshot) -> Self {
+        let document = try? JSONDecoder().decode(Document.self, from: snapshot.sceneJSON)
+        let isBound = document?.scene_revision == String(snapshot.revision) && document?.units == "m"
+            && document?.issues.allSatisfy({
+                ["info", "warning", "critical"].contains($0.severity)
+                    && ["active", "suppressed", "resolved"].contains($0.state)
+                    && !$0.code.isEmpty && !$0.reason.isEmpty && !$0.action.isEmpty
+            }) == true
+        // Synthetic source must never be marketed as a captured-room result,
+        // even when a separate Swift provenance set omitted the test marker.
+        let synthetic = document?.source_is_synthetic == true
+            || snapshot.provenance.contains(.syntheticTest)
+            || snapshot.planAnnotation?.isSynthetic == true
+        let hasMesh = isBound && !synthetic && !snapshot.verticesMetres.isEmpty
+            && snapshot.triangleIndices.count >= 3
+        var visible: [ScannerWorkspacePresentation.Issue] = []
+        if isBound, let document {
+            var seen: Set<UUID> = []
+            for issue in document.issues {
+                guard issue.state == "active", issue.scene_revision == String(snapshot.revision),
+                      issue.code != "mesh_source", seen.insert(issue.id).inserted else { continue }
+                let priority: ScannerWorkspacePresentation.Issue.Priority
+                if issue.severity == "critical" || issue.code == "unresolved_epoch" {
+                    priority = .blocking
+                } else if issue.severity == "warning" {
+                    priority = .important
+                } else {
+                    priority = .notice
+                }
+                // Actions remain explanatory copy, not executable external
+                // instructions or a claim that an unwired correction exists.
+                visible.append(.init(
+                    id: issue.id, title: title(for: issue.code),
+                    detail: String(issue.reason.prefix(2048)) + "\n" + String(issue.action.prefix(512)),
+                    priority: priority, recoveryTitle: nil
+                ))
+            }
+        } else {
+            visible.append(.init(
+                id: UUID(uuidString: "00000000-0000-4000-8000-000000000012")!,
+                title: String(localized: "Quality report unavailable"),
+                detail: String(localized: "The quality report does not match this accepted revision. Do not interpret missing warnings as a complete scan."),
+                priority: .blocking, recoveryTitle: nil
+            ))
+        }
+        visible.sort {
+            $0.priority.rank == $1.priority.rank
+                ? $0.id.uuidString < $1.id.uuidString
+                : $0.priority.rank < $1.priority.rank
+        }
+        let plan = snapshot.planAnnotation.flatMap { $0.sceneRevision == snapshot.revision ? $0 : nil }
+        let reference = plan?.referenceState == UInt32(HSS_PLAN_REFERENCE_CONFIRMED_FLOOR)
+            ? String(localized: "Confirmed floor reference")
+            : String(localized: "Floor reference required — area unavailable")
+        let boundary: String
+        if plan?.boundaryState == UInt32(HSS_PLAN_BOUNDARY_CLOSED_ACCEPTED) {
+            boundary = String(localized: "Closed section candidate — room semantics unverified")
+        } else if plan?.boundaryState == UInt32(HSS_PLAN_BOUNDARY_OPEN) {
+            boundary = String(localized: "Open section — missing support is not filled")
+        } else {
+            boundary = String(localized: "Boundary unavailable or unresolved")
+        }
+        return Self(
+            hasCapturedGeometry: hasMesh,
+            geometryDescription: synthetic ? String(localized: "Reference geometry — not a captured room")
+                : (hasMesh ? String(localized: "Surface mesh retained independently of the plan")
+                           : String(localized: "No captured surface mesh in this revision")),
+            referenceDescription: reference, boundaryDescription: boundary, issues: visible
+        )
+    }
+
+    private static func title(for code: String) -> String {
+        switch code {
+        case "unresolved_epoch": String(localized: "Coordinate relationship unresolved")
+        case "floor_reference_unknown": String(localized: "Floor reference required")
+        case "provisional_capture": String(localized: "Measurement estimates, not certified dimensions")
+        case "open_or_ambiguous_slice": String(localized: "Boundary needs another view")
+        case "unclassified_slice_loops": String(localized: "Separate boundaries need classification")
+        case "metric_work_limit": String(localized: "Plan processing limit reached")
+        case "partial_plane_support": String(localized: "Surface fit has incomplete support")
+        case "non_manifold_mesh", "ambiguous_mesh_component", "degenerate_mesh_triangle": String(localized: "Captured topology needs review")
+        case "plan_semantics_unavailable": String(localized: "Plan interpretation unavailable")
+        default: String(localized: "Engine review: \(code)")
+        }
     }
 }
 

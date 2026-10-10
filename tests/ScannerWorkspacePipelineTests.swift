@@ -3,6 +3,198 @@ import UniformTypeIdentifiers
 @testable import HybridSpatialScanner
 
 final class ScannerWorkspacePipelineTests: XCTestCase {
+    func testCapturedMeshReviewDoesNotDependOnSemanticPlan() throws {
+        let snapshot = try assessmentSnapshot()
+        XCTAssertNil(ScannerAcceptedPlanDecoder.decode(snapshot))
+        XCTAssertTrue(ScannerSceneAssessment.decode(snapshot).hasCapturedGeometry)
+    }
+
+    func testAssessmentPreservesIssueIdentitySortsAndFiltersSourceAndStaleRecords() throws {
+        let importantID = UUID(), blockingID = UUID()
+        let issues: [[String: Any]] = [
+            assessmentIssue(id: importantID, code: "floor_reference_unknown"),
+            assessmentIssue(id: UUID(), code: "mesh_source"),
+            assessmentIssue(id: UUID(), code: "unresolved_epoch", revision: "6"),
+            assessmentIssue(id: blockingID, code: "unresolved_epoch"),
+            assessmentIssue(id: UUID(), code: "open_or_ambiguous_slice", state: "resolved")
+        ]
+        let result = ScannerSceneAssessment.decode(try assessmentSnapshot(issues: issues))
+        XCTAssertEqual(result.issues.map(\.id), [blockingID, importantID])
+        XCTAssertEqual(result.issues.first?.priority, .blocking)
+        XCTAssertTrue(result.issues.allSatisfy { $0.recoveryTitle == nil }, "Unwired repair tools are not exposed.")
+    }
+
+    func testSyntheticFlagInNativeDocumentSuppressesCapturedClaim() throws {
+        let result = ScannerSceneAssessment.decode(try assessmentSnapshot(synthetic: true))
+        XCTAssertFalse(result.hasCapturedGeometry, "A missing Swift test marker cannot override native synthetic provenance.")
+    }
+
+    func testAssessmentFailsClosedForMismatchedAndMalformedReports() throws {
+        for snapshot in [
+            try assessmentSnapshot(revision: "6"),
+            try assessmentSnapshot(issues: [assessmentIssue(id: UUID(), code: "future", severity: "unexpected")])
+        ] {
+            let result = ScannerSceneAssessment.decode(snapshot)
+            XCTAssertEqual(result.issues.count, 1)
+            XCTAssertEqual(result.issues.first?.priority, .blocking)
+            XCTAssertFalse(result.hasCapturedGeometry)
+        }
+    }
+
+    private func assessmentIssue(id: UUID, code: String, revision: String = "7", severity: String = "warning", state: String = "active") -> [String: Any] {
+        ["id": id.uuidString, "code": code, "scene_revision": revision,
+         "severity": severity, "reason": "Retained support requires review", "action": "Capture another useful view", "state": state]
+    }
+
+    private func assessmentSnapshot(revision: String = "7", synthetic: Bool = false, issues: [[String: Any]] = []) throws -> ScannerSceneSnapshot {
+        ScannerSceneSnapshot(
+            revision: 7, verticesMetres: [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 1, 0)],
+            triangleIndices: [0, 1, 2],
+            sceneJSON: try JSONSerialization.data(withJSONObject: [
+                "scene_revision": revision, "source_is_synthetic": synthetic, "units": "m", "issues": issues
+            ]), provenance: [.capturedARKitMesh], isFrozen: true
+        )
+    }
+
+    @MainActor
+    func testLibraryMigratesLegacyCatalogAndPersistsRenameTrashRestore() throws {
+        let root = try makeLibraryFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true)
+        workspace.reloadProjects()
+        let project = try XCTUnwrap(workspace.localProjects.first)
+        XCTAssertTrue(workspace.deletedProjects.isEmpty)
+        workspace.renameProject(id: project.id, name: "  Workshop / الطابق الثاني  ")
+        XCTAssertEqual(workspace.localProjects.first?.name, "Workshop / الطابق الثاني")
+        XCTAssertEqual(workspace.localProjects.first?.sceneRevision, project.sceneRevision)
+        workspace.moveProjectToTrash(id: project.id)
+        XCTAssertTrue(workspace.localProjects.isEmpty)
+        XCTAssertEqual(workspace.deletedProjects.map(\.id), [project.id])
+        let reopened = ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true)
+        reopened.reloadProjects()
+        XCTAssertTrue(reopened.localProjects.isEmpty)
+        XCTAssertEqual(reopened.deletedProjects.first?.name, "Workshop / الطابق الثاني")
+        reopened.restoreProject(id: project.id)
+        XCTAssertEqual(reopened.localProjects.map(\.id), [project.id])
+        XCTAssertTrue(reopened.deletedProjects.isEmpty)
+        reopened.renameProject(id: project.id, name: " \n ")
+        XCTAssertNotNil(reopened.currentIssue)
+        XCTAssertEqual(reopened.localProjects.first?.name, "Workshop / الطابق الثاني")
+    }
+
+    @MainActor
+    func testLibraryPermanentPurgeRemovesCatalogOnlyAfterSuccessfulCleanup() async throws {
+        let root = try makeLibraryFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true)
+        workspace.reloadProjects()
+        let id = try XCTUnwrap(workspace.localProjects.first?.id)
+        let directory = root.appendingPathComponent(id.hssDirectoryName)
+        let target = root.appendingPathComponent("unrelated")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: directory, withDestinationURL: target)
+        workspace.moveProjectToTrash(id: id)
+        workspace.permanentlyDeleteProject(id: id)
+        for _ in 0..<200 {
+            if !workspace.isManagingLibrary { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(workspace.isManagingLibrary)
+        XCTAssertNotNil(workspace.currentIssue)
+        XCTAssertEqual(workspace.deletedProjects.map(\.id), [id])
+        XCTAssertEqual(workspace.deletedProjects.first?.canRestore, false)
+        workspace.restoreProject(id: id)
+        XCTAssertTrue(workspace.localProjects.isEmpty, "A partial purge cannot restore a plausibly intact project.")
+        let duringFailure = ScannerWorkspaceModel(trustedRoot: root)
+        duringFailure.reloadProjects()
+        XCTAssertEqual(duringFailure.deletedProjects.first?.canRestore, false, "Purge intent survives process restart.")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.path))
+        try FileManager.default.removeItem(at: directory) // remove test symlink only
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        workspace.permanentlyDeleteProject(id: id)
+        for _ in 0..<200 {
+            if !workspace.isManagingLibrary { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(workspace.isManagingLibrary)
+        XCTAssertTrue(workspace.deletedProjects.isEmpty)
+        XCTAssertNil(workspace.currentIssue)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        let reopened = ScannerWorkspaceModel(trustedRoot: root)
+        reopened.reloadProjects()
+        XCTAssertTrue(reopened.localProjects.isEmpty)
+        XCTAssertTrue(reopened.deletedProjects.isEmpty)
+    }
+
+    func testPurgeIsIdempotentAndPreservesOtherProjectsAndSharedCopies() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hss-purge-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID(), otherID = UUID()
+        let project = root.appendingPathComponent(id.hssDirectoryName)
+        let other = root.appendingPathComponent(otherID.hssDirectoryName)
+        let archives = root.appendingPathComponent("archives")
+        for url in [project, other, archives] {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        let owned = archives.appendingPathComponent(ScannerProjectArchiveExportName.make(projectID: id, sceneRevision: 9))
+        let unrelated = archives.appendingPathComponent(ScannerProjectArchiveExportName.make(projectID: otherID, sceneRevision: 9))
+        let invalidName = archives.appendingPathComponent("\(id.hssDirectoryName)-r9-not-an-export.hsscan")
+        let shared = root.appendingPathComponent("owner-shared.hsscan")
+        for url in [owned, unrelated, invalidName, shared] { try Data([42]).write(to: url) }
+        try HSSLocalProjectRemoval.remove(projectID: id, trustedRoot: root)
+        try HSSLocalProjectRemoval.remove(projectID: id, trustedRoot: root)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: project.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: owned.path))
+        for url in [other, unrelated, invalidName, shared] {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        }
+    }
+
+    func testArchiveSymlinkRejectsPurgeBeforeRemovingProject() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hss-purge-link-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID()
+        let project = root.appendingPathComponent(id.hssDirectoryName)
+        let outside = root.appendingPathComponent("unrelated")
+        for url in [project, outside] {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("archives"), withDestinationURL: outside)
+        XCTAssertThrowsError(try HSSLocalProjectRemoval.remove(projectID: id, trustedRoot: root))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: project.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path))
+    }
+
+    func testPurgeDoesNotFollowNestedProjectSymlink() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hss-purge-nested-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID()
+        let project = root.appendingPathComponent(id.hssDirectoryName)
+        let outside = root.appendingPathComponent("unrelated")
+        for url in [project, outside] {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        let retained = outside.appendingPathComponent("retained.bin")
+        try Data([42]).write(to: retained)
+        try FileManager.default.createSymbolicLink(at: project.appendingPathComponent("exports"), withDestinationURL: outside)
+        try HSSLocalProjectRemoval.remove(projectID: id, trustedRoot: root)
+        XCTAssertEqual(try Data(contentsOf: retained), Data([42]))
+    }
+
+    private func makeLibraryFixture() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hss-library-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        // Legacy catalog intentionally has no deletedAt key. This is local UI
+        // metadata, not evidence of a physical capture or reconstructed scene.
+        let data = try JSONSerialization.data(withJSONObject: ["projects": [[
+            "id": UUID().uuidString, "captureID": UUID().uuidString,
+            "name": "Original", "updatedAt": 0, "sceneRevision": 7,
+            "state": "frozen", "sourceIsSynthetic": true
+        ]]])
+        try data.write(to: root.appendingPathComponent("workspace-catalog.json"))
+        return root
+    }
+
     func testRebootedSourceClockPreservesSessionIntervals() throws {
         var clock = ProjectCaptureClock(lastDurableTime: 86_400)
         let epoch = try XCTUnwrap(clock.projectTime(for: 12))

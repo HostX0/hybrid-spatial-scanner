@@ -34,6 +34,8 @@ struct ProjectCaptureClock {
 @MainActor
 final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     @Published private(set) var localProjects: [ScannerProjectSummary] = []
+    @Published private(set) var deletedProjects: [ScannerProjectSummary] = []
+    @Published private(set) var isManagingLibrary = false
     @Published private(set) var phase: ScannerWorkspacePhase = .browsing
     @Published private(set) var latestSnapshot: ScannerSceneSnapshot?
     @Published private(set) var selectedProjectID: UUID?
@@ -139,11 +141,16 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         var sceneRevision: UInt64
         var state: ScannerProjectState
         var sourceIsSynthetic: Bool
+        /// Additive catalog field: absent in previous catalogs means active.
+        var deletedAt: Date? = nil
+        /// Durable intent precedes destructive work. A partially purged entry
+        /// must never be restored and misrepresented as an intact project.
+        var purgeStarted: Bool? = nil
 
         var summary: ScannerProjectSummary {
             ScannerProjectSummary(
                 id: id, name: name, updatedAt: updatedAt,
-                sceneRevision: sceneRevision, state: state
+                sceneRevision: sceneRevision, state: state, canRestore: purgeStarted != true
             )
         }
     }
@@ -240,7 +247,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         do {
             try FileManager.default.createDirectory(at: trustedRoot, withIntermediateDirectories: true)
             let catalog = try loadCatalog()
-            localProjects = catalog.projects.map(\.summary).sorted { $0.updatedAt > $1.updatedAt }
+            refreshLibrary(catalog)
             if selectedProjectID == nil { phase = .browsing }
         } catch {
             fail(
@@ -252,7 +259,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     func createProject(named name: String) {
-        guard !captureCoordinator.isSessionRunning, !drainScheduled else { return }
+        guard !isManagingLibrary, !captureCoordinator.isSessionRunning, !drainScheduled else { return }
         let displayName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !displayName.isEmpty else {
             fail(title: "A space name is required", message: "Enter a name before creating the local project.", recovery: nil)
@@ -316,7 +323,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     func importProjectArchive(at url: URL) {
-        guard !captureCoordinator.isSessionRunning, !drainScheduled else { return }
+        guard !isManagingLibrary, !captureCoordinator.isSessionRunning, !drainScheduled else { return }
         guard url.isFileURL else {
             fail(title: "Project import failed", message: "Choose a local HSSCAN archive.", recovery: .returnToProjectList)
             return
@@ -563,9 +570,9 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     func openProject(id: UUID) {
-        guard !captureCoordinator.isSessionRunning, !drainScheduled,
+        guard !isManagingLibrary, !captureCoordinator.isSessionRunning, !drainScheduled,
               !pendingCommandJournal, !frozenCommandInFlight else { return }
-        guard let entry = (try? loadCatalog().projects.first(where: { $0.id == id })) ?? nil else {
+        guard let entry = (try? loadCatalog().projects.first(where: { $0.id == id && $0.deletedAt == nil })) ?? nil else {
             fail(title: "Project is unavailable", message: "The selected project is not present in the local catalog.", recovery: .returnToProjectList)
             return
         }
@@ -640,6 +647,92 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         resetTargetSelection()
         phase = .browsing
         reloadProjects()
+    }
+
+    /// Library mutations never operate on an open runtime or pending journal.
+    private var canManageLibrary: Bool {
+        phase == .browsing && runtime == nil && selectedProjectID == nil
+            && !isManagingLibrary && !drainScheduled && !pendingCommandJournal
+            && !frozenCommandInFlight && !captureCoordinator.isSessionRunning
+    }
+
+    func renameProject(id: UUID, name: String) {
+        guard canManageLibrary else { return }
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty, cleanName.count <= 160 else {
+            libraryFailure(String(localized: "Use a project name between 1 and 160 characters."))
+            return
+        }
+        mutateLibrary(id: id) { entry in
+            guard entry.deletedAt == nil else { return }
+            entry.name = cleanName
+            // Renaming is metadata, not a reconstructed geometry revision.
+            entry.updatedAt = Date()
+        }
+    }
+
+    func moveProjectToTrash(id: UUID) {
+        guard canManageLibrary else { return }
+        mutateLibrary(id: id) { $0.deletedAt = Date() }
+    }
+
+    func restoreProject(id: UUID) {
+        guard canManageLibrary else { return }
+        mutateLibrary(id: id) { entry in
+            guard entry.purgeStarted != true else { return }
+            entry.deletedAt = nil
+        }
+    }
+
+    func permanentlyDeleteProject(id: UUID) {
+        guard canManageLibrary else { return }
+        do {
+            var catalog = try loadCatalog()
+            guard let index = catalog.projects.firstIndex(where: { $0.id == id }),
+                  catalog.projects[index].deletedAt != nil else { return }
+            catalog.projects[index].purgeStarted = true
+            try writeCatalog(catalog)
+        } catch {
+            libraryFailure(describe(error))
+            return
+        }
+        isManagingLibrary = true
+        let root = trustedRoot
+        Task { [weak self] in
+            guard let self else { return }
+            defer { isManagingLibrary = false }
+            do {
+                // Large source/photo trees are removed off the UI executor.
+                try await Task.detached(priority: .utility) {
+                    try HSSLocalProjectRemoval.remove(projectID: id, trustedRoot: root)
+                }.value
+                // Purge first, catalog last: a failed purge stays visible and
+                // retryable in Trash. Repeated purge is deliberately idempotent.
+                var catalog = try loadCatalog()
+                catalog.projects.removeAll { $0.id == id && $0.deletedAt != nil }
+                try writeCatalog(catalog)
+                currentIssue = nil
+            } catch {
+                libraryFailure(describe(error))
+            }
+        }
+    }
+
+    private func mutateLibrary(id: UUID, change: (inout WorkspaceCatalogEntry) -> Void) {
+        do {
+            var catalog = try loadCatalog()
+            guard let index = catalog.projects.firstIndex(where: { $0.id == id }) else { return }
+            change(&catalog.projects[index])
+            try writeCatalog(catalog)
+            currentIssue = nil
+        } catch { libraryFailure(describe(error)) }
+    }
+
+    private func libraryFailure(_ message: String) {
+        currentIssue = ScannerWorkspaceIssue(
+            id: UUID(), title: String(localized: "Library change failed"),
+            message: message, recoveryAction: nil
+        )
     }
 
     func selectTarget(_ tap: NativeTargetTap) {
@@ -1377,10 +1470,21 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         } else {
             catalog.projects.append(entry)
         }
+        try writeCatalog(catalog)
+    }
+
+    private func writeCatalog(_ catalog: WorkspaceCatalog) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         try encoder.encode(catalog).write(to: catalogURL, options: [.atomic])
-        localProjects = catalog.projects.map(\.summary).sorted { $0.updatedAt > $1.updatedAt }
+        refreshLibrary(catalog)
+    }
+
+    private func refreshLibrary(_ catalog: WorkspaceCatalog) {
+        localProjects = catalog.projects.filter { $0.deletedAt == nil }.map(\.summary)
+            .sorted { $0.updatedAt > $1.updatedAt }
+        deletedProjects = catalog.projects.filter { $0.deletedAt != nil }.map(\.summary)
+            .sorted { $0.updatedAt > $1.updatedAt }
     }
 
     private func assignSelectedName(_ name: String) {

@@ -30,6 +30,7 @@ struct ScannerProjectSummary: Identifiable, Codable, Equatable, Hashable, Sendab
     let updatedAt: Date
     let sceneRevision: UInt64
     let state: ScannerProjectState
+    var canRestore: Bool = true
 }
 
 enum ScannerSceneProvenance: String, Codable, Equatable, Sendable {
@@ -146,6 +147,8 @@ struct ScannerCaptureAccounting: Equatable, Sendable {
 @MainActor
 protocol ScannerWorkspaceModeling: ObservableObject {
     var localProjects: [ScannerProjectSummary] { get }
+    var deletedProjects: [ScannerProjectSummary] { get }
+    var isManagingLibrary: Bool { get }
     var phase: ScannerWorkspacePhase { get }
     var latestSnapshot: ScannerSceneSnapshot? { get }
     var selectedProjectID: UUID? { get }
@@ -168,6 +171,10 @@ protocol ScannerWorkspaceModeling: ObservableObject {
     var canRecordMissingEvidence: Bool { get }
 
     func reloadProjects()
+    func renameProject(id: UUID, name: String)
+    func moveProjectToTrash(id: UUID)
+    func restoreProject(id: UUID)
+    func permanentlyDeleteProject(id: UUID)
     func createProject(named name: String)
     func importProjectArchive(at url: URL)
     func startCapture()

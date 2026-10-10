@@ -37,6 +37,7 @@ struct ScannerWorkspacePresentation: Equatable {
         let revision: String?
         let savedDescription: String?
         let quality: Quality
+        var canRestore: Bool = true
 
         enum Quality: Equatable {
             case draft
@@ -51,6 +52,15 @@ struct ScannerWorkspacePresentation: Equatable {
             case important
             case optional
             case notice
+
+            var rank: Int {
+                switch self {
+                case .blocking: 0
+                case .important: 1
+                case .optional: 2
+                case .notice: 3
+                }
+            }
         }
 
         let id: UUID
@@ -128,6 +138,8 @@ struct ScannerWorkspacePresentation: Equatable {
     let statusDetail: String?
     let project: Project?
     let projects: [Project]
+    let deletedProjects: [Project]
+    let isManagingLibrary: Bool
     let issues: [Issue]
     let measurements: [Measurement]
     let provenanceFields: [ProvenanceFieldPresentation]
@@ -136,6 +148,7 @@ struct ScannerWorkspacePresentation: Equatable {
     let plan: Plan?
     let hasCapturedScene: Bool
     let isReferenceScene: Bool
+    let assessment: ScannerSceneAssessment?
     let objectDetailDescription: String?
     let exportStatus: String?
     let projectArchiveExportStatus: String?
@@ -165,6 +178,10 @@ struct ScannerWorkspaceActions {
     let exportProjectArchive: () -> Void
     let openLibrary: () -> Void
     let openProject: (UUID) -> Void
+    let renameProject: (UUID, String) -> Void
+    let trashProject: (UUID) -> Void
+    let restoreProject: (UUID) -> Void
+    let permanentlyDeleteProject: (UUID) -> Void
     let captureObject: () -> Void
     let recover: (ScannerWorkspacePresentation.Issue) -> Void
 }
@@ -210,6 +227,7 @@ struct ScannerWorkspaceView<CameraContent: View, SceneContent: View>: View {
             }
         }
         .preferredColorScheme(.dark)
+        .tint(ScannerProductTheme.accent)
     }
 }
 
@@ -363,6 +381,29 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
 
                 if let project = presentation.project { ScannerProjectIdentity(project: project) }
 
+                if let assessment = presentation.assessment {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Label("Scan insight", systemImage: "waveform.path.ecg")
+                            .font(.headline).foregroundStyle(ScannerProductTheme.accent)
+                        ScannerAssessmentRow(label: "Captured geometry", value: assessment.geometryDescription)
+                        ScannerAssessmentRow(label: "Plan reference", value: assessment.referenceDescription)
+                        ScannerAssessmentRow(label: "Boundary", value: assessment.boundaryDescription)
+                        Text("Visual detail is not a guarantee of measurement accuracy. Missing evidence stays unknown.")
+                            .font(.caption).foregroundStyle(ScannerProductTheme.muted)
+                    }
+                    .padding(18)
+                    .background(ScannerProductTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 22))
+                }
+
+                if !presentation.issues.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Needs review").font(.headline)
+                        ForEach(presentation.issues) { issue in
+                            ScannerIssueCard(issue: issue, action: { actions.recover(issue) })
+                        }
+                    }
+                }
+
                 if let plan = presentation.plan {
                     if presentation.isReferenceScene {
                         Label("Reference geometry — not a captured room", systemImage: "testtube.2")
@@ -391,16 +432,6 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
                         .padding(14)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(ScannerProductTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                }
-
-                if !presentation.issues.isEmpty {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Needs review")
-                            .font(.headline)
-                        ForEach(presentation.issues) { issue in
-                            ScannerIssueCard(issue: issue, action: { actions.recover(issue) })
-                        }
-                    }
                 }
 
                 if !presentation.measurements.isEmpty {
@@ -478,61 +509,202 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
     }
 }
 
+private struct ScannerAssessmentRow: View {
+    let label: LocalizedStringKey
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(.caption).foregroundStyle(ScannerProductTheme.muted)
+            Text(value).font(.subheadline.weight(.medium))
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
 private struct ScannerLibraryScreen: View {
     let presentation: ScannerWorkspacePresentation
     let actions: ScannerWorkspaceActions
+    @State private var search = ""
+    @State private var sortByName = false
+    @State private var showingTrash = false
+    @State private var showingPrivacy = false
+    @State private var renaming: ScannerWorkspacePresentation.Project?
+    @State private var newName = ""
+    @State private var removing: ScannerWorkspacePresentation.Project?
+
+    private var visibleProjects: [ScannerWorkspacePresentation.Project] {
+        let source = showingTrash ? presentation.deletedProjects : presentation.projects
+        let filtered = source.filter { search.isEmpty || $0.name.localizedStandardContains(search) }
+        return sortByName ? filtered.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } : filtered
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("Projects")
-                .font(.largeTitle.weight(.semibold))
-            if presentation.projects.isEmpty {
-                Spacer(minLength: 8)
-                ContentUnavailableView(
-                    "No saved projects",
-                    systemImage: "square.stack.3d.up",
-                    description: Text("Import an HSSCAN archive or start a room scan. Imported projects stay local to this device."))
-                    .frame(maxWidth: .infinity)
-                VStack(spacing: 12) {
-                    Button(action: actions.startCapture) {
-                        Text("Start a new room scan")
-                            .frame(maxWidth: .infinity, minHeight: 56)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("HSS · ON DEVICE")
+                            .font(.caption.weight(.bold)).tracking(2)
+                            .foregroundStyle(ScannerProductTheme.accent)
+                        Text(showingTrash ? String(localized: "Trash") : String(localized: "Your spaces"))
+                            .font(.largeTitle.weight(.bold))
                     }
-                        .buttonStyle(ScannerPrimaryButtonStyle())
-                        .accessibilityHint("Creates a local room project and prepares the camera.")
-                    Button("Import HSSCAN archive", action: actions.importProject)
-                        .buttonStyle(ScannerSecondaryButtonStyle())
-                        .frame(maxWidth: .infinity, minHeight: 48)
-                        .accessibilityHint("Selects a local archive and verifies it before adding it to projects.")
+                    Spacer(minLength: 8)
+                    Button { showingPrivacy = true } label: {
+                        Image(systemName: "lock.shield").frame(width: 48, height: 48)
+                    }
+                    .buttonStyle(ScannerGlassButtonStyle())
+                    .accessibilityLabel("Privacy and local data")
                 }
-                .padding(.horizontal, 8)
-                Spacer(minLength: 12)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        ForEach(presentation.projects) { project in
-                            Button(action: { actions.openProject(project.id) }) {
-                                ScannerProjectIdentity(project: project)
+
+                if !showingTrash {
+                    VStack(alignment: .leading, spacing: 18) {
+                        HStack(alignment: .top, spacing: 16) {
+                            Image(systemName: "viewfinder")
+                                .font(.system(size: 42, weight: .ultraLight))
+                                .foregroundStyle(ScannerProductTheme.accent)
+                                .accessibilityHidden(true)
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Capture. Understand. Keep.").font(.title2.weight(.semibold))
+                                Text("Room geometry, its evidence, and your files. Together on your device.")
+                                    .font(.subheadline).foregroundStyle(ScannerProductTheme.muted)
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityHint("Opens \(project.name)")
+                        }
+                        Button(action: actions.startCapture) {
+                            Label("New room scan", systemImage: "plus")
+                                .frame(maxWidth: .infinity, minHeight: 52)
+                        }
+                        .buttonStyle(ScannerPrimaryButtonStyle())
+                        .disabled(!presentation.canStartCapture)
+                        Text("Depth and mesh capture requires a supported LiDAR device.")
+                            .font(.caption).foregroundStyle(ScannerProductTheme.muted)
+                    }
+                    .padding(22)
+                    .background(ScannerProductTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 26))
+                }
+
+                HStack {
+                    Text(showingTrash ? String(localized: "Retained until you delete") : String(localized: "Local library")).font(.headline)
+                    Spacer()
+                    Button {
+                        showingTrash.toggle()
+                        search = ""
+                    } label: {
+                        Label(showingTrash ? String(localized: "Projects") : String(localized: "Trash"), systemImage: showingTrash ? "square.stack.3d.up" : "trash")
+                            .font(.subheadline).frame(minHeight: 44)
+                    }
+                }
+                if !presentation.projects.isEmpty || showingTrash {
+                    HStack(spacing: 12) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(ScannerProductTheme.muted)
+                        TextField("Search projects", text: $search)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        Menu {
+                            Button("Recently updated") { sortByName = false }
+                            Button("Name") { sortByName = true }
+                        } label: {
+                            Image(systemName: "arrow.up.arrow.down").frame(width: 44, height: 44)
+                        }
+                        .accessibilityLabel("Sort projects")
+                    }
+                    .padding(.leading, 16)
+                    .background(ScannerProductTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+                }
+                if presentation.isManagingLibrary {
+                    ProgressView("Removing local project data…").frame(maxWidth: .infinity)
+                }
+                ForEach(presentation.issues) { issue in
+                    ScannerIssueCard(issue: issue, action: { actions.recover(issue) })
+                }
+                if visibleProjects.isEmpty {
+                    ContentUnavailableView(
+                        search.isEmpty ? (showingTrash ? String(localized: "Trash is empty") : String(localized: "A place for every space")) : String(localized: "No matching projects"),
+                        systemImage: search.isEmpty ? "square.stack.3d.up" : "magnifyingglass",
+                        description: Text(showingTrash ? String(localized: "Moved projects remain on this device until you permanently delete them.") : String(localized: "Start a scan or import an HSSCAN archive. No account required."))
+                    )
+                } else {
+                    LazyVStack(spacing: 12) {
+                        ForEach(visibleProjects) { project in
+                            HStack(spacing: 4) {
+                                Button { if !showingTrash { actions.openProject(project.id) } } label: {
+                                    ScannerProjectIdentity(project: project)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(showingTrash)
+                                Menu {
+                                    if showingTrash {
+                                        if project.canRestore {
+                                            Button("Restore project", systemImage: "arrow.uturn.backward") { actions.restoreProject(project.id) }
+                                        } else {
+                                            Text("Deletion started — retry to finish")
+                                        }
+                                        Button("Delete permanently", systemImage: "trash", role: .destructive) { removing = project }
+                                    } else {
+                                        Button("Rename", systemImage: "pencil") {
+                                            newName = project.name
+                                            renaming = project
+                                        }
+                                        Button("Move to Trash", systemImage: "trash", role: .destructive) { actions.trashProject(project.id) }
+                                    }
+                                } label: {
+                                    Image(systemName: "ellipsis").frame(width: 48, height: 48)
+                                }
+                                .accessibilityLabel(String(localized: "Project actions: \(project.name)"))
+                            }
+                            .background(ScannerProductTheme.surface, in: RoundedRectangle(cornerRadius: 20))
                         }
                     }
                 }
-                Button("Import HSSCAN archive", action: actions.importProject)
-                    .buttonStyle(ScannerSecondaryButtonStyle())
-                    .frame(maxWidth: .infinity, minHeight: 48)
-                    .accessibilityHint("Selects a local archive and verifies it before adding it to projects.")
-                if presentation.canStartCapture {
-                    Button(action: actions.startCapture) {
-                        Text("Start a new room scan")
-                            .frame(maxWidth: .infinity, minHeight: 56)
+                if !showingTrash {
+                    Button(action: actions.importProject) {
+                        Label("Import HSSCAN archive", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity, minHeight: 48)
                     }
-                        .buttonStyle(ScannerPrimaryButtonStyle())
+                    .buttonStyle(ScannerSecondaryButtonStyle())
                 }
             }
+            .padding(24)
+            .frame(maxWidth: 740)
+            .frame(maxWidth: .infinity)
         }
-        .padding(24)
+        .disabled(presentation.isManagingLibrary)
+        .alert("Rename project", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Project name", text: $newName)
+            Button("Save") {
+                if let renaming { actions.renameProject(renaming.id, newName) }
+                renaming = nil
+            }.disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || newName.count > 160)
+            Button("Cancel", role: .cancel) { renaming = nil }
+        }
+        .alert("Delete this project permanently?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
+            Button("Delete permanently", role: .destructive) {
+                if let removing { actions.permanentlyDeleteProject(removing.id) }
+                removing = nil
+            }
+            Button("Cancel", role: .cancel) { removing = nil }
+        } message: {
+            Text("This removes this project's source observations, local exports and local HSSCAN archives. Copies you shared elsewhere and separate object captures are not removed. This cannot be undone.")
+        }
+        .sheet(isPresented: $showingPrivacy) {
+            NavigationStack {
+                List {
+                    Section("On-device by design") {
+                        Label("Capture, processing and exports work offline.", systemImage: "iphone")
+                        Label("No account, analytics SDK or cloud reconstruction.", systemImage: "lock.shield")
+                    }
+                    Section("You control your projects") {
+                        Text("Move to Trash to keep a recoverable project. Delete permanently from Trash to remove its local source observations and exports.")
+                        Text("Sharing opens a system sheet. Only you choose a destination. Shared copies, file providers and device backups have their own retention policies.")
+                    }
+                    Section("Separate object captures") {
+                        Text("Object Capture photos and models are stored separately from room projects. Deleting a room does not delete these sessions.")
+                    }
+                }
+                .navigationTitle("Privacy and local data")
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingPrivacy = false } } }
+            }
+        }
     }
 }
 
