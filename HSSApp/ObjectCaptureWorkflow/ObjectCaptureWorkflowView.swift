@@ -391,7 +391,13 @@ struct ObjectCaptureLibraryView: View {
       }
       .navigationTitle("Object library")
       .toolbar { ToolbarItem(placement: .confirmationAction) {
-        Button("Done") { dismiss() }.accessibilityIdentifier("object-library.done")
+        Button { dismiss() } label: {
+          Label("Done", systemImage: "xmark")
+            .labelStyle(.iconOnly)
+            .font(.body.weight(.semibold))
+            .frame(minWidth: 44, minHeight: 44)
+        }
+          .accessibilityIdentifier("object-library.done")
       } }
       .disabled(isWorking)
       .task { await reload() }
@@ -401,7 +407,13 @@ struct ObjectCaptureLibraryView: View {
         NavigationStack {
           ObjectCaptureWorkflowView(resumingSessionID: selected.sessionID) { _ in }
             .toolbar { ToolbarItem(placement: .cancellationAction) {
-              Button("Close") { workflow = nil }.accessibilityIdentifier("object-capture.close")
+              Button { workflow = nil } label: {
+                Label("Close", systemImage: "xmark")
+                  .labelStyle(.iconOnly)
+                  .font(.body.weight(.semibold))
+                  .frame(minWidth: 44, minHeight: 44)
+              }
+                .accessibilityIdentifier("object-capture.close")
             } }
         }
       }

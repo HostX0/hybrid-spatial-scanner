@@ -2,6 +2,30 @@ import XCTest
 
 final class ScannerProductJourneyUITests: XCTestCase {
     @MainActor
+    func testEnglishLibraryAccessibilityAudit() throws {
+        try auditLibraries(language: "en", locale: "en_US")
+    }
+
+    @MainActor
+    func testArabicLibraryAccessibilityAudit() throws {
+        try auditLibraries(language: "ar", locale: "ar_IQ")
+    }
+
+    @MainActor
+    private func auditLibraries(language: String, locale: String) throws {
+        let app = launch(language: language, locale: locale)
+        defer { app.terminate() }
+        XCTAssertTrue(app.buttons["object-library.open"].waitForExistence(timeout: 10))
+        attach(app, name: language + " project library accessibility")
+        // Do not suppress reported issues: these are real current-screen audits,
+        // not a blanket VoiceOver or physical capture acceptance.
+        try app.performAccessibilityAudit(for: [.contrast, .hitRegion, .textClipped, .dynamicType])
+        openObjectLibrary(app)
+        attach(app, name: language + " object library accessibility")
+        try app.performAccessibilityAudit(for: [.contrast, .hitRegion, .textClipped, .dynamicType])
+    }
+
+    @MainActor
     func testEnglishObjectLibraryAndCaptureIntroductionReturnJourney() {
         let app = launch(language: "en", locale: "en_US")
         openObjectLibrary(app)
