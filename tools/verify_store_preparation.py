@@ -153,8 +153,14 @@ def verify_native_source(source, content, metadata):
     privacy = plistlib.loads((app / "PrivacyInfo.xcprivacy").read_bytes())
     require(privacy["NSPrivacyTracking"] is False and privacy["NSPrivacyCollectedDataTypes"] == [], "Unexpected app collection/tracking declaration")
     categories = {item["NSPrivacyAccessedAPIType"] for item in privacy["NSPrivacyAccessedAPITypes"]}
-    require(categories == {"NSPrivacyAccessedAPICategoryUserDefaults", "NSPrivacyAccessedAPICategorySystemBootTime",
+    require(categories == {"NSPrivacyAccessedAPICategorySystemBootTime",
                            "NSPrivacyAccessedAPICategoryDiskSpace", "NSPrivacyAccessedAPICategoryFileTimestamp"}, "Required-reason inventory drift")
+    reasons = {item["NSPrivacyAccessedAPIType"]: set(item["NSPrivacyAccessedAPITypeReasons"])
+               for item in privacy["NSPrivacyAccessedAPITypes"]}
+    require(reasons == {"NSPrivacyAccessedAPICategorySystemBootTime": {"35F9.1"},
+                        "NSPrivacyAccessedAPICategoryDiskSpace": {"E174.1"},
+                        "NSPrivacyAccessedAPICategoryFileTimestamp": {"C617.1", "3B52.1"}},
+            "Required-reason justification drift")
     protection = plistlib.loads((app / "HybridSpatialScanner.entitlements").read_bytes())
     require(protection["com.apple.developer.default-data-protection"] == "NSFileProtectionCompleteUntilFirstUserAuthentication", "Data Protection source mismatch")
     project = (app / "HybridSpatialScanner.xcodeproj/project.pbxproj").read_text()

@@ -64,6 +64,12 @@ class StorePreparationTests(unittest.TestCase):
         self.assertGreater(sizes["ar-SA"]["keyword_utf8_bytes"], len("ليدار,مخطط,غرفة,مجسم,قياس"))
         self.assertLessEqual(sizes["ar-SA"]["keyword_utf8_bytes"], 100)
 
+    def test_native_manifest_and_help_source_only(self):
+        metadata, _ = verify.verify_metadata(ROOT, self.content)
+        result = verify.verify_native_source(ROOT, self.content, metadata)
+        self.assertIn("not Apple compilation", result["checks"])
+        self.assertFalse(result["schema_or_abi_change"])
+
 
 if __name__ == "__main__":
     unittest.main()
