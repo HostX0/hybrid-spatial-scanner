@@ -46,6 +46,21 @@ failures, data attribution, actual observations and interface limits.
 
 ## Remaining software gates, without Team ID
 
+Store preparation is now implemented separately from application release:
+English/Arabic metadata and review instructions, app-specific public privacy and
+support pages, approved THE THIRD ACT LLC contact details, and bundled offline
+help with explicit external links. The public Site is deployed; anonymous Linux
+HTTPS checks returned the actual product pages in both languages. Native help
+and its expanded UI journeys are source only, not a new iOS build. The prepared
+privacy answers have not been submitted to Apple. See
+`docs/evidence/ENG-STORE-PRIVACY-SUPPORT-01.md` and
+`docs/release/store-submission.md` for scope and final submission gates.
+
+This store-only increment does not alter the portable core, C/C++ regressions or
+existing CI. Reuse the retained 60/60 Linux sanitizer baseline at
+`0a92de1303316e4637a8a600b6459a92ae329459`; do not claim those tests ran on the
+later complete native/store source tree.
+
 1. Complete all seven native UI journeys, including English/Arabic supported
    boundary split/undo/redo and unsuppressed accessibility checks. Retain actual
    screenshots and inspect the current capture/review states. A build or a
@@ -56,9 +71,11 @@ failures, data attribution, actual observations and interface limits.
    Include new appearance checkpoint/rollback/runtime-token and colored/default-off
    export tests, actual CoreImage half/quarter-scale asymmetric raster/UV alignment,
    SceneKit source-position/mask preservation and current-evidence guidance expiry.
-3. Review final privacy/API/file-protection and distribution metadata. Publish a
-   real privacy-policy/support destination with owner-provided public contact
-   and effective date; do not invent these or publish draft placeholders.
+3. Check the final binary's privacy/API/file-protection inventory against the
+   implemented disclosures and prepared distribution metadata. Public policy and
+   support destinations are published with approved contact and a policy date;
+   archive packaging, signed enforcement and Apple questionnaire submission
+   remain separate verification.
 4. Publish verified integration changes under the original project lock with
    fresh head/lease checks, paired durable handoff and exact-head hosted-check
    readback. Complete portable tests run on the server; the optional new hosted
@@ -68,7 +85,7 @@ failures, data attribution, actual observations and interface limits.
 The owner has paused Mac builds/simulators while testing ZERO X. Server and
 lightweight work can continue; native heavy checks resume from retained source
 and evidence only when that pause is lifted. Team ID is not required for these
-four gates and is deferred to the signing stage.
+software gates and is deferred to the signing stage.
 
 ## Limits the product must explain
 

@@ -198,7 +198,27 @@ def verify_native_source(source, content, metadata):
             "icon": {"size": [1024, 1024], "opaque": True}, "schema_or_abi_change": False}
 
 
-def verify_live(origin, content):
+# Observed hosting security suffix, not product code. Only its request/time
+# fields vary. A changed provider template requires inspection, not stripping.
+HOST_SECURITY_TEMPLATE_SHA256 = "00fbcbe2273ca54d0d2943e77636ef2d4f88b8502cba984b29734af003fd5862"
+
+
+def verify_delivery(delivered, packaged, html_page=True):
+    if delivered == packaged:
+        return "exact"
+    require(html_page, "Delivered stylesheet differs from the packaged artifact")
+    closing = "</body></html>\n"
+    require(packaged.endswith(closing) and delivered.endswith(closing), "Unexpected public document ending")
+    prefix = packaged[:-len(closing)]
+    require(delivered.startswith(prefix), "Delivered product content or metadata differs from the packaged artifact")
+    suffix = delivered[len(prefix):-len(closing)]
+    normalized, replacements = re.subn(r"r:'[0-9a-f]{16}',t:'[A-Za-z0-9+/=]{1,128}'", "r:<request>,t:<time>", suffix)
+    require(replacements == 1 and hashlib.sha256(normalized.encode("utf-8")).hexdigest() == HOST_SECURITY_TEMPLATE_SHA256,
+            "Unreviewed hosting injection; inspect before accepting delivery")
+    return "exact-product-plus-reviewed-host-security-suffix"
+
+
+def verify_live(origin, content, directory):
     require(origin == content["origin"], "Only the prepared public origin is allowed")
     receipts = []
     for path in ("/", "/privacy/", "/support/", "/ar/", "/ar/privacy/", "/ar/support/", "/style.css"):
@@ -212,7 +232,11 @@ def verify_live(origin, content):
             if path != "/style.css":
                 require(content["publisher"] in body and '<main id="content">' in body, "Public response is not the product page")
                 public_text(body)
-            receipts.append({"path": path, "status": response.status, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+            relative = path.lstrip("/") + ("index.html" if path.endswith("/") else "")
+            packaged = (directory / relative).read_text(encoding="utf-8")
+            delivery = verify_delivery(body, packaged, html_page=path != "/style.css")
+            receipts.append({"path": path, "status": response.status, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+                             "artifact_match": delivery})
     return receipts
 
 
@@ -231,7 +255,7 @@ def main():
         result["public_artifacts"] = verify_pages(args.website, content)
         result["native_source"] = verify_native_source(args.source, content, metadata)
         if args.live_origin:
-            result["anonymous_https"] = verify_live(args.live_origin, content)
+            result["anonymous_https"] = verify_live(args.live_origin, content, args.website)
         result["preparation_checks_passed"] = True
         result["submission_ready"] = False
         result["pending_gates"] = ["exact-tree native/UI/raster/export and archive packaging",

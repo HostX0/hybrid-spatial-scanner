@@ -21,6 +21,12 @@ assets or browser JavaScript. Hosting/security processing is separately disclose
 do not claim a hosting provider never logs web requests. Public HTML and hidden
 metadata must not contain repository links, engineering evidence, source names,
 paths, commit IDs or agent material. Sites hosting metadata stays operational.
+The live host appends a Cloudflare security script; this is not app telemetry or
+product JavaScript. The anonymous delivery checker requires byte-identical
+product content and CSS, with only the reviewed security suffix's request/time
+fields permitted to vary. Provider-template changes require fresh inspection.
+The source CSP remains restrictive; no claim of executing or disabling the host
+script, browser cookie behavior or full visual acceptance is made.
 
 Owner approved THE THIRD ACT LLC, its Hello email and US telephone on
 2026-10-11. Exact email/number were corroborated against the company's live
@@ -77,8 +83,9 @@ Capture the following in English and Arabic/RTL after native acceptance:
 
 Use a consented staged capture or clearly disclosed demonstration data with no
 private interiors, addresses, people or engineering labels. No screenshots have
-been generated in this server-only packet. The screenshot validator fails closed
-for missing images; it cannot establish UI correctness by checking image sizes.
+been generated in this server-only packet. The preparation checker explicitly
+keeps actual final-app screenshots as an unmet submission gate; it is not a
+screenshot-size validator or native UI acceptance test.
 
 ## Final account/distribution gates
 

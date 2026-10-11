@@ -17,6 +17,9 @@ def module(name):
 verify = module("verify_store_preparation")
 generate = module("generate_store_site")
 
+# Public hosting security suffix observed on 2026-10-11; no capture data.
+HOST_SECURITY_SUFFIX = """<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a48fc2b2ed76dff3',t:'MTc5MTc0MTU4Ng=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script>"""
+
 
 class StorePreparationTests(unittest.TestCase):
     def setUp(self):
@@ -69,6 +72,21 @@ class StorePreparationTests(unittest.TestCase):
         result = verify.verify_native_source(ROOT, self.content, metadata)
         self.assertIn("not Apple compilation", result["checks"])
         self.assertFalse(result["schema_or_abi_change"])
+
+    def test_live_delivery_requires_exact_product_and_reviewed_host_suffix(self):
+        page = generate.render(self.content, "en", "privacy")
+        self.assertEqual(verify.verify_delivery(page, page), "exact")
+        hosted = page.replace("</body>", HOST_SECURITY_SUFFIX + "</body>")
+        self.assertEqual(verify.verify_delivery(hosted, page), "exact-product-plus-reviewed-host-security-suffix")
+        fresh = hosted.replace("a48fc2b2ed76dff3", "0123456789abcdef").replace("MTc5MTc0MTU4Ng==", "MTc5MTc0MjAwMA==")
+        self.assertEqual(verify.verify_delivery(fresh, page), "exact-product-plus-reviewed-host-security-suffix")
+        for altered in (hosted.replace("THE THIRD ACT LLC", "Another publisher"),
+                        hosted.replace("/cdn-cgi/challenge-platform/scripts/jsd/main.js", "https://other.example/track.js"),
+                        hosted.replace("</body>", "<script>upload()</script></body>")):
+            with self.subTest(altered=altered[-80:]), self.assertRaises(verify.CheckFailure):
+                verify.verify_delivery(altered, page)
+        with self.assertRaises(verify.CheckFailure):
+            verify.verify_delivery("changed stylesheet", "original stylesheet", html_page=False)
 
 
 if __name__ == "__main__":
