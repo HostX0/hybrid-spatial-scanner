@@ -3,6 +3,30 @@ import XCTest
 
 @MainActor
 final class HSSAppTests: XCTestCase {
+    func testPublicSupportMatchesApprovedPublisherAndHTTPSDestinations() {
+        XCTAssertEqual(ScannerPublicSupport.publisher, "THE THIRD ACT LLC")
+        XCTAssertEqual(ScannerPublicSupport.email, "Hello@the-3rdact.com")
+        XCTAssertEqual(ScannerPublicSupport.phoneURL.absoluteString, "tel:+17192867476")
+        for url in [ScannerPublicSupport.privacyURL, ScannerPublicSupport.supportURL] {
+            XCTAssertEqual(url.scheme, "https")
+            XCTAssertEqual(url.host, "hybrid-spatial-scanner.azoz96.chatgpt.site")
+            XCTAssertNil(url.user)
+            XCTAssertNil(url.password)
+            XCTAssertNil(url.query)
+            XCTAssertNil(url.fragment)
+        }
+        XCTAssertEqual(ScannerPublicSupport.privacyURL.path, "/privacy")
+        XCTAssertEqual(ScannerPublicSupport.supportURL.path, "/support")
+    }
+
+    func testSupportEmailContainsNoAutomaticCaptureOrDiagnostics() throws {
+        let components = try XCTUnwrap(URLComponents(url: ScannerPublicSupport.emailURL, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(components.scheme, "mailto")
+        XCTAssertEqual(components.path, ScannerPublicSupport.email)
+        XCTAssertEqual(components.queryItems?.map(\.name), ["subject"])
+        XCTAssertEqual(components.queryItems?.first?.value, "Hybrid Spatial Scanner support")
+    }
+
     func testReadyWhenEveryRequirementIsSatisfied() {
         let readiness = makeProvider().currentReadiness()
         XCTAssertTrue(readiness.isReadyForCapture)

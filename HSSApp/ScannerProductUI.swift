@@ -553,6 +553,7 @@ private struct ScannerLibraryScreen: View {
     @State private var sortByName = false
     @State private var showingTrash = false
     @State private var showingPrivacy = false
+    @State private var showingSupport = false
     @State private var renaming: ScannerWorkspacePresentation.Project?
     @State private var newName = ""
     @State private var removing: ScannerWorkspacePresentation.Project?
@@ -575,6 +576,12 @@ private struct ScannerLibraryScreen: View {
                             .font(.largeTitle.weight(.bold))
                     }
                     Spacer(minLength: 8)
+                    Button { showingSupport = true } label: {
+                        Image(systemName: "questionmark.circle").frame(width: 48, height: 48)
+                    }
+                    .buttonStyle(ScannerGlassButtonStyle())
+                    .accessibilityLabel("Help and support")
+                    .accessibilityIdentifier("support.open")
                     Button { showingPrivacy = true } label: {
                         Image(systemName: "lock.shield").frame(width: 48, height: 48)
                     }
@@ -740,6 +747,20 @@ private struct ScannerLibraryScreen: View {
                         Text("Portable room archives remove the original device clock origin. Original local sources stay unchanged. Object model sharing does not include the retained source photos.")
                         Text("Device backups and destinations you select may keep copies. Deleting local data cannot erase those copies.")
                     }
+                    Section("Publisher and policy") {
+                        Text(ScannerPublicSupport.publisher)
+                        Link(destination: ScannerPublicSupport.privacyURL) {
+                            Label("Full privacy policy", systemImage: "arrow.up.right.square")
+                        }
+                        .accessibilityIdentifier("privacy.policy-link")
+                        NavigationLink {
+                            ScannerSupportContent()
+                        } label: {
+                            Label("Help and support", systemImage: "questionmark.circle")
+                        }
+                        Text("Opening a website, email or phone link uses the service you choose. No scan or diagnostic file is attached automatically.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
                 .accessibilityIdentifier("privacy.content")
                 .navigationTitle("Privacy and local data")
@@ -751,6 +772,89 @@ private struct ScannerLibraryScreen: View {
                 } }
             }
         }
+        .sheet(isPresented: $showingSupport) {
+            NavigationStack {
+                ScannerSupportContent()
+                    .toolbar { ToolbarItem(placement: .confirmationAction) {
+                        Button { showingSupport = false } label: {
+                            Label("Done", systemImage: "xmark").labelStyle(.iconOnly)
+                                .font(.body.weight(.semibold)).frame(minWidth: 44, minHeight: 44)
+                        }.accessibilityIdentifier("support.done")
+                    } }
+            }
+        }
+    }
+}
+
+/// Public, owner-approved destinations only. Opening one is an explicit user
+/// action handled by the system; no networking, scan upload or attachment here.
+enum ScannerPublicSupport {
+    static let publisher = "THE THIRD ACT LLC"
+    static let email = "Hello@the-3rdact.com"
+    static let phone = "+1 (719) 286-7476"
+    static let privacyURL = URL(string: "https://hybrid-spatial-scanner.azoz96.chatgpt.site/privacy/")!
+    static let supportURL = URL(string: "https://hybrid-spatial-scanner.azoz96.chatgpt.site/support/")!
+    static let emailURL = URL(string: "mailto:Hello@the-3rdact.com?subject=Hybrid%20Spatial%20Scanner%20support")!
+    static let phoneURL = URL(string: "tel:+17192867476")!
+}
+
+/// Bundled help remains readable offline and on devices without capture support.
+/// It never creates another workspace, geometry or capture-session owner.
+private struct ScannerSupportContent: View {
+    var body: some View {
+        List {
+            Section("Start with your device") {
+                DisclosureGroup("Why is capture unavailable?") {
+                    Text("Room capture needs supported LiDAR depth and mesh reconstruction, camera permission, usable storage and tracking. Read the blocked condition before retrying. Object Capture has separate hardware requirements.")
+                }
+                DisclosureGroup("Save before you close") {
+                    Text("Finish or pause to review, then save the accepted revision. An unsaved preview is not a saved project. Reopen from the local library and read any recovery warning before continuing.")
+                }
+            }
+            Section("Understand your result") {
+                DisclosureGroup("Missing evidence and measurements") {
+                    Text("A floor reference and supported closed boundaries are needed for a usable plan. Covered or reflective regions can stay unknown. Review the issue or add a supported physical reference measurement. Verify critical dimensions independently; this is not a certified surveying or safety tool.")
+                }
+                DisclosureGroup("Corrections and undo") {
+                    Text("Corrections require the current supported target. Protecting topology and locking a position are different actions. If new source data changes a target, keep the unresolved note instead of forcing a correction or undo onto another edge.")
+                }
+                DisclosureGroup("Source color and sharing") {
+                    Text("Unsupported or stale source images leave a neutral measured mesh. Color does not prove precision. Including used source images in 3D export is off by default. Room archives do not include source color images. Keep companion files together when sharing a 3D bundle.")
+                }
+            }
+            Section("Keep control of your data") {
+                DisclosureGroup("Interruptions and resource pauses") {
+                    Text("Reopen your saved project after an interruption. If storage or device pressure pauses capture, save and make safe space or let the device cool. Do not delete your only project copy to troubleshoot. Move safely; never climb or walk backward to complete a scan.")
+                }
+                DisclosureGroup("Delete local scans") {
+                    Text("Move a room to Trash, then delete it permanently to remove its local data and exports. Delete object sessions separately. Shared copies and device backups remain at their destinations. There is no app account to delete.")
+                }
+            }
+            Section("Contact the team") {
+                Text(ScannerPublicSupport.publisher)
+                Link(destination: ScannerPublicSupport.emailURL) {
+                    Label("Email support", systemImage: "envelope")
+                }.accessibilityIdentifier("support.email")
+                Text(verbatim: ScannerPublicSupport.email).font(.footnote).textSelection(.enabled)
+                Link(destination: ScannerPublicSupport.phoneURL) {
+                    Label("Call US support", systemImage: "phone")
+                }.accessibilityIdentifier("support.phone")
+                Text(verbatim: ScannerPublicSupport.phone).font(.footnote).textSelection(.enabled)
+                Text("Include the app name, device model, iOS version and a short description. Screenshots are optional; remove private details. Never send a password or verification code.")
+                Text("Opening a website, email or phone link uses the service you choose. No scan or diagnostic file is attached automatically.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Link("Support website", destination: ScannerPublicSupport.supportURL)
+                    .accessibilityIdentifier("support.website")
+                Link("Full privacy policy", destination: ScannerPublicSupport.privacyURL)
+                    .accessibilityIdentifier("support.policy-link")
+            }
+            Section("App version") {
+                Text(verbatim: (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
+                     + " (" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—") + ")")
+            }
+        }
+        .accessibilityIdentifier("support.content")
+        .navigationTitle("Help and support")
     }
 }
 

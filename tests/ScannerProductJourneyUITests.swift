@@ -25,6 +25,19 @@ final class ScannerProductJourneyUITests: XCTestCase {
         attach(app, name: language + " privacy disclosure accessibility")
         try app.performAccessibilityAudit(for: [.contrast, .hitRegion, .textClipped, .dynamicType])
         app.buttons["privacy.done"].tap()
+        app.buttons["support.open"].tap()
+        XCTAssertTrue(app.buttons["support.done"].waitForExistence(timeout: 5))
+        attach(app, name: language + " offline help accessibility")
+        try app.performAccessibilityAudit(for: [.contrast, .hitRegion, .textClipped, .dynamicType])
+        let email = app.descendants(matching: .any).matching(identifier: "support.email").firstMatch
+        reveal(email, in: app)
+        let phone = app.descendants(matching: .any).matching(identifier: "support.phone").firstMatch
+        reveal(phone, in: app)
+        XCTAssertTrue(email.exists)
+        XCTAssertTrue(phone.exists)
+        // Presence only: do not send an email, place a call or upload a capture.
+        attach(app, name: language + " approved publisher support")
+        app.buttons["support.done"].tap()
         openObjectLibrary(app)
         attach(app, name: language + " object library accessibility")
         try app.performAccessibilityAudit(for: [.contrast, .hitRegion, .textClipped, .dynamicType])
