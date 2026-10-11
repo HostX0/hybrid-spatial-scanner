@@ -7,6 +7,9 @@ struct HybridSpatialScannerApp: App {
     var body: some Scene {
         WindowGroup {
             ScannerWorkspaceProductHost(workspace: workspace)
+#if DEBUG
+                .task { try? await workspace.seedReferenceRoomForUITesting() }
+#endif
         }
     }
 }

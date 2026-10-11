@@ -1,5 +1,6 @@
 #include <algorithm>
 #include "hss/durable_source_store.hpp"
+#include "hss/project_event_encoder.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -254,6 +255,54 @@ void test_manifest_absence_and_non_evicting_retention() {
         "storage refuses unknown/generated provenance as captured source");
 }
 
+void test_portable_copy_checks_control_kind_without_mutating_original() {
+  for (const auto kind : {SourceKind::kCommand, SourceKind::kPlanReference}) {
+    TemporaryDirectory original_directory, portable_directory;
+    NativeFileSystem original_files(original_directory.path()), portable_files(portable_directory.path());
+    DurableSourceStore store(original_files, RetentionLimits{});
+    hss::storage::ProjectMetadata metadata;
+    metadata.project_id[0] = 1;
+    metadata.source_is_synthetic = true;
+    check(store.open_project(metadata, hss::storage::ProjectOpenMode::kCreateNew) == StoreStatus::kOk,
+          "create portable control fixture metadata");
+    SourceRecord source = record(kind, 1, {});
+    source.provenance = SourceProvenance::kAcceptedControl;
+    source.monotonic_time_s = 1000000.0;
+    hss::project::PlanReferenceControl floor;
+    std::copy(source.capture_id.begin(), source.capture_id.end(), std::begin(floor.context.capture_id.bytes));
+    floor.context.event_sequence = source.event_sequence;
+    floor.context.session_epoch = source.session_epoch;
+    floor.context.monotonic_time_s = source.monotonic_time_s;
+    floor.context.accepted_scene_revision = 1;
+    floor.project_from_floor.column_major[0] = floor.project_from_floor.column_major[5] =
+        floor.project_from_floor.column_major[10] = floor.project_from_floor.column_major[15] = 1.0;
+    floor.cut_height_m = 1.2;
+    floor.after_scene_revision = 1;
+    check(hss::project::encode_control(floor, 1024 * 1024, &source.payload) == hss::project::ControlStatus::kOk,
+          "encode valid floor payload");
+    check(store.checkpoint({source}) == StoreStatus::kOk, "persist original control fixture");
+    std::vector<uint8_t> original_manifest, after_manifest;
+    check(original_files.read_file("active.manifest", &original_manifest), "read original manifest");
+    const auto status = store.write_portable_copy(portable_files);
+    if (kind == SourceKind::kCommand) {
+      check(status == StoreStatus::kCorrupt && !portable_files.exists("active.manifest"),
+            "portable export must reject a floor payload mislabeled as a command");
+    } else {
+      check(status == StoreStatus::kOk, "portable export accepts matching floor control kind");
+      DurableSourceStore portable(portable_files, RetentionLimits{});
+      const auto recovered = portable.recover();
+      check(recovered.status == StoreStatus::kOk && recovered.records.size() == 1 &&
+            recovered.records[0].source.monotonic_time_s == 0.0, "portable floor clock starts at zero");
+    }
+    check(original_files.read_file("active.manifest", &after_manifest) && original_manifest == after_manifest,
+          "portable export preserves original manifest bytes");
+    const auto recovered = store.recover();
+    std::vector<uint8_t> after_payload;
+    check(recovered.records.size() == 1 && store.read_payload(recovered.records[0], &after_payload) == StoreStatus::kOk &&
+          after_payload == source.payload, "portable export preserves original control payload bytes");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -261,6 +310,7 @@ int main() {
   test_partial_manifest_never_publishes();
   test_corruption_falls_back_to_previous_manifest();
   test_manifest_absence_and_non_evicting_retention();
+  test_portable_copy_checks_control_kind_without_mutating_original();
   std::cout << "durable source manifest-last storage checks passed\n";
   return EXIT_SUCCESS;
 }

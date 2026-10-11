@@ -154,6 +154,9 @@ struct NormalizedSceneDepthFrame: Sendable {
     let validDepthMask: [UInt8]
     let metricFusionMask: [UInt8]
     let provisionalPreviewMask: [UInt8]
+    /// Optional owned, sampled RGB appearance from this exact ARFrame. It is
+    /// never consulted by metric ingestion or confidence/depth validation.
+    var appearancePhoto: ScannerAppearancePhoto? = nil
 }
 
 enum SceneDepthFrameRejection: String, CaseIterable, Equatable, Hashable, Sendable {

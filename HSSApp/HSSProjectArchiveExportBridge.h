@@ -3,8 +3,10 @@
 NS_ASSUME_NONNULL_BEGIN
 
 /// App-internal bridge for creating a local HSSCAN archive from a project that
-/// has already completed a durable checkpoint. The archive is store-only and
-/// uses the importer-required SHA-256 ZIP extra field on every entry.
+/// has already completed a durable checkpoint. The shareable derivative removes
+/// the source clock origin while preserving event intervals, geometry and exact
+/// command/result bytes. Originals remain unchanged. The archive is store-only
+/// and uses the importer-required SHA-256 ZIP extra field on every entry.
 @interface HSSProjectArchiveExportBridge : NSObject
 
 + (BOOL)writeHSSCANArchiveForProjectDirectory:(NSURL *)projectDirectory

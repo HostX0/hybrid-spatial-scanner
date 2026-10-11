@@ -21,6 +21,9 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
     @State private var projectArchiveToShare: URL?
     @State private var isRecordingMissingEvidence = false
     @State private var missingEvidenceReason = ""
+    @State private var isBoundaryReviewPresented = false
+    @State private var boundaryReviewSnapshot: ScannerSceneSnapshot?
+    @State private var showsSourceColor = true
 
     var body: some View {
         ScannerWorkspaceView(
@@ -32,14 +35,60 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
                     onTargetTap: workspace.selectTarget,
                     onViewportChange: { currentCameraViewport = $0 }
                 )
+                .overlay(alignment: .top) {
+                    if let advice = workspace.captureAdvice {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: advice.symbol).font(.title3)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(advice.title).font(.headline)
+                                Text(advice.detail).font(.subheadline)
+                            }
+                        }
+                        .foregroundStyle(.primary)
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                        .padding(16)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("capture-coach-current-evidence")
+                        .allowsHitTesting(false)
+                    }
+                }
             },
             sceneContent: {
                 if let snapshot = workspace.latestSnapshot {
                     ScannerSnapshotMeshPreview(
                         snapshot: snapshot,
                         admittedAppearanceBinding: workspace.reviewAppearanceBinding,
-                        appearanceTextures: workspace.reviewAppearanceTextures
+                        appearanceTextures: workspace.reviewAppearanceTextures,
+                        texturedMesh: showsSourceColor ? workspace.reviewTexturedMesh : nil
                     )
+                    .overlay(alignment: .bottom) {
+                        if snapshot.isFrozen {
+                            VStack(alignment: .leading, spacing: 8) {
+                                if workspace.reviewTexturedMesh?.faces.isEmpty == false {
+                                    Picker("3D appearance", selection: $showsSourceColor) {
+                                        Text("Source color").tag(true)
+                                        Text("Measured mesh").tag(false)
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .accessibilityIdentifier("review.appearance-mode")
+                                    Toggle("Include source images in 3D export", isOn: Binding(
+                                        get: { workspace.includeSourceImagesInExport },
+                                        set: { workspace.includeSourceImagesInExport = $0 }
+                                    ))
+                                    .font(.caption)
+                                    .accessibilityIdentifier("review.include-source-images")
+                                }
+                                if let message = workspace.appearanceMessage {
+                                    Text(message).font(.caption).foregroundStyle(.primary)
+                                }
+                            }
+                            .padding(12)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                            .padding(12)
+                        }
+                    }
                 }
             }
         )
@@ -102,6 +151,23 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             // workspace's metric scene or project save path.
             ObjectCaptureLibraryView()
         }
+        .sheet(isPresented: $isBoundaryReviewPresented, onDismiss: { boundaryReviewSnapshot = nil }) {
+            if let snapshot = boundaryReviewSnapshot {
+                ScannerBoundaryReviewSheet(snapshot: snapshot,
+                    edges: ScannerBoundaryEdge.decode(snapshot: snapshot, projectID: workspace.selectedProjectID ?? UUID()),
+                    isCurrent: workspace.latestSnapshot?.revision == snapshot.revision,
+                    canApply: workspace.canRecordMissingEvidence && workspace.latestSnapshot?.revision == snapshot.revision,
+                    issue: workspace.currentIssue?.message,
+                    history: workspace.commandHistory,
+                    apply: { workspace.applyBoundaryEdit($0, expectedRevision: snapshot.revision) })
+            }
+        }
+        .onChange(of: workspace.latestSnapshot?.revision) { _, _ in
+            // Keep an accepted correction sheet connected to the new immutable
+            // publication. The sheet's selection resets; it never retargets an
+            // old edge ID to the nearest new geometry.
+            if isBoundaryReviewPresented { boundaryReviewSnapshot = workspace.latestSnapshot }
+        }
         .sheet(isPresented: $isFloorReferencePresented, onDismiss: { floorReferenceSnapshot = nil }) {
             if let snapshot = floorReferenceSnapshot {
                 ScannerFloorReferenceSheet(
@@ -160,8 +226,8 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             projectArchiveExportStatus: projectArchiveExportStatus,
             canStartCapture: !workspace.isManagingLibrary && (workspace.phase == .ready || workspace.phase == .browsing),
             canFinishCapture: isCaptureActive,
-            canAssist: false,
-            canUndo: false,
+            canAssist: !workspace.editableBoundary.isEmpty,
+            canUndo: workspace.canRecordMissingEvidence && workspace.commandHistory?.undoID != nil,
             canRecordMissingEvidence: workspace.canRecordMissingEvidence,
             canSave: workspace.saveState == .hasUnsavedChanges,
             canExport: workspace.canExport,
@@ -185,8 +251,15 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             },
             importProject: { isImportingProject = true },
             finishCapture: workspace.stopCapture,
-            assist: {},
-            undo: {},
+            assist: {
+                guard !workspace.editableBoundary.isEmpty else { return }
+                boundaryReviewSnapshot = workspace.latestSnapshot
+                isBoundaryReviewPresented = true
+            },
+            undo: {
+                guard let id = workspace.commandHistory?.undoID, let revision = workspace.latestSnapshot?.revision else { return }
+                workspace.applyBoundaryEdit(.undo(original: id), expectedRevision: revision)
+            },
             recordMissingEvidence: {
                 missingEvidenceReason = ""
                 isRecordingMissingEvidence = true
@@ -640,27 +713,48 @@ private struct ScannerSnapshotMeshPreview: UIViewRepresentable {
     let snapshot: ScannerSceneSnapshot
     let admittedAppearanceBinding: AppearanceAdmittedBinding?
     let appearanceTextures: [AppearanceTextureResource]
+    let texturedMesh: ScannerTexturedMesh?
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    final class Coordinator {
+        var snapshot: ScannerSceneSnapshot?
+        var assetSignature: UUID?
+        var binding: AppearanceAdmittedBinding?
+        var resources: [AppearanceTextureResource] = []
+    }
 
     func makeUIView(context: Context) -> SCNView {
         let view = SCNView(frame: .zero)
         view.backgroundColor = UIColor(ScannerProductTheme.surface)
         view.allowsCameraControl = true
         view.autoenablesDefaultLighting = true
-        view.scene = ScannerMeshSceneBuilder.scene(
-            from: snapshot,
-            admittedAppearanceBinding: admittedAppearanceBinding,
-            appearanceTextures: appearanceTextures
-        )
-        view.accessibilityLabel = "3D geometry from accepted snapshot"
+        rebuild(view, context: context)
+        view.accessibilityLabel = String(localized: "3D geometry from accepted snapshot")
         return view
     }
 
     func updateUIView(_ view: SCNView, context: Context) {
+        rebuild(view, context: context)
+    }
+
+    private func rebuild(_ view: SCNView, context: Context) {
+        // IDs/count alone miss changed UVs or face-to-image assignments. Each
+        // immutable appearance layer owns an independent presentation identity.
+        let signature = texturedMesh?.presentationID
+        guard context.coordinator.snapshot != snapshot || context.coordinator.assetSignature != signature ||
+              context.coordinator.binding != admittedAppearanceBinding || context.coordinator.resources != appearanceTextures else { return }
+        let pose = view.pointOfView?.simdTransform
         view.scene = ScannerMeshSceneBuilder.scene(
             from: snapshot,
             admittedAppearanceBinding: admittedAppearanceBinding,
-            appearanceTextures: appearanceTextures
+            appearanceTextures: appearanceTextures,
+            texturedMesh: texturedMesh
         )
+        if let pose { view.pointOfView?.simdTransform = pose }
+        context.coordinator.snapshot = snapshot
+        context.coordinator.assetSignature = signature
+        context.coordinator.binding = admittedAppearanceBinding
+        context.coordinator.resources = appearanceTextures
     }
 }
 
@@ -708,6 +802,263 @@ struct ScannerFloorReferenceProposal {
                 SIMD4(u.x, u.y, u.z, 0), SIMD4(normal.x, normal.y, normal.z, 0),
                 SIMD4(-v.x, -v.y, -v.z, 0), SIMD4(origin.x, origin.y, origin.z, 1)
             )))
+    }
+}
+
+/// Revision-bound correction controls for retained, provenance-supported
+/// boundary graph edges. Targets are never inferred from displayed mesh data.
+@MainActor
+private struct ScannerBoundaryReviewSheet: View {
+    let snapshot: ScannerSceneSnapshot
+    let edges: [ScannerBoundaryEdge]
+    let isCurrent: Bool
+    let canApply: Bool
+    let issue: String?
+    let history: ScannerCommandHistory?
+    let apply: (ScannerBoundaryEdit) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
+    @State private var selectedEdgeID: UUID?
+    @State private var splitPosition = 0.5
+    @State private var confirmsPosition = false
+    @State private var confirmsExactDimension = false
+    @State private var dimensionText = ""
+    @State private var uncertaintyText = ""
+    @State private var source: ScannerBoundaryEdit.Source = .tape
+    @State private var mode: ScannerBoundaryEdit.Mode = .softMeasurement
+
+    private var selectedEdge: ScannerBoundaryEdge? { edges.first { $0.id == selectedEdgeID } }
+    private var dimensionValue: Double? { ScannerMeasurementEntry.metres(dimensionText, locale: locale) }
+    private var uncertaintyValue: Double? { ScannerMeasurementEntry.metres(uncertaintyText, locale: locale) }
+    private var hasUncertainty: Bool { !uncertaintyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Review your scan") {
+                    Label("Choose a captured boundary, then add a measurement or refine its shape. Your original capture remains available.", systemImage: "scope")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    ScannerBoundaryPicker(snapshot: snapshot, edges: edges, selectedEdgeID: selectedEdgeID) { id in
+                        guard canApply else { return }
+                        selectedEdgeID = id
+                        confirmsPosition = false
+                        confirmsExactDimension = false
+                    }
+                    .frame(height: 260).clipShape(RoundedRectangle(cornerRadius: 16))
+                    .accessibilityLabel("Captured boundaries")
+                    .accessibilityHint("Rotate to inspect the scan. Select a boundary from the list below.")
+                    if !isCurrent {
+                        Label("The scan changed. Select the boundary again before applying a correction.", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(ScannerProductTheme.warning)
+                    }
+                    if isCurrent && !canApply && issue == nil { ProgressView("Preparing review") }
+                    if let issue { Label(issue, systemImage: "info.circle").foregroundStyle(ScannerProductTheme.warning) }
+                }
+
+                Section("Captured boundaries") {
+                    if edges.isEmpty {
+                        ContentUnavailableView("No captured boundary available", systemImage: "point.3.connected.trianglepath.dotted",
+                            description: Text("Capture more of the room or review its floor reference to make boundaries available for correction."))
+                    } else {
+                        ForEach(Array(edges.enumerated()), id: \.element.id) { index, edge in
+                            Button {
+                                selectedEdgeID = edge.id
+                                confirmsPosition = false
+                                confirmsExactDimension = false
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: selectedEdgeID == edge.id ? "largecircle.fill.circle" : "circle")
+                                        .foregroundStyle(selectedEdgeID == edge.id ? ScannerProductTheme.accent : .secondary)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("Boundary \(index + 1)").font(.headline)
+                                        Text("Length: \(edge.lengthMetres.formatted(.number.precision(.fractionLength(2)))) m")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 0)
+                                }.contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!canApply)
+                            .accessibilityIdentifier("boundary-review.edge.\(edge.id.uuidString)")
+                        }
+                    }
+                }
+
+                if let edge = selectedEdge {
+                    Section("Refine selected boundary") {
+                        Button {
+                            apply(.protect(edge: edge.id))
+                        } label: {
+                            Label("Keep this boundary during refinement", systemImage: "lock.shield")
+                        }
+                        .disabled(!canApply)
+                        .accessibilityIdentifier("boundary-review.protect")
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Split position along edge")
+                            Slider(value: $splitPosition, in: 0.1...0.9) { Text("Split position") }
+                            Text("\(Int((splitPosition * 100).rounded()))% from point A")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button("Split selected edge") { apply(.split(edge: edge.id, parameter: splitPosition)) }
+                                .disabled(!canApply)
+                                .accessibilityIdentifier("boundary-review.split")
+                        }
+
+                        Toggle("Confirm current position of point A", isOn: $confirmsPosition)
+                        Button("Lock point A position") {
+                            apply(.lock(node: edge.startID, position: edge.start, confirmed: confirmsPosition))
+                        }
+                        .disabled(!canApply || !confirmsPosition)
+                        .accessibilityIdentifier("boundary-review.lock-position")
+                    }
+
+                    Section("Set a reference dimension") {
+                        TextField("Measured length in metres", text: $dimensionText)
+                            .keyboardType(.decimalPad)
+                            .accessibilityIdentifier("boundary-review.dimension-value")
+                        Picker("Measurement source", selection: $source) {
+                            Text("Tape measure").tag(ScannerBoundaryEdit.Source.tape)
+                            Text("Laser measure").tag(ScannerBoundaryEdit.Source.laser)
+                            Text("Survey reference").tag(ScannerBoundaryEdit.Source.referenceSurvey)
+                            Text("Estimate").tag(ScannerBoundaryEdit.Source.guess)
+                        }
+                        Picker("Adjustment mode", selection: $mode) {
+                            Text("Soft measurement").tag(ScannerBoundaryEdit.Mode.softMeasurement)
+                            Text("Exact model").tag(ScannerBoundaryEdit.Mode.exactModel)
+                        }
+                        TextField("Optional uncertainty in metres", text: $uncertaintyText)
+                            .keyboardType(.decimalPad)
+                        if mode == .exactModel {
+                            Toggle("Confirm exact model constraint", isOn: $confirmsExactDimension)
+                            Text("Exact constraints may conflict with protected geometry. A rejected proposal preserves the last accepted shape.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Button("Apply reference dimension") {
+                            guard let metres = dimensionValue, metres > 0, !hasUncertainty || uncertaintyValue != nil else { return }
+                            apply(.dimension(a: edge.startID, b: edge.endID, metres: metres, source: source,
+                                uncertainty: hasUncertainty ? uncertaintyValue : nil, mode: mode))
+                        }
+                        .disabled(!canApply || (dimensionValue.map { $0 <= 0 } ?? true)
+                            || (hasUncertainty && uncertaintyValue == nil)
+                            || (mode == .exactModel && !confirmsExactDimension))
+                        .accessibilityIdentifier("boundary-review.set-dimension")
+                    }
+                }
+
+                Section("Correction history") {
+                    if let id = history?.undoID {
+                        Button("Undo last supported correction") { apply(.undo(original: id)) }
+                            .disabled(!canApply).accessibilityIdentifier("boundary-review.undo")
+                    }
+                    if let id = history?.redoID {
+                        Button("Redo correction") { apply(.redo(original: id)) }
+                            .disabled(!canApply).accessibilityIdentifier("boundary-review.redo")
+                    }
+                    if history?.undoID == nil && history?.redoID == nil {
+                        Text("No correction is available to undo here.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    Text("Review the result, then save your changes. If a correction conflicts with an earlier measurement or lock, the last accepted shape is kept.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Boundary corrections")
+            .toolbar { ToolbarItem(placement: .confirmationAction) {
+                Button { dismiss() } label: {
+                    Label("Done", systemImage: "xmark").labelStyle(.iconOnly)
+                        .font(.body.weight(.semibold)).frame(minWidth: 44, minHeight: 44)
+                }.accessibilityIdentifier("boundary-review.done")
+            } }
+            .onChange(of: snapshot.revision) { _, _ in
+                selectedEdgeID = nil
+                confirmsPosition = false
+                confirmsExactDimension = false
+                dimensionText = ""
+                uncertaintyText = ""
+            }
+        }
+        .tint(ScannerProductTheme.accent)
+        .presentationDetents([.large])
+    }
+}
+
+@MainActor
+private struct ScannerBoundaryPicker: UIViewRepresentable {
+    let snapshot: ScannerSceneSnapshot
+    let edges: [ScannerBoundaryEdge]
+    let selectedEdgeID: UUID?
+    let select: (UUID) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(edges: edges, select: select) }
+    func makeUIView(context: Context) -> SCNView {
+        let view = SCNView()
+        view.backgroundColor = UIColor(ScannerProductTheme.canvas)
+        view.allowsCameraControl = true
+        view.autoenablesDefaultLighting = true
+        view.addGestureRecognizer(UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tap(_:))))
+        rebuild(view)
+        return view
+    }
+    func updateUIView(_ view: SCNView, context: Context) {
+        context.coordinator.edges = edges
+        context.coordinator.select = select
+        rebuild(view)
+    }
+    private func rebuild(_ view: SCNView) {
+        let pose = view.pointOfView?.simdTransform
+        let scene = ScannerMeshSceneBuilder.scene(from: snapshot)
+        for node in scene.rootNode.childNodes where node.geometry != nil {
+            node.geometry?.firstMaterial?.transparency = 0.24
+        }
+        for edge in edges {
+            let start = SIMD3(Float(edge.start.x), Float(edge.start.y), Float(edge.start.z))
+            let end = SIMD3(Float(edge.end.x), Float(edge.end.y), Float(edge.end.z)), delta = end - start
+            let length = simd_length(delta)
+            guard length.isFinite, length > 0 else { continue }
+            let cylinder = SCNCylinder(radius: selectedEdgeID == edge.id ? 0.018 : 0.012, height: CGFloat(length))
+            cylinder.firstMaterial?.diffuse.contents = UIColor(selectedEdgeID == edge.id ? ScannerProductTheme.warning : ScannerProductTheme.accent)
+            let node = SCNNode(geometry: cylinder)
+            node.name = "review-boundary:" + edge.id.uuidString
+            node.simdPosition = (start + end) / 2
+            node.simdOrientation = simd_quatf(from: SIMD3(0, 1, 0), to: delta / length)
+            scene.rootNode.addChildNode(node)
+            if selectedEdgeID == edge.id {
+                for (name, point) in [("A", start), ("B", end)] {
+                    let marker = SCNNode(geometry: SCNSphere(radius: 0.03))
+                    marker.geometry?.firstMaterial?.diffuse.contents = UIColor(ScannerProductTheme.warning)
+                    marker.simdPosition = point
+                    let text = SCNText(string: name, extrusionDepth: 0)
+                    text.font = UIFont.systemFont(ofSize: 8, weight: .bold)
+                    text.firstMaterial?.diffuse.contents = UIColor.white
+                    let label = SCNNode(geometry: text)
+                    label.simdScale = SIMD3(repeating: 0.02)
+                    label.simdPosition = point + SIMD3(0.04, 0.04, 0)
+                    label.constraints = [SCNBillboardConstraint()]
+                    scene.rootNode.addChildNode(marker)
+                    scene.rootNode.addChildNode(label)
+                }
+            }
+        }
+        view.scene = scene
+        let camera = scene.rootNode.childNodes.first { $0.camera != nil }
+        if let pose { camera?.simdTransform = pose }
+        view.pointOfView = camera
+    }
+    @MainActor final class Coordinator: NSObject {
+        var edges: [ScannerBoundaryEdge]
+        var select: (UUID) -> Void
+        init(edges: [ScannerBoundaryEdge], select: @escaping (UUID) -> Void) { self.edges = edges; self.select = select }
+        @objc func tap(_ gesture: UITapGestureRecognizer) {
+            guard let view = gesture.view as? SCNView else { return }
+            for hit in view.hitTest(gesture.location(in: view)) {
+                guard let name = hit.node.name, name.hasPrefix("review-boundary:"),
+                      let id = UUID(uuidString: String(name.dropFirst("review-boundary:".count))),
+                      edges.contains(where: { $0.id == id }) else { continue }
+                select(id)
+                return
+            }
+        }
     }
 }
 
@@ -834,13 +1185,15 @@ enum ScannerMeshSceneBuilder {
     static func scene(
         from snapshot: ScannerSceneSnapshot,
         admittedAppearanceBinding: AppearanceAdmittedBinding? = nil,
-        appearanceTextures: [AppearanceTextureResource] = []
+        appearanceTextures: [AppearanceTextureResource] = [],
+        texturedMesh: ScannerTexturedMesh? = nil
     ) -> SCNScene {
         let scene = SCNScene()
         guard let geometry = geometry(
             from: snapshot,
             admittedAppearanceBinding: admittedAppearanceBinding,
-            appearanceTextures: appearanceTextures
+            appearanceTextures: appearanceTextures,
+            texturedMesh: texturedMesh
         ) else { return scene }
         let node = SCNNode(geometry: geometry)
         scene.rootNode.addChildNode(node)
@@ -877,7 +1230,8 @@ enum ScannerMeshSceneBuilder {
     private static func geometry(
         from snapshot: ScannerSceneSnapshot,
         admittedAppearanceBinding: AppearanceAdmittedBinding?,
-        appearanceTextures: [AppearanceTextureResource]
+        appearanceTextures: [AppearanceTextureResource],
+        texturedMesh: ScannerTexturedMesh?
     ) -> SCNGeometry? {
         guard let displayIndices = displayTriangleIndices(from: snapshot) else { return nil }
         guard !snapshot.verticesMetres.isEmpty,
@@ -886,6 +1240,8 @@ enum ScannerMeshSceneBuilder {
               displayIndices.allSatisfy({ Int($0) < snapshot.verticesMetres.count }) else {
             return nil
         }
+        if let layer = texturedMesh, snapshot.isFrozen, layer.matches(snapshot),
+           let colored = texturedGeometry(snapshot: snapshot, layer: layer) { return colored }
         let vertices = snapshot.verticesMetres.map { SCNVector3(Float($0.x), Float($0.y), Float($0.z)) }
         let source = SCNGeometrySource(vertices: vertices)
         let indexData = displayIndices.withUnsafeBufferPointer { Data(buffer: $0) }
@@ -901,6 +1257,60 @@ enum ScannerMeshSceneBuilder {
             admittedAppearanceBinding: admittedAppearanceBinding,
             appearanceTextures: appearanceTextures
         )]
+        return geometry
+    }
+
+    /// UV seams duplicate vertices only in the disposable renderer buffer.
+    /// Every displayed position is copied from an exact accepted raw index;
+    /// the source snapshot, masks and geometry exports remain immutable.
+    private static func texturedGeometry(snapshot: ScannerSceneSnapshot, layer: ScannerTexturedMesh) -> SCNGeometry? {
+        guard snapshot.triangleIndices.count / 3 <= 65_536, layer.faces.count <= 16_384,
+              layer.images.count <= 24, Set(layer.faces.map(\.faceIndex)).count == layer.faces.count,
+              layer.faces.allSatisfy({ $0.faceIndex >= 0 && $0.faceIndex < snapshot.triangleIndices.count / 3 &&
+                  $0.uv.count == 3 && $0.uv.allSatisfy { $0.count == 2 && $0.allSatisfy { $0.isFinite && (0...1).contains($0) } } }) else { return nil }
+        var materials = [SCNMaterial()]
+        materials[0].diffuse.contents = UIColor.secondaryLabel
+        materials[0].isDoubleSided = true
+        var materialIndices: [String: Int] = [:]
+        for id in layer.images.keys.sorted() {
+            guard let bytes = layer.images[id],
+                  ScannerAppearanceStore.jpegDimensions(bytes) != nil,
+                  let image = UIImage(data: bytes), image.size.width <= 960, image.size.height <= 960 else { return nil }
+            let material = SCNMaterial()
+            material.diffuse.contents = image
+            material.lightingModel = .constant
+            material.isDoubleSided = true
+            material.diffuse.wrapS = .clamp
+            material.diffuse.wrapT = .clamp
+            materialIndices[id] = materials.count
+            materials.append(material)
+        }
+        let faces = Dictionary(uniqueKeysWithValues: layer.faces.map { ($0.faceIndex, $0) })
+        var vertices: [SCNVector3] = []
+        var uv: [CGPoint] = []
+        var groups = [[UInt32]](repeating: [], count: materials.count)
+        for f in 0..<(snapshot.triangleIndices.count / 3) {
+            if !snapshot.reviewTriangleInclusion.isEmpty && snapshot.reviewTriangleInclusion[f] == 0 { continue }
+            let face = faces[f]
+            let materialIndex = face.flatMap { materialIndices[$0.assetID] } ?? 0
+            for corner in 0..<3 {
+                let sourceIndex = snapshot.triangleIndices[f * 3 + corner]
+                let position = snapshot.verticesMetres[Int(sourceIndex)]
+                groups[materialIndex].append(UInt32(vertices.count))
+                vertices.append(SCNVector3(Float(position.x), Float(position.y), Float(position.z)))
+                uv.append(materialIndex == 0 ? .zero : CGPoint(x: CGFloat(face!.uv[corner][0]), y: CGFloat(face!.uv[corner][1])))
+            }
+        }
+        let active = groups.indices.filter { !groups[$0].isEmpty }
+        guard !active.isEmpty else { return nil }
+        let elements = active.map { group in
+            let indices = groups[group]
+            let bytes = indices.withUnsafeBufferPointer { Data(buffer: $0) }
+            return SCNGeometryElement(data: bytes, primitiveType: .triangles,
+                                      primitiveCount: indices.count / 3, bytesPerIndex: MemoryLayout<UInt32>.size)
+        }
+        let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices), SCNGeometrySource(textureCoordinates: uv)], elements: elements)
+        geometry.materials = active.map { materials[$0] }
         return geometry
     }
 
@@ -1048,6 +1458,8 @@ struct ScannerSceneAssessment: Equatable {
             String(localized: "Retained surfaces can be inspected in 3D, but separate boundaries are not yet a verified room interpretation. Do not treat them as finished-room area.")
         case "partial_plane_support":
             String(localized: "Only part of this surface supports the fit. Review the observed extent before relying on the estimate; a fitted plane does not extend the captured surface.")
+        case "HSS_CORRECTION_LINEAGE_UNRESOLVED", "HSS_TARGET_LINEAGE_UNRESOLVED":
+            String(localized: "The scan changed after a previous correction. Review the updated boundary and confirm the intended measurement or protection again. The original correction remains in your project history.")
         default: nil
         }
     }
@@ -1063,6 +1475,7 @@ struct ScannerSceneAssessment: Equatable {
         case "partial_plane_support": String(localized: "Surface fit has incomplete support")
         case "non_manifold_mesh", "ambiguous_mesh_component", "degenerate_mesh_triangle": String(localized: "Captured topology needs review")
         case "plan_semantics_unavailable": String(localized: "Plan interpretation unavailable")
+        case "HSS_CORRECTION_LINEAGE_UNRESOLVED", "HSS_TARGET_LINEAGE_UNRESOLVED": String(localized: "Review previous correction")
         default: String(localized: "Engine review: \(code)")
         }
     }

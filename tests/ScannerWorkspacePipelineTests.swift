@@ -1176,6 +1176,333 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
         ))
     }
 
+    func testBoundaryCorrectionTargetsOnlySupportedCurrentGraphAndCarriesRevision() throws {
+        let projectID = UUID(), nodeA = UUID(), nodeB = UUID(), edgeID = UUID(), supportID = UUID().uuidString.lowercased()
+        let document: [String: Any] = [
+            "schema_version": "1.1", "project_id": projectID.uuidString.lowercased(),
+            "scene_revision": "7", "units": "m",
+            "nodes": [
+                ["id": nodeA.uuidString.lowercased(), "position_m": [0.0, 0.0, 0.0],
+                 "provenance": ["geometry_origin": "observed", "support_ids": [supportID]]],
+                ["id": nodeB.uuidString.lowercased(), "position_m": [1.0, 0.0, 0.0],
+                 "provenance": ["geometry_origin": "fitted", "support_ids": [supportID]]],
+                ["id": UUID().uuidString.lowercased(), "position_m": [2.0, 0.0, 0.0],
+                 "provenance": ["geometry_origin": "inferred", "support_ids": [supportID]]]
+            ],
+            "edges": [
+                ["id": edgeID.uuidString.lowercased(), "start_node_id": nodeA.uuidString.lowercased(),
+                 "end_node_id": nodeB.uuidString.lowercased(), "protected_topology": false,
+                 "provenance": ["geometry_origin": "fitted", "support_ids": [supportID]]],
+                ["id": UUID().uuidString.lowercased(), "start_node_id": nodeB.uuidString.lowercased(),
+                 "end_node_id": UUID().uuidString.lowercased(), "protected_topology": false,
+                 "provenance": ["geometry_origin": "unknown", "support_ids": [supportID]]]
+            ]
+        ]
+        let snapshot = ScannerSceneSnapshot(revision: 7, verticesMetres: [], triangleIndices: [],
+            sceneJSON: try JSONSerialization.data(withJSONObject: document), provenance: [.syntheticTest], isFrozen: true)
+        let edges = ScannerBoundaryEdge.decode(snapshot: snapshot, projectID: projectID)
+        XCTAssertEqual(edges.map(\.id), [edgeID])
+        XCTAssertEqual(edges.first?.lengthMetres, 1)
+
+        let command = try ScannerBoundaryEdit.dimension(a: nodeA, b: nodeB, metres: 1.25,
+            source: .laser, uncertainty: 0.005, mode: .softMeasurement)
+            .encode(projectID: projectID, revision: 7, sequence: 18)
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: command) as? [String: Any])
+        XCTAssertEqual(root["expected_scene_revision"] as? String, "7")
+        XCTAssertEqual(root["event_sequence"] as? String, "18")
+        XCTAssertEqual(root["targets"] as? [String], [nodeA.uuidString.lowercased(), nodeB.uuidString.lowercased()])
+        let payload = try XCTUnwrap(root["payload"] as? [String: Any])
+        XCTAssertEqual(payload["source"] as? String, "laser")
+        XCTAssertEqual(payload["uncertainty_m"] as? Double, 0.005)
+        XCTAssertThrowsError(try ScannerBoundaryEdit.split(edge: edgeID, parameter: .nan)
+            .encode(projectID: projectID, revision: 7, sequence: 19))
+    }
+
+    func testCorrectionHistoryOffersOnlyTheCurrentReversibleLineage() throws {
+        let projectID = UUID(), first = UUID(), second = UUID()
+        func record(_ type: String, _ commandID: UUID, _ original: UUID?, _ before: UInt64, _ after: UInt64) -> [String: Any] {
+            ["command_id": commandID.uuidString.lowercased(), "type": type,
+             "original_command_id": original?.uuidString.lowercased() as Any? ?? NSNull(),
+             "before_scene_revision": String(before), "after_scene_revision": String(after)]
+        }
+        let undoID = UUID()
+        let json: [String: Any] = [
+            "schema_version": "1.1", "project_id": projectID.uuidString.lowercased(), "scene_revision": "10",
+            "records": [record("split_edge", first, nil, 7, 8),
+                        record("set_dimension", second, nil, 8, 9),
+                        record("undo", undoID, second, 9, 10)]
+        ]
+        let history = try XCTUnwrap(ScannerCommandHistory.decode(
+            JSONSerialization.data(withJSONObject: json), projectID: projectID, revision: 10))
+        XCTAssertEqual(history.undoID, first)
+        XCTAssertEqual(history.redoID, second)
+        XCTAssertNil(ScannerCommandHistory.decode(try JSONSerialization.data(withJSONObject: json), projectID: projectID, revision: 9))
+        XCTAssertNil(ScannerCommandHistory.decode(try JSONSerialization.data(withJSONObject: json), projectID: UUID(), revision: 10))
+        let afterRefinement: [String: Any] = [
+            "schema_version": "1.1", "project_id": projectID.uuidString.lowercased(), "scene_revision": "12",
+            "records": [record("split_edge", first, nil, 7, 8),
+                        record("mark_unknown", second, nil, 10, 11),
+                        record("undo", undoID, second, 11, 12)]
+        ]
+        let current = try XCTUnwrap(ScannerCommandHistory.decode(
+            JSONSerialization.data(withJSONObject: afterRefinement), projectID: projectID, revision: 12))
+        XCTAssertNil(current.undoID, "Undo must stop at a source/control revision gap.")
+        XCTAssertEqual(current.redoID, second)
+    }
+
+    func testMeasurementEntryAcceptsLocalizedDecimalsAndRejectsPartialValues() {
+        XCTAssertEqual(ScannerMeasurementEntry.metres("١٫٢٥", locale: Locale(identifier: "ar_IQ")), 1.25)
+        XCTAssertEqual(ScannerMeasurementEntry.metres("1,25", locale: Locale(identifier: "de_DE")), 1.25)
+        XCTAssertEqual(ScannerMeasurementEntry.metres("0.005", locale: Locale(identifier: "en_US")), 0.005)
+        for invalid in ["2 metres", "NaN", "1,000", "1.2.3", "-2", "1e3", "10001"] {
+            XCTAssertNil(ScannerMeasurementEntry.metres(invalid, locale: Locale(identifier: "en_US")))
+        }
+    }
+
+    func testBoundaryLockRefinementPreservesExplicitReviewIntentAndDurableReplay() async throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID(), captureID = UUID()
+        _ = try await createSyntheticProject(root: root, projectID: projectID, captureID: captureID)
+        let runtime = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        _ = try await runtime.replayCommittedSource()
+        try await runtime.setPlanReference(projectFromFloor: matrix().map(Double.init), cutHeightMetres: 1.2,
+            sessionEpoch: 1, eventSequence: 4, monotonicTime: 3)
+        let before = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        let edge = try XCTUnwrap(ScannerBoundaryEdge.decode(snapshot: before, projectID: projectID).first)
+        let outcome = try await runtime.applyFrozenBoundaryCorrection(
+            .lock(node: edge.startID, position: edge.start, confirmed: true), expectedRevision: before.revision,
+            eventSequence: 5, monotonicTime: 3)
+        guard case .journaled(let application) = outcome else { return XCTFail("Correction was not journaled") }
+        XCTAssertEqual(application.disposition, .applied)
+        let corrected = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(corrected.verticesMetres, before.verticesMetres)
+        XCTAssertEqual(corrected.triangleIndices, before.triangleIndices)
+        let correctedHistory = try await runtime.reviewCommandHistory()
+        XCTAssertNotNil(correctedHistory.undoID)
+        try await runtime.setPlanReference(projectFromFloor: matrix().map(Double.init), cutHeightMetres: 1.3,
+            sessionEpoch: 1, eventSequence: 6, monotonicTime: 3)
+        let refined = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        let document = try XCTUnwrap(JSONSerialization.jsonObject(with: refined.sceneJSON) as? [String: Any])
+        let issues = try XCTUnwrap(document["issues"] as? [[String: Any]])
+        XCTAssertTrue(issues.contains { $0["code"] as? String == "HSS_CORRECTION_LINEAGE_UNRESOLVED" },
+            "A source rebuild must not silently discard an accepted position lock.")
+        let history = try await runtime.reviewCommandHistory()
+        XCTAssertNil(history.undoID, "Source refinement must not enable a reversal against historical geometry.")
+        _ = try await runtime.checkpoint()
+        let reopened = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        _ = try await reopened.replayCommittedSource()
+        let replayed = try await reopened.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(replayed.sceneJSON, refined.sceneJSON)
+        XCTAssertEqual(replayed.verticesMetres, before.verticesMetres)
+        XCTAssertEqual(replayed.triangleIndices, before.triangleIndices)
+    }
+
+    func testNativeBoundarySplitUndoRedoPreservesRawCaptureAndReplay() async throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID(), captureID = UUID()
+        _ = try await createSyntheticProject(root: root, projectID: projectID, captureID: captureID)
+        let runtime = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        _ = try await runtime.replayCommittedSource()
+        try await runtime.setPlanReference(projectFromFloor: matrix().map(Double.init), cutHeightMetres: 1.2,
+            sessionEpoch: 1, eventSequence: 4, monotonicTime: 3)
+        let before = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        let edge = try XCTUnwrap(ScannerBoundaryEdge.decode(snapshot: before, projectID: projectID).first)
+        let split = try await runtime.applyFrozenBoundaryCorrection(.split(edge: edge.id, parameter: 0.5),
+            expectedRevision: before.revision, eventSequence: 5, monotonicTime: 3)
+        guard case .journaled(let applied) = split else { return XCTFail("Split was not journaled") }
+        XCTAssertEqual(applied.disposition, .applied)
+        let splitSnapshot = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(ScannerBoundaryEdge.decode(snapshot: splitSnapshot, projectID: projectID).count, 2)
+        let history = try await runtime.reviewCommandHistory()
+        let originalID = try XCTUnwrap(history.undoID)
+        let undo = try await runtime.applyFrozenBoundaryCorrection(.undo(original: originalID),
+            expectedRevision: splitSnapshot.revision, eventSequence: 6, monotonicTime: 3)
+        guard case .journaled(let undone) = undo else { return XCTFail("Undo was not journaled") }
+        XCTAssertEqual(undone.disposition, .applied)
+        let undoneSnapshot = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(ScannerBoundaryEdge.decode(snapshot: undoneSnapshot, projectID: projectID).map(\.id), [edge.id])
+        let undoHistory = try await runtime.reviewCommandHistory()
+        XCTAssertEqual(undoHistory.redoID, originalID)
+        let redo = try await runtime.applyFrozenBoundaryCorrection(.redo(original: originalID),
+            expectedRevision: undoneSnapshot.revision, eventSequence: 7, monotonicTime: 3)
+        guard case .journaled(let redone) = redo else { return XCTFail("Redo was not journaled") }
+        XCTAssertEqual(redone.disposition, .applied)
+        let final = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(final.verticesMetres, before.verticesMetres)
+        XCTAssertEqual(final.triangleIndices, before.triangleIndices)
+        _ = try await runtime.checkpoint()
+        let reopened = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        _ = try await reopened.replayCommittedSource()
+        let replayed = try await reopened.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(replayed.sceneJSON, final.sceneJSON)
+    }
+
+    func testNativeBoundaryDimensionConflictIsJournaledAndReplaysWithoutChangingShape() async throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID(), captureID = UUID()
+        _ = try await createSyntheticProject(root: root, projectID: projectID, captureID: captureID)
+        let runtime = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        _ = try await runtime.replayCommittedSource()
+        try await runtime.setPlanReference(projectFromFloor: matrix().map(Double.init), cutHeightMetres: 1.2,
+            sessionEpoch: 1, eventSequence: 4, monotonicTime: 3)
+        let before = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        let edge = try XCTUnwrap(ScannerBoundaryEdge.decode(snapshot: before, projectID: projectID).first)
+        for (sequence, node, position) in [(UInt64(5), edge.startID, edge.start), (UInt64(6), edge.endID, edge.end)] {
+            let current = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+            let outcome = try await runtime.applyFrozenBoundaryCorrection(.lock(node: node, position: position, confirmed: true),
+                expectedRevision: current.revision, eventSequence: sequence, monotonicTime: 3)
+            guard case .journaled(let application) = outcome else { return XCTFail("Lock was not journaled") }
+            XCTAssertEqual(application.disposition, .applied)
+        }
+        let locked = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        let outcome = try await runtime.applyFrozenBoundaryCorrection(
+            .dimension(a: edge.startID, b: edge.endID, metres: edge.lengthMetres * 2, source: .laser,
+                uncertainty: 0.01, mode: .exactModel), expectedRevision: locked.revision, eventSequence: 7, monotonicTime: 3)
+        guard case .journaled(let conflict) = outcome else { return XCTFail("Conflict was not journaled") }
+        XCTAssertEqual(conflict.disposition, .conflict)
+        XCTAssertEqual(conflict.beforeSceneRevision, conflict.afterSceneRevision)
+        let unchanged = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(unchanged, locked)
+        _ = try await runtime.checkpoint()
+        let reopened = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        let cursor = try await reopened.replayCommittedSource()
+        XCTAssertEqual(cursor.lastEventSequence, 7)
+        let replayed = try await reopened.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(replayed.sceneJSON, locked.sceneJSON)
+    }
+
+    func testConflictingCorrectionRecoversExactResultAfterResultCopyAndJournalFaults() async throws {
+        for point in [HSSProjectRuntime.ReviewFailurePoint.resultCopy, .journalAppend] {
+            let root = try objectRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let projectID = UUID(), captureID = UUID()
+            let (runtime, edge, locked) = try await lockedBoundaryFixture(root: root, projectID: projectID, captureID: captureID)
+            await runtime.failNextReviewOperation(at: point)
+            let outcome = try await runtime.applyFrozenBoundaryCorrection(
+                .dimension(a: edge.startID, b: edge.endID, metres: edge.lengthMetres * 2, source: .laser,
+                    uncertainty: 0.01, mode: .exactModel), expectedRevision: locked.revision,
+                eventSequence: 7, monotonicTime: 3)
+            var retained: HSSFrozenUnknownCommandApplication?
+            switch outcome {
+            case .resultRecoveryRequired: XCTAssertEqual(point, .resultCopy)
+            case .journalRetryRequired(let application, _):
+                XCTAssertEqual(point, .journalAppend)
+                retained = application
+            case .journaled: return XCTFail("The one-shot fault was not exercised")
+            }
+            let exactResult = try await runtime.latestCommandResultJSON()
+            let recovered = try await runtime.retryPendingCommandJournal()
+            XCTAssertEqual(recovered.disposition, .conflict)
+            XCTAssertEqual(recovered.resultJSON, exactResult)
+            if let retained { XCTAssertEqual(recovered, retained) }
+            XCTAssertEqual(recovered.beforeSceneRevision, locked.revision)
+            XCTAssertEqual(recovered.afterSceneRevision, locked.revision)
+            let unchanged = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+            XCTAssertEqual(unchanged, locked)
+            _ = try await runtime.checkpoint()
+            let reopened = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+                sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+            let cursor = try await reopened.replayCommittedSource()
+            XCTAssertEqual(cursor.lastEventSequence, 7)
+            let restoredResult = try await reopened.latestCommandResultJSON()
+            XCTAssertEqual(restoredResult, exactResult)
+        }
+    }
+
+    func testRejectedCorrectionRecoversWithoutInventingAnAppliedRevision() async throws {
+        for point in [HSSProjectRuntime.ReviewFailurePoint.resultCopy, .journalAppend] {
+            let root = try objectRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let projectID = UUID(), captureID = UUID()
+            let (runtime, edge, before) = try await lockedBoundaryFixture(root: root, projectID: projectID, captureID: captureID)
+            await runtime.failNextReviewOperation(at: point)
+            let outcome = try await runtime.applyFrozenBoundaryCorrection(
+                .lock(node: UUID(), position: edge.start, confirmed: true), expectedRevision: before.revision,
+                eventSequence: 7, monotonicTime: 3)
+            switch outcome {
+            case .resultRecoveryRequired, .journalRetryRequired: break
+            case .journaled: return XCTFail("The one-shot fault was not exercised")
+            }
+            let exactResult = try await runtime.latestCommandResultJSON()
+            let recovered = try await runtime.retryPendingCommandJournal()
+            XCTAssertEqual(recovered.disposition, .rejected)
+            XCTAssertEqual(recovered.resultJSON, exactResult)
+            XCTAssertEqual(recovered.beforeSceneRevision, before.revision)
+            XCTAssertEqual(recovered.afterSceneRevision, before.revision)
+            let unchanged = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+            XCTAssertEqual(unchanged, before)
+            _ = try await runtime.checkpoint()
+            let reopened = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+                sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+            let cursor = try await reopened.replayCommittedSource()
+            XCTAssertEqual(cursor.lastEventSequence, 7)
+            let restoredResult = try await reopened.latestCommandResultJSON()
+            XCTAssertEqual(restoredResult, exactResult)
+        }
+    }
+
+    func testWorkspaceConflictingDimensionNeverReportsAppliedSuccess() async throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID(), captureID = UUID()
+        let (runtime, edge, locked) = try await lockedBoundaryFixture(root: root, projectID: projectID, captureID: captureID)
+        _ = try await runtime.checkpoint()
+        let catalog = try JSONSerialization.data(withJSONObject: ["projects": [[
+            "id": projectID.uuidString, "captureID": captureID.uuidString, "name": "Conflict fixture",
+            "updatedAt": 0, "sceneRevision": locked.revision, "state": "frozen", "sourceIsSynthetic": true
+        ]]])
+        try catalog.write(to: root.appendingPathComponent("workspace-catalog.json"))
+        let model = await MainActor.run { ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true) }
+        await MainActor.run { model.openProject(id: projectID) }
+        for _ in 0..<200 {
+            if await MainActor.run(body: { model.canRecordMissingEvidence }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await MainActor.run { model.applyBoundaryEdit(
+            .dimension(a: edge.startID, b: edge.endID, metres: edge.lengthMetres * 2, source: .laser,
+                uncertainty: 0.01, mode: .exactModel), expectedRevision: locked.revision) }
+        for _ in 0..<200 {
+            if await MainActor.run(body: { model.currentIssue != nil && model.canRecordMissingEvidence }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await MainActor.run {
+            XCTAssertEqual(model.latestSnapshot?.sceneJSON, locked.sceneJSON)
+            XCTAssertEqual(model.currentIssue?.title, String(localized: "Correction was not applied"))
+            XCTAssertFalse(model.currentIssue?.message.contains("Applied locally") ?? true)
+            XCTAssertEqual(model.saveState, .hasUnsavedChanges, "Rejected proposals still retain an exact journal for saving.")
+        }
+    }
+
+    private func lockedBoundaryFixture(root: URL, projectID: UUID, captureID: UUID) async throws
+        -> (HSSProjectRuntime, ScannerBoundaryEdge, ScannerSceneSnapshot) {
+        _ = try await createSyntheticProject(root: root, projectID: projectID, captureID: captureID)
+        let runtime = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        _ = try await runtime.replayCommittedSource()
+        try await runtime.setPlanReference(projectFromFloor: matrix().map(Double.init), cutHeightMetres: 1.2,
+            sessionEpoch: 1, eventSequence: 4, monotonicTime: 3)
+        let before = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        let edge = try XCTUnwrap(ScannerBoundaryEdge.decode(snapshot: before, projectID: projectID).first)
+        for (sequence, node, position) in [(UInt64(5), edge.startID, edge.start), (UInt64(6), edge.endID, edge.end)] {
+            let snapshot = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+            let outcome = try await runtime.applyFrozenBoundaryCorrection(.lock(node: node, position: position, confirmed: true),
+                expectedRevision: snapshot.revision, eventSequence: sequence, monotonicTime: 3)
+            guard case .journaled(let application) = outcome, application.disposition == .applied else {
+                throw HSSBridgeError.invalidValue("Fixture position lock was not accepted")
+            }
+        }
+        return (runtime, edge, try await runtime.snapshot(provenance: [.syntheticTest], frozen: true))
+    }
+
     func testOfflineExportEligibilityRequiresFrozenPersistedMeasuredRevision() throws {
         let projectID = UUID()
         let snapshot = exportSnapshot(projectID: projectID)
@@ -1269,6 +1596,8 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
         XCTAssertEqual(primitiveIDs, ["measured-edge"])
         let obj = try String(contentsOf: destination.appendingPathComponent("scene.obj"), encoding: .utf8)
         XCTAssertTrue(obj.contains("f 1 2 3"))
+        XCTAssertTrue(obj.contains("mtllib scene.mtl\n"))
+        XCTAssertFalse(obj.contains("mtllib capture.mtl"), "The material companion must exist in the actual offline bundle.")
 
         let exports = projectDirectory.appendingPathComponent("exports", isDirectory: true)
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: exports.path)

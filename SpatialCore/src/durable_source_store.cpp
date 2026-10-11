@@ -1,4 +1,6 @@
 #include "hss/durable_source_store.hpp"
+#include "hss/normalized_replay.hpp"
+#include "hss/project_event_encoder.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1077,6 +1079,96 @@ DurableSourceStore::read_payload(const StoredRecord &record,
       sha256(*payload) != record.sha256) {
     return StoreStatus::kCorrupt;
   }
+  return StoreStatus::kOk;
+}
+
+StoreStatus DurableSourceStore::write_portable_copy(FileSystem& destination) const {
+  if (!valid_limits(limits_) || &destination == &file_system_ ||
+      destination.exists(kProjectMetadata) || destination.exists(kActiveManifest) ||
+      destination.exists("chunks") || destination.exists("temporary"))
+    return StoreStatus::kInvalidArgument;
+  std::vector<uint8_t> metadata;
+  if (!file_system_.read_file_bounded(kProjectMetadata, kMaximumManifestBytes, &metadata) ||
+      !parse_project_metadata(metadata))
+    return StoreStatus::kCorrupt;
+  const RecoveryResult recovered = recover();
+  if (recovered.status != StoreStatus::kOk || recovered.used_previous_manifest)
+    return StoreStatus::kCorrupt;
+  const double origin = recovered.records.empty() ? 0.0 : recovered.records.front().source.monotonic_time_s;
+  if (!std::isfinite(origin) || origin < 0.0) return StoreStatus::kCorrupt;
+  if (!destination.create_directories("chunks") || !destination.create_directories("temporary"))
+    return StoreStatus::kIoError;
+  std::vector<StoredRecord> portable;
+  portable.reserve(recovered.records.size());
+  double last_time = origin;
+  for (const StoredRecord& original : recovered.records) {
+    if (original.source.monotonic_time_s < last_time) return StoreStatus::kCorrupt;
+    last_time = original.source.monotonic_time_s;
+    const double time = last_time - origin;
+    if (!std::isfinite(time) || time < 0.0) return StoreStatus::kCorrupt;
+    std::vector<uint8_t> bytes;
+    if (read_payload(original, &bytes) != StoreStatus::kOk) return StoreStatus::kCorrupt;
+    const auto matches = [&](const auto& context) {
+      return context.event_sequence == original.source.event_sequence &&
+             context.session_epoch == original.source.session_epoch &&
+             context.monotonic_time_s == original.source.monotonic_time_s;
+    };
+    const bool control = original.source.kind == SourceKind::kCommand ||
+                         original.source.kind == SourceKind::kPlanReference;
+    if (control) {
+      auto decoded = project::decode_control(bytes, limits_.max_chunk_bytes);
+      if (decoded.status != project::ControlStatus::kOk) return StoreStatus::kCorrupt;
+      bool consistent = true;
+      std::visit([&](auto& value) {
+        consistent = matches(value.context) &&
+            std::equal(std::begin(value.context.capture_id.bytes), std::end(value.context.capture_id.bytes),
+                       original.source.capture_id.begin());
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, project::PlanReferenceControl>)
+          consistent = consistent && original.source.kind == SourceKind::kPlanReference;
+        else
+          consistent = consistent && original.source.kind == SourceKind::kCommand;
+        value.context.monotonic_time_s = time;
+      }, decoded.control);
+      if (!consistent || project::encode_control(decoded.control, limits_.max_chunk_bytes, &bytes) != project::ControlStatus::kOk)
+        return StoreStatus::kCorrupt;
+    } else {
+      replay::Limits limits;
+      limits.max_record_bytes = limits_.max_chunk_bytes;
+      auto decoded = replay::decode_record(bytes, limits);
+      if (decoded.status != replay::Status::kOk) return StoreStatus::kCorrupt;
+      bool consistent = true;
+      std::visit([&](auto& value) {
+        consistent = matches(value.metadata) && value.metadata.capture_id == original.source.capture_id;
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, replay::EpochEvent>)
+          consistent = consistent && original.source.kind == SourceKind::kEpoch;
+        else if constexpr (std::is_same_v<T, replay::DepthFrameEvent>)
+          consistent = consistent && original.source.kind == SourceKind::kDepth;
+        else
+          consistent = consistent && original.source.kind == SourceKind::kMesh && value.anchor_id == original.source.anchor_id;
+        value.metadata.monotonic_time_s = time;
+      }, decoded.event);
+      if (!consistent || replay::encode_record(decoded.event, limits, &bytes) != replay::Status::kOk)
+        return StoreStatus::kCorrupt;
+    }
+    StoredRecord transformed = original;
+    transformed.source.monotonic_time_s = time;
+    transformed.payload_length = bytes.size();
+    transformed.sha256 = sha256(bytes);
+    transformed.relative_path = chunk_path(transformed);
+    if (!write_immutable_chunk(destination, transformed, bytes)) return StoreStatus::kIoError;
+    portable.push_back(std::move(transformed));
+  }
+  // The export retains the storage commit identity and all scene revisions;
+  // regenerated hashes refer to the derived clock-relative source bytes.
+  const std::vector<uint8_t> manifest = as_bytes(serialize_manifest(recovered.revision, portable));
+  if (manifest.empty() || !destination.write_file(kProjectMetadataTemporary, metadata) ||
+      !destination.replace_atomically(kProjectMetadataTemporary, kProjectMetadata) ||
+      !destination.write_file(kManifestTemporary, manifest) ||
+      !validated_manifest(destination, kManifestTemporary, limits_) ||
+      !destination.replace_atomically(kManifestTemporary, kActiveManifest) ||
+      !destination.sync_directory("")) return StoreStatus::kIoError;
   return StoreStatus::kOk;
 }
 

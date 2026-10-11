@@ -22,6 +22,11 @@ enum class IssueCode : uint8_t {
   kProcessingPending,
 };
 enum class Status : uint8_t { kOk, kInvalidInput, kInvalidTuning };
+enum QualityFact : uint32_t {
+  kDepthMeasured=1U<<0, kSupportMeasured=1U<<1, kViewsMeasured=1U<<2,
+  kFitMeasured=1U<<3, kStabilityMeasured=1U<<4, kCoverageMeasured=1U<<5,
+  kOcclusionMeasured=1U<<6, kAllQualityFacts=(1U<<7)-1U
+};
 
 // All scalar fields are normalized quality quantities in [0, 1]. The caller
 // supplies their measurement method and target-domain revision; this policy
@@ -41,6 +46,10 @@ struct QualityVector {
   double occlusion_suspicion{0.0};
   bool has_conflict{false};
   bool processing_pending{false};
+  // Existing complete callers retain their semantics. Partial measurement
+  // adapters clear unavailable bits; unavailable values use zero and never
+  // trigger a guessed instruction or imply good quality.
+  uint32_t measured_facts{kAllQualityFacts};
 };
 
 // Debounce, minimum display, haptic suppression, and enter/exit hysteresis

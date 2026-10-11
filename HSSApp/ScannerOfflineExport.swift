@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import simd
 
 enum ScannerExportState: Equatable, Sendable {
@@ -39,11 +40,22 @@ struct ScannerOfflineArtifactSet: Sendable {
     ]
 
     init(files: [String: Data]) throws {
-        guard Set(files.keys) == Self.requiredNames,
-              files.values.allSatisfy({ !$0.isEmpty }) else {
+        let extras = Set(files.keys).subtracting(Self.requiredNames)
+        let images = extras.subtracting(["appearance.provenance.json"])
+        guard Self.requiredNames.isSubset(of: Set(files.keys)),
+              files.values.allSatisfy({ !$0.isEmpty && $0.count <= 64 * 1024 * 1024 }),
+              files.values.reduce(0, { $0 + $1.count }) <= 192 * 1024 * 1024,
+              extras.isEmpty || (extras.contains("appearance.provenance.json") && !images.isEmpty && images.count <= 24 &&
+                images.allSatisfy { Self.isTexturePath($0) && files[$0]!.count <= 4 * 1024 * 1024 }) else {
             throw ScannerOfflineExportError.incompleteArtifacts
         }
         self.files = files
+    }
+
+    static func isTexturePath(_ name: String) -> Bool {
+        guard name.hasPrefix("textures/"), name.hasSuffix(".jpg") else { return false }
+        let id = String(name.dropFirst(9).dropLast(4))
+        return UUID(uuidString: id)?.uuidString.lowercased() == id
     }
 }
 
@@ -143,7 +155,8 @@ enum ScannerOfflineExporter {
     static func export(
         snapshot: ScannerSceneSnapshot,
         projectID: UUID,
-        trustedRoot: URL
+        trustedRoot: URL,
+        appearance: ScannerTexturedMesh? = nil
     ) throws -> URL {
         let flattenedVertices = snapshot.verticesMetres.flatMap { [$0.x, $0.y, $0.z] }
         let vertexData = flattenedVertices.withUnsafeBufferPointer { Data(buffer: $0) }
@@ -156,7 +169,7 @@ enum ScannerOfflineExporter {
             triangleIndices: indexData
         )
         let semanticProvenance = try semanticProvenance(snapshot)
-        let set = try ScannerOfflineArtifactSet(files: [
+        var files: [String: Data] = [
             "plan.pdf": artifacts.pdfData,
             "plan.svg": artifacts.svgData,
             "plan.provenance.json": artifacts.pdfSVGManifestData,
@@ -166,13 +179,54 @@ enum ScannerOfflineExporter {
             "scene.mtl": artifacts.mtlData,
             "scene.provenance.json": artifacts.objManifestData,
             "semantic.provenance.json": semanticProvenance,
-        ])
+        ]
+        // Explicit opt-in by the owner. A stale/corrupt optional layer never
+        // blocks the ordinary measured bundle and never changes its geometry.
+        if let appearance, appearance.projectID == projectID, appearance.matches(snapshot),
+           let imageFiles = verifiedAppearanceFiles(appearance, snapshot: snapshot) {
+            files["scene.obj"] = appearance.obj
+            files["scene.mtl"] = appearance.mtl
+            files["scene.provenance.json"] = appearance.manifest
+            files["appearance.provenance.json"] = appearance.manifest
+            files.merge(imageFiles) { _, new in new }
+        }
+        let set = try ScannerOfflineArtifactSet(files: files)
         return try ScannerOfflineExportStore.publish(
             set,
             projectID: projectID,
             sceneRevision: snapshot.revision,
             trustedRoot: trustedRoot
         )
+    }
+
+    private static func verifiedAppearanceFiles(_ layer: ScannerTexturedMesh, snapshot: ScannerSceneSnapshot) -> [String: Data]? {
+        guard !layer.faces.isEmpty, !layer.images.isEmpty, layer.images.count <= 24,
+              layer.manifest.count <= 16 * 1024 * 1024,
+              layer.obj.count <= 64 * 1024 * 1024, layer.mtl.count <= 16 * 1024 * 1024,
+              let obj = String(data: layer.obj, encoding: .utf8), obj.contains("\nmtllib scene.mtl\n"),
+              let document = try? JSONSerialization.jsonObject(with: layer.manifest) as? [String: Any],
+              document["project_id"] as? String == layer.projectID.uuidString.lowercased(),
+              document["scene_revision"] as? String == String(snapshot.revision),
+              document["texture_mode"] as? String == "included",
+              document["units"] as? String == "m",
+              let slots = document["appearance"] as? [[String: Any]] else { return nil }
+        var references: [String: String] = [:]
+        for slot in slots {
+            guard slot["state"] as? String == "verified", let texture = slot["texture"] as? [String: Any],
+                  let path = texture["path"] as? String, ScannerOfflineArtifactSet.isTexturePath(path),
+                  let hash = texture["sha256"] as? String else { return nil }
+            if let previous = references[path], previous != hash { return nil }
+            references[path] = hash
+        }
+        guard references.count == layer.images.count else { return nil }
+        var result: [String: Data] = [:]
+        for (id, image) in layer.images {
+            let path = "textures/\(id).jpg"
+            let hash = SHA256.hash(data: image).map { String(format: "%02x", $0) }.joined()
+            guard ScannerAppearanceStore.jpegDimensions(image) != nil, references[path] == hash else { return nil }
+            result[path] = image
+        }
+        return result
     }
 
     /// Frozen derived interpretation accompanies the measured exporters; it
@@ -270,10 +324,15 @@ enum ScannerOfflineExportStore {
             if !published { try? fileManager.removeItem(at: staging) }
         }
 
+        if artifacts.files.keys.contains(where: { $0.hasPrefix("textures/") }) {
+            try fileManager.createDirectory(at: staging.appendingPathComponent("textures", isDirectory: true),
+                                            withIntermediateDirectories: false)
+        }
+
         for name in artifacts.files.keys.sorted() {
             try artifacts.files[name]!.write(
                 to: staging.appendingPathComponent(name, isDirectory: false),
-                options: [.atomic]
+                options: [.atomic,.completeFileProtectionUntilFirstUserAuthentication]
             )
         }
         let manifest = Manifest(

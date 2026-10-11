@@ -1538,6 +1538,34 @@ hss_engine_copy_command_result_json(const HSSEngine *engine,
   }
 }
 
+extern "C" HSSStatus hss_engine_copy_command_history_json(
+    const HSSEngine* engine, uint8_t* destination, uint64_t capacity, uint64_t* required) {
+  if (required != nullptr) *required = 0U;
+  try {
+    if (engine == nullptr || required == nullptr || (destination == nullptr && capacity != 0U))
+      return HSS_INVALID_ARGUMENT;
+    HSSEngineStats stats{};
+    if (hss_engine_get_stats(engine, &stats) != HSS_OK) return HSS_INTERNAL_ERROR;
+    std::string json = "{\"schema_version\":\"1.1\",\"project_id\":\"" + uuid(engine->config.project_id) + "\",\"scene_revision\":\"" +
+                       std::to_string(stats.scene_revision) + "\",\"records\":[";
+    bool first = true;
+    for (const auto& record : engine->scene_editor.journal()) {
+      if (!first) json += ',';
+      first = false;
+      // IDs and command types were validated by the processor. Never append
+      // unvalidated user payload strings or notes to this presentation view.
+      json += "{\"command_id\":\"" + record.command_id + "\",\"type\":\"" + record.command_type +
+              "\",\"original_command_id\":" + (record.original_command_id.empty() ? std::string("null") : "\"" + record.original_command_id + "\"") +
+              ",\"before_scene_revision\":\"" + std::to_string(record.before_scene_revision) +
+              "\",\"after_scene_revision\":\"" + std::to_string(record.after_scene_revision) + "\"}";
+      if (json.size() > 16U * 1024U * 1024U) return HSS_RESOURCE_LIMIT;
+    }
+    json += "]}";
+    return copy_out(reinterpret_cast<const uint8_t*>(json.data()), json.size(), destination, capacity, required);
+  } catch (const std::bad_alloc&) { return HSS_RESOURCE_LIMIT; }
+  catch (...) { return HSS_INTERNAL_ERROR; }
+}
+
 extern "C" HSSStatus hss_engine_step(HSSEngine *engine,
                                      uint32_t work_budget_us) {
   try {

@@ -3066,6 +3066,86 @@ bool collect_retained_unknowns(const Object &scene,
       return false;
   }
   if (!collect_protection(current)) return false;
+
+  // A split, reference dimension or position lock is valid on its accepted
+  // graph. Source rebuilding has no proved correspondence for its old target
+  // IDs. Preserve the accepted intent as a command-owned review marker rather
+  // than silently dropping it or attaching its metric constraint to a new edge.
+  const Index node_index = index_entities(member(scene, "nodes")->array());
+  const auto collect_correction = [&](const CommandData &command) {
+    if (command.type != "split_edge" && command.type != "set_dimension" &&
+        command.type != "lock_position") return true;
+    const std::string feature_id = deterministic_uuid(command.command_id, "correction-conflict-feature");
+    const std::string issue_id = deterministic_uuid(command.command_id, "correction-conflict-issue");
+    const Json *feature = find_entity(features, feature_id);
+    const Json *issue = find_entity(issues, issue_id);
+    bool active = false;
+    if (command.type == "split_edge") {
+      active = find_entity(node_index, deterministic_uuid(command.command_id, "split-node")) != nullptr;
+    } else {
+      const bool lock = command.type == "lock_position";
+      const Json *constraint = find_entity(constraint_index,
+          deterministic_uuid(command.command_id, lock ? "position-lock" : "dimension"));
+      if (constraint && member(constraint->object(), "status")->string() == "active") {
+        Json expected;
+        if (lock) {
+          expected = make_constraint(deterministic_uuid(command.command_id, "position-lock"),
+              "position_lock", command.targets, command.command_id,
+              *member(*command.payload, "position_m"), "m", true, 0.0, "user_intent");
+        } else {
+          const auto &payload = *command.payload;
+          expected = make_constraint(deterministic_uuid(command.command_id, "dimension"), "distance",
+              {member(payload, "endpoint_a")->string(), member(payload, "endpoint_b")->string()},
+              command.command_id, Json(dimension_metres(member(payload, "value")->number(), member(payload, "unit")->string())),
+              "m", member(payload, "mode")->string() == "exact_model", member(payload, "weight")->number(),
+              source_for_dimension(member(payload, "source")->string()));
+        }
+        if (serialize(*constraint) != serialize(expected)) return false;
+        active = true;
+      }
+    }
+    if (!active && !feature && !issue) return true; // Explicit undo/unlock removed the intent.
+    if (active && (feature || issue)) return false;
+    if (retained->size() >= kMaxRetainedUnknowns) { *resource_limit = true; return false; }
+    const Json expected_feature(Object{
+        {"attachment", Json("unresolved")}, {"edge_ids", Json(Array{})},
+        {"id", Json(feature_id)}, {"kind", Json("unknown")}, {"protected_topology", Json(false)},
+        {"provenance", provenance("unknown", "user", {}, "needs_review")}, {"surface_ids", Json(Array{})}});
+    Json expected_issue = make_issue(issue_id, "HSS_CORRECTION_LINEAGE_UNRESOLVED", {feature_id}, revision,
+        "warning", "Accepted " + command.type + " correction " + command.command_id +
+        " needs review after source refinement. Historical targets have no proved current correspondence; "
+        "no metric constraint or edited boundary was rebound to replacement geometry.",
+        "Inspect the updated scan and explicitly confirm the intended boundary or reference measurement.",
+        command.event_sequence_text);
+    if (!active) {
+      if (!feature || !issue) return false;
+      expected_issue.object()["scene_revision"] = *member(issue->object(), "scene_revision");
+      if (serialize(*feature) != serialize(expected_feature) || serialize(*issue) != serialize(expected_issue)) return false;
+    }
+    RetainedUnknown item;
+    item.feature_json = serialize(expected_feature);
+    std::string *part = &item.issue_before_revision;
+    *part = "{";
+    bool first = true;
+    for (const auto &[key, value] : expected_issue.object()) {
+      if (!first) *part += ',';
+      first = false;
+      *part += serialize(Json(key)) + ':';
+      if (key == "scene_revision") part = &item.issue_after_revision;
+      else *part += serialize(value);
+    }
+    *part += '}';
+    retained->push_back(std::move(item));
+    return true;
+  };
+  for (const auto &record : journal) {
+    if ((record.command_type != "split_edge" && record.command_type != "set_dimension" &&
+         record.command_type != "lock_position") || record.before_scene_revision == record.after_scene_revision) continue;
+    const Json original = JsonParser(record.exact_command_utf8).parse();
+    CommandData original_data;
+    if (!command_base(original, &original_data) || !collect_correction(original_data)) return false;
+  }
+  if (!collect_correction(current)) return false;
   *output = std::move(retained);
   return true;
 }

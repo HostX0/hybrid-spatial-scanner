@@ -24,4 +24,10 @@ struct Result {
 Result write_hsscan_archive(const std::string& project_directory,
                             const std::string& destination_path);
 
+// Shipping share path: creates a private, temporary clock-relative derivative
+// using the existing source encoders, then the ordinary validated ZIP writer.
+// Source project bytes never change. The source clock origin is not exported.
+Result write_portable_hsscan_archive(const std::string& project_directory,
+                                     const std::string& destination_path);
+
 }  // namespace hss::native_export

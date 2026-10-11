@@ -74,8 +74,12 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     @Published private(set) var deletedProjects: [ScannerProjectSummary] = []
     @Published private(set) var isManagingLibrary = false
     @Published private(set) var phase: ScannerWorkspacePhase = .browsing
-    @Published private(set) var latestSnapshot: ScannerSceneSnapshot?
-    @Published private(set) var selectedProjectID: UUID?
+    @Published private(set) var latestSnapshot: ScannerSceneSnapshot? {
+        didSet { refreshOptionalAppearance() }
+    }
+    @Published private(set) var selectedProjectID: UUID? {
+        didSet { if selectedProjectID != oldValue { commandHistory = nil; includeSourceImagesInExport = false } }
+    }
     @Published var selectedProjectName: String = "" {
         didSet {
             guard !isAssigningSelectedName,
@@ -90,6 +94,16 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     @Published private(set) var projectArchiveExportState: ScannerProjectArchiveExportState = .idle
     @Published private(set) var captureAccounting: ScannerCaptureAccounting = .zero
     @Published private(set) var targetSelectionState: NativeTargetSelectionState = .awaitingSelection
+    @Published private(set) var commandHistory: ScannerCommandHistory?
+    @Published private(set) var captureAdvice: ScannerCaptureAdvice?
+    @Published private(set) var reviewTexturedMesh: ScannerTexturedMesh?
+    @Published private(set) var appearanceMessage: String?
+    @Published var includeSourceImagesInExport = false
+
+    var editableBoundary: [ScannerBoundaryEdge] {
+        guard canRecordMissingEvidence, let snapshot = latestSnapshot, let id = selectedProjectID else { return [] }
+        return ScannerBoundaryEdge.decode(snapshot: snapshot, projectID: id)
+    }
 
     var captureSession: ARSession? { captureCoordinator.captureSession }
     private var retainedPlanEpoch: UInt64? {
@@ -198,8 +212,20 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     private let trustedRoot: URL
     private let catalogURL: URL
     private let sourceIsSynthetic: Bool
+    private let appearanceStore: ScannerAppearanceStore
+    private var optionalAppearanceEnabled = true
+    private var appearanceResourcesAvailable = true
+    private var appearanceSourceIsVerified = true
+    private var appearanceGeneration: UInt64 = 0
     private let resourceMonitor = ScannerIOSResourceMonitor()
-    private var runtime: HSSProjectRuntime?
+    private var appearanceRuntimeToken = UUID()
+    private var runtime: HSSProjectRuntime? {
+        didSet {
+            let abandoned = appearanceRuntimeToken
+            appearanceRuntimeToken = UUID()
+            Task { [appearanceStore] in await appearanceStore.discardPending(runtimeToken: abandoned) }
+        }
+    }
     private var pendingCommandJournal = false
     private var frozenCommandInFlight = false
     /// A command journaled successfully, but the review snapshot could not be
@@ -228,14 +254,18 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     private var acceptedTargetSourceFrames: [SceneDepthFrameIdentity] = []
     private var pendingTargetCandidate: NativeTargetCandidate?
     private var acceptedEpochProjectTransforms: [UInt64: [Double]] = [:]
+    private var acceptedEpochTransformRevisions: [UInt64: UInt64] = [:]
     private var cancellables: Set<AnyCancellable> = []
     private let keyframeSelector = SceneDepthKeyframeSelector()
+    private let captureCoach = ScannerCaptureCoach()
+    private var captureAdviceObservedAt: TimeInterval = 0
     private let maximumPendingEvents = 512
     private let maximumPendingFrames = 2
 
     private lazy var captureCoordinator: ARSessionCoordinator = {
         ARSessionCoordinator(
             normalizedFrameSink: { [weak self] frame in self?.receive(frame) },
+            depthRejectionSink: { [weak self] reason in self?.receiveDepthRejection(reason) },
             meshAnchorSink: { [weak self] event in self?.receive(event) },
             epochControlSink: { [weak self] control in self?.receive(control) }
         )
@@ -252,6 +282,14 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         self.trustedRoot = root
         self.catalogURL = root.appendingPathComponent("workspace-catalog.json", isDirectory: false)
         self.sourceIsSynthetic = sourceIsSynthetic
+        self.appearanceStore = ScannerAppearanceStore(trustedRoot: root)
+
+        Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
+            .sink { [weak self] _ in
+                guard let self, captureAdvice != nil,
+                      ProcessInfo.processInfo.systemUptime - captureAdviceObservedAt > 1.5 else { return }
+                captureAdvice = nil
+            }.store(in: &cancellables)
 
         captureCoordinator.$phase
             .removeDuplicates()
@@ -298,6 +336,45 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         }
     }
 
+#if DEBUG
+    /// Explicit native UI-test setup only. Release has no launch-time seeding
+    /// path. Refuses a nonempty library and uses actual source/checkpoint APIs.
+    func seedReferenceRoomForUITesting() async throws {
+        guard ProcessInfo.processInfo.environment["HSS_UI_REFERENCE_ROOM"] == "1" else { return }
+        try FileManager.default.createDirectory(at: trustedRoot, withIntermediateDirectories: true)
+        guard try loadCatalog().projects.isEmpty,
+              try FileManager.default.contentsOfDirectory(atPath: trustedRoot.path).isEmpty else { return }
+        let projectID = UUID(uuidString: "01000000-0000-5000-8000-000000000000")!
+        let captureID = UUID(uuidString: "02000000-0000-5000-8000-000000000000")!
+        let runtime = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: trustedRoot, openMode: .create)
+        let matrix: [Float] = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
+        try await runtime.setEpoch(CaptureEpochControl(sessionEpoch: 1, relationshipState: .accepted,
+            projectFromWorld: matrix.map(Double.init), transformRevision: 1), eventSequence: 1, monotonicTime: 0)
+        let vertices: [SIMD3<Float>] = [SIMD3(0,0,0), SIMD3(4,0,0), SIMD3(4,0,-5), SIMD3(0,0,-5),
+            SIMD3(0,2.8,0), SIMD3(4,2.8,0), SIMD3(4,2.8,-5), SIMD3(0,2.8,-5)]
+        let triangles: [UInt32] = [0,1,5, 0,5,4, 1,2,6, 1,6,5, 2,3,7, 2,7,6, 3,0,4, 3,4,7]
+        let mesh = OwnedMeshAnchorEvent(kind: .add,
+            anchorID: UUID(uuidString: "03000000-0000-5000-8000-000000000000")!,
+            anchorRevision: 1, generation: 1, sessionEpoch: 1, sequence: 2, monotonicTimestamp: 0.1,
+            worldFromAnchor: matrix, payload: MeshAnchorPayload(vertices: vertices, normals: [],
+                triangleIndices: triangles, classifications: [], localBoundsMin: SIMD3(0,0,-5), localBoundsMax: SIMD3(4,2.8,0)))
+        try await runtime.submitMeshEvent(mesh, eventSequence: 2, projectTime: 0.1)
+        try await runtime.setPlanReference(projectFromFloor: matrix.map(Double.init), cutHeightMetres: 1.2,
+            sessionEpoch: 1, eventSequence: 3, monotonicTime: 0.2)
+        let snapshot = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        guard snapshot.verticesMetres.count == 8,
+              ScannerBoundaryEdge.decode(snapshot: snapshot, projectID: projectID).count == 8 else {
+            throw HSSBridgeError.invalidValue("The synthetic reference room did not expose its eight supported cut segments.")
+        }
+        _ = try await runtime.checkpoint()
+        try publishCatalogEntry(WorkspaceCatalogEntry(id: projectID, captureID: captureID,
+            name: "Reference room", updatedAt: Date(), sceneRevision: snapshot.revision,
+            state: .frozen, sourceIsSynthetic: true))
+        reloadProjects()
+    }
+#endif
+
     func createProject(named name: String) {
         guard !isManagingLibrary, !captureCoordinator.isSessionRunning, !drainScheduled else { return }
         let displayName = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -332,6 +409,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                     sourceIsSynthetic: sourceIsSynthetic
                 )
                 try publishCatalogEntry(entry)
+                setOptionalAppearanceSourceVerified(true)
                 runtime = candidate
                 selectedCatalogEntry = entry
                 selectedProjectID = projectID
@@ -451,12 +529,14 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 adoptedEntry.captureID = adopted.1.captureID
                 adoptedEntry.sceneRevision = adopted.2.revision
                 self.runtime = adopted.0
+                setOptionalAppearanceSourceVerified(true)
                 selectedCatalogEntry = adoptedEntry
                 selectedProjectID = entry.id
                 assignSelectedName(adoptedEntry.name)
                 latestSnapshot = adopted.2
                 observedProvenance = provenance
                 nextEventSequence = adopted.1.lastEventSequence + 1
+                refreshOptionalAppearance()
                 lastDurableEventTime = adopted.1.lastMonotonicTime
                 pendingCommandJournal = false
                 frozenCommandInFlight = false
@@ -486,6 +566,8 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         exportState = .idle
         projectArchiveExportState = .idle
         phase = .startingCapture
+        captureCoach.reset()
+        captureAdvice = nil
         keyframeSelector.reset()
         captureAccounting = .zero
         didReportDepthKeyframeCapacity = false
@@ -553,13 +635,15 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         }
         exportState = .exporting
         let root = trustedRoot
+        let appearance = includeSourceImagesInExport ? reviewTexturedMesh : nil
         Task { [weak self] in
             do {
                 let directory = try await Task.detached(priority: .userInitiated) {
                     try ScannerOfflineExporter.export(
                         snapshot: snapshot,
                         projectID: projectID,
-                        trustedRoot: root
+                        trustedRoot: root,
+                        appearance: appearance
                     )
                 }.value
                 guard let self,
@@ -631,6 +715,13 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 )
                 let replay = try await candidate.replayCommittedSource()
                 try await candidate.drain()
+                setOptionalAppearanceSourceVerified(false)
+                do {
+                    try await appearanceStore.reconcile(projectID: entry.id, lastDurableEventSequence: replay.lastEventSequence)
+                    setOptionalAppearanceSourceVerified(true)
+                } catch {
+                    appearanceMessage = String(localized: "Measured geometry is available. Source images could not be verified for this revision.")
+                }
                 let provenance: Set<ScannerSceneProvenance> = entry.sourceIsSynthetic
                     ? [.syntheticTest, .importedReplay]
                     : [.importedReplay]
@@ -651,8 +742,10 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 selectedProjectID = entry.id
                 assignSelectedName(entry.name)
                 latestSnapshot = snapshot
+                commandHistory = try? await candidate.reviewCommandHistory()
                 observedProvenance = provenance
                 nextEventSequence = replay.lastEventSequence + 1
+                refreshOptionalAppearance()
                 lastDurableEventTime = replay.lastMonotonicTime
                 pendingCommandJournal = false
                 frozenCommandInFlight = false
@@ -854,9 +947,34 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     /// selection maps to a durable core entity. It records a zero-target
     /// unknown-evidence note and leaves raw captured geometry unchanged.
     func recordMissingEvidence(reason: String) {
+        beginReviewCommand(reason: reason, edit: nil)
+    }
+
+    func applyBoundaryEdit(_ edit: ScannerBoundaryEdit, expectedRevision: UInt64) {
+        guard latestSnapshot?.revision == expectedRevision, canRecordMissingEvidence else { return }
+        let edges = editableBoundary
+        let valid: Bool
+        switch edit {
+        case .protect(let id), .split(let id, _): valid = edges.contains { $0.id == id }
+        case .lock(let id, let position, let confirmed):
+            valid = confirmed && edges.contains { ($0.startID == id && $0.start == position) || ($0.endID == id && $0.end == position) }
+        case .dimension(let a, let b, _, _, _, _):
+            valid = edges.contains { ($0.startID == a && $0.endID == b) || ($0.startID == b && $0.endID == a) }
+        case .undo(let id): valid = commandHistory?.scene_revision == String(expectedRevision) && commandHistory?.undoID == id
+        case .redo(let id): valid = commandHistory?.scene_revision == String(expectedRevision) && commandHistory?.redoID == id
+        }
+        guard valid else {
+            currentIssue = ScannerWorkspaceIssue(id: UUID(), title: String(localized: "Boundary selection changed"),
+                message: String(localized: "Select a boundary in the current scan before applying a correction. The accepted shape is unchanged."), recoveryAction: nil)
+            return
+        }
+        beginReviewCommand(reason: "", edit: edit)
+    }
+
+    private func beginReviewCommand(reason: String, edit: ScannerBoundaryEdit?) {
         guard canRecordMissingEvidence, let runtime else { return }
         let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedReason.isEmpty else {
+        guard edit != nil || !trimmedReason.isEmpty else {
             currentIssue = ScannerWorkspaceIssue(
                 id: UUID(),
                 title: "Missing-evidence note needs a reason",
@@ -882,14 +1000,17 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let outcome = try await runtime.recordFrozenMissingEvidence(
-                    reason: trimmedReason,
-                    eventSequence: sequence,
-                    monotonicTime: eventTime
-                )
+                let outcome: HSSFrozenUnknownCommandOutcome
+                if let edit, let revision = latestSnapshot?.revision {
+                    outcome = try await runtime.applyFrozenBoundaryCorrection(edit, expectedRevision: revision,
+                        eventSequence: sequence, monotonicTime: eventTime)
+                } else {
+                    outcome = try await runtime.recordFrozenMissingEvidence(reason: trimmedReason,
+                        eventSequence: sequence, monotonicTime: eventTime)
+                }
                 switch outcome {
                 case .journaled(let application):
-                    await publishJournaledMissingEvidence(application, runtime: runtime)
+                    await publishJournaledReviewCommand(application, runtime: runtime)
                 case .journalRetryRequired(let application, let failure):
                     guard application.eventSequence == sequence else {
                         throw HSSBridgeError.invalidValue(
@@ -898,21 +1019,21 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                     }
                     frozenCommandInFlight = false
                     pendingCommandJournal = true
-                    saveState = .failed("The applied review note is not yet journaled: \(failure)")
+                    saveState = .failed("The review result is not yet journaled: \(failure)")
                     currentIssue = ScannerWorkspaceIssue(
                         id: UUID(),
-                        title: "Review note needs a journal retry",
-                        message: "The note was applied locally but is not durable yet. Retry the exact local journal before saving, leaving, or starting capture.",
+                        title: String(localized: "Review result needs a journal retry"),
+                        message: String(localized: "The review result is not saved yet. Retry its exact local journal before saving, leaving, or starting capture."),
                         recoveryAction: .retryCommandJournal
                     )
                 case .resultRecoveryRequired(let failure):
                     frozenCommandInFlight = false
                     pendingCommandJournal = true
-                    saveState = .failed("The applied review note needs exact-result recovery: \(failure)")
+                    saveState = .failed("The review command needs exact-result recovery: \(failure)")
                     currentIssue = ScannerWorkspaceIssue(
                         id: UUID(),
-                        title: "Review note needs result recovery",
-                        message: "The note was applied locally but its exact native result must be recovered before it can be journaled. Retry the exact local command before saving, leaving, or starting capture.",
+                        title: String(localized: "Review result needs recovery"),
+                        message: String(localized: "The exact review result must be recovered before it can be saved. Retry the same local command before saving, leaving, or starting capture."),
                         recoveryAction: .retryCommandJournal
                     )
                 }
@@ -920,7 +1041,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 frozenCommandInFlight = false
                 currentIssue = ScannerWorkspaceIssue(
                     id: UUID(),
-                    title: "Missing evidence was not recorded",
+                    title: edit == nil ? String(localized: "Missing evidence was not recorded") : String(localized: "Correction was not applied"),
                     message: describe(error),
                     recoveryAction: nil
                 )
@@ -935,12 +1056,12 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             guard let self else { return }
             do {
                 let application = try await runtime.retryPendingCommandJournal()
-                await publishJournaledMissingEvidence(application, runtime: runtime)
+                await publishJournaledReviewCommand(application, runtime: runtime)
             } catch {
                 frozenCommandInFlight = false
                 currentIssue = ScannerWorkspaceIssue(
                     id: UUID(),
-                    title: "Review note still needs a journal retry",
+                    title: String(localized: "Review result still needs a journal retry"),
                     message: describe(error),
                     recoveryAction: .retryCommandJournal
                 )
@@ -948,7 +1069,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         }
     }
 
-    private func publishJournaledMissingEvidence(
+    private func publishJournaledReviewCommand(
         _ application: HSSFrozenUnknownCommandApplication,
         runtime: HSSProjectRuntime
     ) async {
@@ -971,7 +1092,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             currentIssue = ScannerWorkspaceIssue(
                 id: UUID(),
                 title: "Review state needs recovery",
-                message: "The journaled review note did not match the reserved local event sequence. Save or reopen the project before any other review action.",
+                message: String(localized: "The review result did not match the reserved event order. Save or reopen the project before another review action."),
                 recoveryAction: .retrySave
             )
             return
@@ -984,24 +1105,33 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                 )
             }
             latestSnapshot = snapshot
+            commandHistory = try? await runtime.reviewCommandHistory()
+            if application.disposition != .applied {
+                currentIssue = ScannerWorkspaceIssue(id: UUID(), title: String(localized: "Correction was not applied"),
+                    message: application.disposition == .conflict
+                        ? String(localized: "This correction conflicts with an earlier measurement or position lock. The last accepted shape is kept. Review the selected boundary and your proposed value.")
+                        : String(localized: "This correction is no longer compatible with the current scan. The last accepted shape is kept. Select the boundary again and review your input."), recoveryAction: nil)
+            } else {
+                let command = try JSONSerialization.jsonObject(with: application.commandJSON) as? [String: Any]
+                let isMissingEvidence = command?["type"] as? String == "mark_unknown"
+                currentIssue = ScannerWorkspaceIssue(id: UUID(),
+                    title: isMissingEvidence ? String(localized: "Missing evidence recorded") : String(localized: "Correction applied"),
+                    message: isMissingEvidence
+                        ? String(localized: "Applied locally. Save this draft to make the review note durable.")
+                        : String(localized: "The accepted correction is visible in your scan. Save this draft to keep the change."), recoveryAction: nil)
+            }
             reviewSnapshotRefreshRequired = false
             refreshTargetRevisionBinding()
         } catch {
             reviewSnapshotRefreshRequired = true
             currentIssue = ScannerWorkspaceIssue(
                 id: UUID(),
-                title: "Review note needs a snapshot refresh",
-                message: "The note is journaled locally, but its refreshed review view is unavailable. Save or reopen the project before another review action.",
+                title: String(localized: "Review result needs a snapshot refresh"),
+                message: String(localized: "The review result is recorded locally, but its refreshed view is unavailable. Save or reopen the project before another review action."),
                 recoveryAction: .retrySave
             )
             return
         }
-        currentIssue = ScannerWorkspaceIssue(
-            id: UUID(),
-            title: "Missing evidence recorded",
-            message: "Applied locally. Save this draft to make the review note durable.",
-            recoveryAction: nil
-        )
     }
 
     func recoverFromCurrentIssue() {
@@ -1038,6 +1168,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             defer { resourceSamplingInProgress = false }
             do {
                 let decision = try await runtime.observeResource(reading)
+                updateOptionalAppearanceResourcePolicy(decision)
                 if decision.requestCheckpoint || !decision.acceptMetricObservations {
                     await handleResourcePause(decision, runtime: runtime)
                     return
@@ -1084,6 +1215,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                     try await awaitCaptureAndQueueDrain()
                 }
                 let decision = try await runtime.observeResource(reading)
+                updateOptionalAppearanceResourcePolicy(decision)
                 if decision.requestCheckpoint || !decision.acceptMetricObservations {
                     await handleResourcePause(decision, runtime: runtime)
                 } else if decision.mode == UInt32(HSS_RESOURCE_MODE_CONSERVING) {
@@ -1164,6 +1296,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         guard checkpoint.durableRevision > 0, checkpoint.durableEventCount > 0 else {
             throw HSSBridgeError.invalidValue("The store did not report a durable source manifest.")
         }
+        await commitOptionalAppearance(projectID: entry.id, checkpoint: checkpoint)
         entry.updatedAt = Date()
         entry.sceneRevision = snapshot.revision
         entry.state = .frozen
@@ -1234,6 +1367,9 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     private func capturePhaseChanged(_ capturePhase: CaptureSessionPhase) {
+        // A frame-bound recommendation cannot survive loss of normal
+        // tracking, a stopped session or an unresolved coordinate epoch.
+        if capturePhase != .captureReady { captureAdvice = nil }
         if resourcePauseLatched { return }
         switch capturePhase {
         case .captureReady:
@@ -1278,14 +1414,18 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     private func receive(_ control: CaptureEpochControl) {
         if control.relationshipState == .accepted {
             acceptedEpochProjectTransforms[control.sessionEpoch] = control.projectFromWorld
+            acceptedEpochTransformRevisions[control.sessionEpoch] = control.transformRevision
         } else {
             acceptedEpochProjectTransforms.removeValue(forKey: control.sessionEpoch)
+            acceptedEpochTransformRevisions.removeValue(forKey: control.sessionEpoch)
         }
         enqueue(.epoch(control, monotonicTime: ProcessInfo.processInfo.systemUptime))
     }
 
     private func receive(_ frame: NormalizedSceneDepthFrame) {
         guard !resourceMetricIntakeBlocked else { return }
+        captureAdviceObservedAt = ProcessInfo.processInfo.systemUptime
+        captureAdvice = captureCoach.observe(frame: frame, resourcePressure: resourceConservingMessage == nil ? 0 : 1)
         let retained = keyframeSelector.shouldRetain(frame)
         captureAccounting = keyframeSelector.accounting
         guard retained else {
@@ -1301,6 +1441,14 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             return
         }
         enqueueTargetFrame(frame)
+    }
+
+    private func receiveDepthRejection(_ reason: SceneDepthFrameRejection) {
+        captureAdvice = nil
+        guard reason == .noValidDepthSamples, !resourceMetricIntakeBlocked,
+              captureCoordinator.phase == .captureReady else { return }
+        captureAdviceObservedAt = ProcessInfo.processInfo.systemUptime
+        captureAdvice = captureCoach.observeMissingDepth(resourcePressure: resourceConservingMessage == nil ? 0 : 1)
     }
 
     private func enqueueTargetFrame(_ frame: NormalizedSceneDepthFrame) {
@@ -1363,6 +1511,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     private func drainPendingEvents() async {
+        let appearanceToken = appearanceRuntimeToken
         guard let runtime else {
             drainScheduled = false
             return
@@ -1386,6 +1535,20 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
                     try await runtime.setEpoch(control, eventSequence: next.sequence, monotonicTime: projectTime)
                 case .frame(let frame):
                     try await runtime.submitFrame(frame, eventSequence: next.sequence, projectTime: projectTime)
+                    if optionalAppearanceEnabled, appearanceSourceIsVerified, frame.appearancePhoto != nil,
+                       let revision = acceptedEpochTransformRevisions[frame.identity.sessionEpoch],
+                       let projectID = selectedProjectID {
+                        let acceptedRevision = try await runtime.stats().scene_revision
+                        let sourceCaptureID = await runtime.captureID
+                        do {
+                            try await appearanceStore.retain(frame: frame, projectID: projectID, captureID: sourceCaptureID,
+                                runtimeToken: appearanceToken,
+                                eventSequence: next.sequence, acceptedSceneRevision: acceptedRevision,
+                                transformRevision: revision, projectTime: projectTime)
+                        } catch {
+                            appearanceMessage = String(localized: "Some source images could not be retained. Measured geometry is unchanged.")
+                        }
+                    }
                     observedProvenance.insert(.capturedSceneDepth)
                     acceptedFrames.append(frame.identity)
                 case .mesh(let event):
@@ -1459,6 +1622,7 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             guard let self else { return }
             do {
                 let checkpoint = try await runtime.checkpoint()
+                await commitOptionalAppearance(projectID: entry.id, checkpoint: checkpoint)
                 let snapshot = try await runtime.snapshot(provenance: observedProvenance, frozen: true)
                 entry.name = selectedProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
                 if entry.name.isEmpty { entry.name = "Untitled Scan" }
@@ -1594,7 +1758,75 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
         acceptedTargetSourceFrames.removeAll(keepingCapacity: true)
         pendingTargetCandidate = nil
         acceptedEpochProjectTransforms.removeAll(keepingCapacity: true)
+        acceptedEpochTransformRevisions.removeAll(keepingCapacity: true)
         targetSelectionState = .awaitingSelection
+    }
+
+    private func updateOptionalAppearanceResourcePolicy(_ decision: ScannerResourceDecision) {
+        appearanceResourcesAvailable = !decision.suspendOptionalAppearance && !decision.pauseCapture
+        optionalAppearanceEnabled = appearanceSourceIsVerified && appearanceResourcesAvailable
+        captureCoordinator.setOptionalAppearanceEnabled(optionalAppearanceEnabled)
+        if !optionalAppearanceEnabled {
+            appearanceGeneration &+= 1
+            reviewTexturedMesh = nil
+            captureAdvice = nil
+            appearanceMessage = appearanceSourceIsVerified
+                ? String(localized: "Appearance is paused to protect capture resources. Measured geometry remains available.")
+                : String(localized: "Measured geometry is available. Source images could not be verified for this revision.")
+        }
+    }
+
+    /// Integrity quarantine belongs to one opened source, while resource
+    /// pressure belongs to the device. Neither may silently clear the other.
+    private func setOptionalAppearanceSourceVerified(_ verified: Bool) {
+        appearanceSourceIsVerified = verified
+        optionalAppearanceEnabled = verified && appearanceResourcesAvailable
+        appearanceGeneration &+= 1
+        reviewTexturedMesh = nil
+        captureCoordinator.setOptionalAppearanceEnabled(optionalAppearanceEnabled)
+        if optionalAppearanceEnabled { appearanceMessage = nil }
+    }
+
+    private func commitOptionalAppearance(projectID: UUID, checkpoint: HSSProjectCheckpoint) async {
+        guard checkpoint.durableRevision > 0, appearanceSourceIsVerified else { return }
+        do {
+            try await appearanceStore.commit(projectID: projectID, runtimeToken: appearanceRuntimeToken,
+                                             lastDurableEventSequence: checkpoint.lastEventSequence)
+            appearanceGeneration &+= 1
+            reviewTexturedMesh = nil
+        }
+        catch { appearanceMessage = String(localized: "Some source images could not be retained. Measured geometry is unchanged.") }
+    }
+
+    private func refreshOptionalAppearance() {
+        guard let snapshot = latestSnapshot, let projectID = selectedProjectID,
+              snapshot.isFrozen, optionalAppearanceEnabled, appearanceSourceIsVerified else {
+            appearanceGeneration &+= 1
+            reviewTexturedMesh = nil
+            return
+        }
+        if reviewTexturedMesh?.projectID == projectID, reviewTexturedMesh?.matches(snapshot) == true { return }
+        appearanceGeneration &+= 1
+        let generation = appearanceGeneration
+        let maximumSequence = nextEventSequence > 0 ? nextEventSequence - 1 : 0
+        reviewTexturedMesh = nil
+        appearanceMessage = String(localized: "Checking source images for the textured twin…")
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let layer = try await appearanceStore.project(snapshot: snapshot, projectID: projectID,
+                                                              maximumAcceptedEventSequence: maximumSequence)
+                guard generation == appearanceGeneration, selectedProjectID == projectID,
+                      latestSnapshot?.revision == snapshot.revision, optionalAppearanceEnabled else { return }
+                reviewTexturedMesh = layer
+                appearanceMessage = layer?.faces.isEmpty == false
+                    ? String(localized: "Color comes from verified source views. Hidden or unsupported areas stay neutral; measurements are unchanged.")
+                    : String(localized: "Measured geometry is available. No supported source image is available for this revision.")
+            } catch {
+                guard generation == appearanceGeneration, selectedProjectID == projectID else { return }
+                appearanceMessage = String(localized: "Measured geometry is available. Source images could not be verified for this revision.")
+            }
+        }
     }
 }
 

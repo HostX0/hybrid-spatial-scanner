@@ -710,6 +710,21 @@ int main(int argc, char **argv) {
   HSSEngine *engine = nullptr;
   const auto config = engine_config();
   check(hss_engine_create(&config, &engine) == HSS_OK, "create engine");
+  uint64_t history_bytes = 99U;
+  check(hss_engine_copy_command_history_json(nullptr, nullptr, 0U, &history_bytes) == HSS_INVALID_ARGUMENT && history_bytes == 0U,
+        "history failure clears required length");
+  check(hss_engine_copy_command_history_json(engine, nullptr, 0U, &history_bytes) == HSS_BUFFER_TOO_SMALL && history_bytes > 1U,
+        "history uses complete-size query");
+  uint8_t sentinel = 0xa5U;
+  check(hss_engine_copy_command_history_json(engine, &sentinel, 1U, &history_bytes) == HSS_BUFFER_TOO_SMALL && sentinel == 0xa5U,
+        "history never writes partial JSON");
+  std::vector<uint8_t> empty_history(history_bytes);
+  check(hss_engine_copy_command_history_json(engine, empty_history.data(), empty_history.size(), &history_bytes) == HSS_OK,
+        "copy empty revision-bound history");
+  const std::string history_json(empty_history.begin(), empty_history.end());
+  check(history_json.find("\"records\":[]") != std::string::npos &&
+            history_json.find("\"project_id\":") != std::string::npos,
+        "history carries project identity and no private command payload");
   check(hss_engine_set_source_is_synthetic(engine, 1U) == HSS_OK,
         "set fixture provenance before source");
 

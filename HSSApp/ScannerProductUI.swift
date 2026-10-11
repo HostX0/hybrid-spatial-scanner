@@ -447,6 +447,18 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
                         .background(ScannerProductTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
 
+                if presentation.canAssist {
+                    Button(action: actions.assist) {
+                        Label("Review boundary corrections", systemImage: "slider.horizontal.3")
+                    }.buttonStyle(ScannerSecondaryButtonStyle())
+                        .accessibilityIdentifier("boundary-review.open")
+                }
+                if presentation.canUndo {
+                    Button(action: actions.undo) { Label("Undo last review correction", systemImage: "arrow.uturn.backward") }
+                        .buttonStyle(ScannerSecondaryButtonStyle())
+                        .accessibilityIdentifier("boundary-review.undo")
+                }
+
                 if !presentation.measurements.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Measurements")
@@ -478,7 +490,6 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
                     .buttonStyle(ScannerSecondaryButtonStyle())
                     .accessibilityHint("Records an unknown-evidence note without modifying captured geometry")
                 }
-
                 if presentation.canSave {
                     Button("Save draft", action: actions.save)
                         .buttonStyle(ScannerPrimaryButtonStyle())
@@ -569,6 +580,7 @@ private struct ScannerLibraryScreen: View {
                     }
                     .buttonStyle(ScannerGlassButtonStyle())
                     .accessibilityLabel("Privacy and local data")
+                    .accessibilityIdentifier("privacy.open")
                 }
 
                 if !showingTrash {
@@ -644,6 +656,7 @@ private struct ScannerLibraryScreen: View {
                                     ScannerProjectIdentity(project: project)
                                 }
                                 .buttonStyle(.plain)
+                                .accessibilityIdentifier("project.open.\(project.id.uuidString)")
                                 .disabled(showingTrash)
                                 Menu {
                                     if showingTrash {
@@ -719,10 +732,23 @@ private struct ScannerLibraryScreen: View {
                     }
                     Section("Separate object captures") {
                         Text("Object Capture photos and models are stored separately from room projects. Deleting a room does not delete these sessions.")
+                        Text("Deleting an object session removes its local photos, checkpoint and model. Models you shared elsewhere are not removed.")
+                    }
+                    Section("Before you share") {
+                        Text("Room source images stay on this device. Offline 3D export includes used images only when you enable that option. Room archives currently do not include source color images.")
+                        Text("Room archives contain calibrated source observations, geometry and your review notes. They can reveal a private space. Share only with people you trust.")
+                        Text("Portable room archives remove the original device clock origin. Original local sources stay unchanged. Object model sharing does not include the retained source photos.")
+                        Text("Device backups and destinations you select may keep copies. Deleting local data cannot erase those copies.")
                     }
                 }
+                .accessibilityIdentifier("privacy.content")
                 .navigationTitle("Privacy and local data")
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingPrivacy = false } } }
+                .toolbar { ToolbarItem(placement: .confirmationAction) {
+                    Button { showingPrivacy = false } label: {
+                        Label("Done", systemImage: "xmark").labelStyle(.iconOnly)
+                            .font(.body.weight(.semibold)).frame(minWidth: 44, minHeight: 44)
+                    }.accessibilityIdentifier("privacy.done")
+                } }
             }
         }
     }

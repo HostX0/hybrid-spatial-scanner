@@ -303,6 +303,7 @@ NSData *data(const std::string &value) {
     mesh.warnings.push_back("synthetic_source");
   hss::obj_mtl::Options meshOptions;
   meshOptions.include_textures = false;
+  meshOptions.material_library_filename = "scene.mtl";
   const auto obj = hss::obj_mtl::export_snapshot(mesh, meshOptions);
   if (obj.status != hss::obj_mtl::Status::kOk || !obj.artifact) {
     set_error(error, 12,
