@@ -2,6 +2,17 @@
 
 ## October 12 delivery update
 
+Latest actual work: twenty designed EN/AR iPhone/iPad PNGs are prepared from
+the real Release UI, with truthful reference-geometry notices, opaque accepted
+dimensions and no hidden internal metadata. Their review revealed a genuine
+Arabic privacy bar-title truncation, now repaired in build 3 and verified at
+normal and largest text sizes. Build 3 is signed/archived/exported; Xcode confirmed
+upload complete, and Organizer shows Uploaded to Apple. Subsequent Apple
+processing and final asset upload are not inferred from binary upload.
+The browser session currently requires restored sign-in.
+See `docs/evidence/ENG-STORE-SCREENSHOTS-PRIVACY-LAYOUT-01.md` for exact results
+and limitations. Historical build-2 validation below remains genuine.
+
 The earlier Mac pause below is historical: the owner resumed necessary native
 verification, signing and direct Apple upload. App record `6821764872`, exact
 bundle `org.hybridspatialscanner.app`, version 0.1/build 2 and company team

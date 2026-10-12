@@ -1,5 +1,104 @@
 import XCTest
 
+/// Optional artifact workflow, not a synthetic capture or an accuracy gate.
+/// Run explicitly with Release and a preserved, owned reference project already
+/// installed. The shipping app has no debug seeding enabled. Nothing is uploaded.
+final class ScannerReleaseStoreScreenshotUITests: XCTestCase {
+    @MainActor
+    func testEnglishReleaseStoreScreenshots() throws {
+        try screenshots(language: "en", locale: "en_US")
+    }
+
+    @MainActor
+    func testArabicReleaseStoreScreenshots() throws {
+        try screenshots(language: "ar", locale: "ar_IQ")
+    }
+
+    @MainActor
+    private func screenshots(language: String, locale: String) throws {
+        #if DEBUG
+        throw XCTSkip("Store artifacts must use the Release application, not debug setup.")
+        #else
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(\(language))", "-AppleLocale", locale,
+            "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryL"]
+        app.launch()
+        defer { app.terminate() }
+        XCTAssertTrue(app.buttons["privacy.open"].waitForExistence(timeout: 10))
+        let project = app.buttons["project.open.01000000-0000-5000-8000-000000000000"]
+        reveal(project, in: app)
+        XCTAssertTrue(project.exists, "Stage only the owned, explicitly synthetic example before this workflow.")
+
+        // Rename through the real, persisted product action. Provenance remains
+        // synthetic, and all public frames must disclose the reference example.
+        let actionsPrefix = language == "ar" ? "إجراءات المشروع:" : "Project actions:"
+        let actions = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", actionsPrefix)).firstMatch
+        reveal(actions, in: app)
+        actions.tap()
+        app.buttons[language == "ar" ? "إعادة تسمية" : "Rename"].tap()
+        let field = app.alerts.textFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        // The default rename text is replaced via ordinary editing keys.
+        let existing = field.value as? String ?? ""
+        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count))
+        field.typeText(language == "ar" ? "مثال مرجعي" : "Example room")
+        app.alerts.buttons[language == "ar" ? "حفظ" : "Save"].tap()
+        XCTAssertTrue(project.waitForExistence(timeout: 5))
+        app.swipeDown()
+        attach(app, name: language + "-01-library")
+
+        reveal(project, in: app)
+        project.tap()
+        let correction = app.buttons["boundary-review.open"]
+        XCTAssertTrue(correction.waitForExistence(timeout: 10))
+        reveal(correction, in: app)
+        // This viewport includes the actual plan and correction entry point.
+        // Public frames must also carry the explicit reference disclosure.
+        attach(app, name: language + "-02-review")
+        correction.tap()
+        XCTAssertTrue(app.buttons["boundary-review.done"].waitForExistence(timeout: 5))
+        let edge = app.collectionViews.firstMatch.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "boundary-review.edge.")).firstMatch
+        XCTAssertTrue(edge.waitForExistence(timeout: 5))
+        edge.tap()
+        attach(app, name: language + "-03-boundaries")
+        app.buttons["boundary-review.done"].tap()
+        let library = app.buttons[language == "ar" ? "فتح المشاريع" : "Open projects"]
+        reveal(library, in: app)
+        library.tap()
+        XCTAssertTrue(app.buttons["privacy.open"].waitForExistence(timeout: 5))
+        app.buttons["privacy.open"].tap()
+        XCTAssertTrue(app.buttons["privacy.done"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["privacy.heading"].exists)
+        attach(app, name: language + "-04-privacy")
+        app.buttons["privacy.done"].tap()
+        app.buttons["support.open"].tap()
+        XCTAssertTrue(app.buttons["support.done"].waitForExistence(timeout: 5))
+        attach(app, name: language + "-05-help")
+        #endif
+    }
+
+    @MainActor
+    private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
+        for _ in 0..<12 {
+            if element.exists && element.isHittable { return }
+            let down = element.exists && element.frame.midY < app.frame.minY + 120
+            if down { app.swipeDown() } else { app.swipeUp() }
+        }
+        XCTAssertTrue(element.isHittable)
+    }
+
+    @MainActor
+    private func attach(_ app: XCUIApplication, name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+}
+
 final class ScannerProductJourneyUITests: XCTestCase {
     @MainActor
     func testEnglishLibraryAccessibilityAudit() throws {
@@ -22,12 +121,41 @@ final class ScannerProductJourneyUITests: XCTestCase {
     }
 
     @MainActor
+    func testEnglishLargestTextPrivacyHeadingAndDismissal() {
+        largestTextPrivacy(language: "en", locale: "en_US")
+    }
+
+    @MainActor
+    func testArabicLargestTextPrivacyHeadingAndDismissal() {
+        largestTextPrivacy(language: "ar", locale: "ar_IQ")
+    }
+
+    @MainActor
+    private func largestTextPrivacy(language: String, locale: String) {
+        let app = launch(language: language, locale: locale,
+            contentSize: "UICTContentSizeCategoryAccessibilityXXXL")
+        defer { app.terminate() }
+        XCTAssertTrue(app.buttons["privacy.open"].waitForExistence(timeout: 10))
+        app.buttons["privacy.open"].tap()
+        XCTAssertTrue(app.buttons["privacy.done"].waitForExistence(timeout: 5))
+        let heading = app.staticTexts["privacy.heading"]
+        XCTAssertTrue(heading.exists)
+        XCTAssertGreaterThan(heading.frame.height, 45)
+        XCTAssertLessThanOrEqual(heading.frame.width, app.frame.width)
+        XCTAssertTrue(app.buttons["privacy.done"].isHittable)
+        attach(app, name: language + " largest-text multiline privacy heading")
+        app.buttons["privacy.done"].tap()
+        XCTAssertTrue(app.buttons["support.open"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     private func privacyAndSupportJourney(language: String, locale: String) {
         let app = launch(language: language, locale: locale)
         defer { app.terminate() }
         XCTAssertTrue(app.buttons["privacy.open"].waitForExistence(timeout: 10))
         app.buttons["privacy.open"].tap()
         XCTAssertTrue(app.buttons["privacy.done"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["privacy.heading"].exists)
         attach(app, name: language + " offline privacy disclosure")
         app.buttons["privacy.done"].tap()
         app.buttons["support.open"].tap()

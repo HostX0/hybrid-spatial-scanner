@@ -750,6 +750,12 @@ private struct ScannerLibraryScreen: View {
         .sheet(isPresented: $showingPrivacy) {
             NavigationStack {
                 List {
+                    Section {
+                        Text("Privacy and local data")
+                            .font(.title2.weight(.semibold))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("privacy.heading")
+                    }
                     Section("On-device by design") {
                         Label("Capture, processing and exports work offline.", systemImage: "iphone")
                         Label("No account, analytics SDK or cloud reconstruction.", systemImage: "lock.shield")
@@ -784,7 +790,11 @@ private struct ScannerLibraryScreen: View {
                     }
                 }
                 .accessibilityIdentifier("privacy.content")
-                .navigationTitle("Privacy and local data")
+                // The complete localized heading remains multiline in the
+                // scrolling content; a long Arabic bar title otherwise clips
+                // even at the standard text size on the supported iPhone UI.
+                .navigationTitle("Privacy")
+                .navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) {
                     Button { showingPrivacy = false } label: {
                         Label("Done", systemImage: "xmark").labelStyle(.iconOnly)

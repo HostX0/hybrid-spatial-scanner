@@ -2,6 +2,19 @@
 
 ## Current native and Apple delivery verdict
 
+Store-asset follow-through found a real standard-text Arabic privacy title
+truncation. Build 3 repairs it with an inline short title and a full multiline
+body heading. Six focused Release iPhone and four focused Release iPad UI
+workflows passed, including actual largest-text privacy and authentic screenshots;
+ten store-source checks passed. A signed arm64 build-3 archive and App Store IPA
+were produced and verified. Twenty designed actual-app EN/AR iPhone/iPad store
+PNGs are ready, with explicitly disclosed reference geometry and no hidden
+engineering metadata. Xcode actually confirmed build-3 upload complete and
+Organizer shows Uploaded to Apple. Subsequent processing, asset upload and
+review are not inferred. Chrome requires restored sign-in.
+See `docs/evidence/ENG-STORE-SCREENSHOTS-PRIVACY-LAYOUT-01.md`. The build-2
+full-unit/functional/audit results below retain their exact earlier scope.
+
 The owner resumed necessary Mac verification and direct Apple upload on October
 12. Build 2's native unit/bridge suite passed **121/121**. The adaptive interface
 passed **seven functional iPhone Simulator journeys**, including English/Arabic
@@ -26,7 +39,7 @@ arm64, Arabic/English and the expected file protection. TestFlight shows
 **Ready to Submit**. This closes binary upload/processing, not tester access,
 installation, App Review approval or public launch.
 
-Remain: four accessibility audit warnings, full iPad accessibility, clean actual store screenshots,
+Remain: four accessibility audit warnings, full iPad accessibility, authenticated actual store screenshot upload,
 remaining store/commercial inputs,
 Apple review and supported-phone installation/capture/measurement/
 recovery/thermal/locked-device acceptance. No iPhone was connected or installed.
@@ -44,7 +57,8 @@ global 4+ age rating (with displayed regional exceptions) from the actual offlin
 feature/content inventory. Content rights inventory is completed. These gates
 are no longer pending; screenshots/pricing, remaining accessibility, review and
 physical acceptance remain separate. The owner requested actual store screenshot
-design and continued submission preparation; that work is now in progress.
+design and continued submission preparation; twenty verified product assets
+are prepared and await authenticated Apple upload. Current source build is 3.
 
 ## Retained October 11 assessment (historical, superseded where noted above)
 
