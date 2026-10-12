@@ -1,5 +1,15 @@
 # ENG-STORE-PRIVACY-SUPPORT-01
 
+October 12 follow-through: the Mac pause was lifted. Native help/source assertions
+are included in the final 121/121 passing native suite. Five functional UI journeys
+pass; four unsuppressed accessibility audits still fail before later help/privacy
+audits, so those screens are not fully accessibility-accepted. The exact signed
+app 0.1/build 1 was uploaded through authenticated Xcode to record `6821764872`.
+English metadata and public contact/policy links are saved in Apple. App Privacy
+publication awaits the owner's legal confirmation; no public app release occurred.
+See `ENG-NATIVE-STORE-DELIVERY-01.md`. The following October 11 record is retained
+historical evidence, not the latest signing/execution status.
+
 Engineering evidence, 2026-10-11. Scope: ENG-14 store preparation, published
 product/privacy/support pages and bundled native help. This is not a customer
 preview, application launch, signed release or physical acceptance record.

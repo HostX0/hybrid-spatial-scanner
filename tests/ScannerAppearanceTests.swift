@@ -1,11 +1,13 @@
 import XCTest
 import UIKit
 import CoreImage
+import CoreVideo
+import ImageIO
 import simd
 @testable import HybridSpatialScanner
 
 /// Synthetic native integration fixtures, not real-camera/metrology evidence.
-/// Added during the server-only resource pause; execution remains pending.
+/// Native raster tests use the production encoder, not a second implementation.
 final class ScannerAppearanceTests: XCTestCase {
     @MainActor
     func testSourceCheckpointPrecedesAppearanceAndPreservesExactGeometry() async throws {
@@ -108,6 +110,69 @@ final class ScannerAppearanceTests: XCTestCase {
             XCTAssertEqual(color[2] + 0.5, (Double(k.cx) * 2 + 0.5) * scale, accuracy: 1e-12)
             XCTAssertEqual((color[2] + 0.5) / (16 * scale), (Double(k.cx) * 2 + 0.5) / 16, accuracy: 1e-12)
             XCTAssertEqual(color[3] + 0.5, (Double(k.cy) * 2 + 0.5) * scale, accuracy: 1e-12)
+        }
+    }
+
+    func testProductionJPEGKeepsSensorRasterAndUVPixelCentersAtHalfAndQuarterScale() throws {
+        let context = CIContext(options: [.cacheIntermediates: false])
+        let colors: [[UInt8]] = [[240,20,20], [20,240,20], [20,20,240], [240,240,20]]
+        for width in [1920, 3840] {
+            let height = width / 2
+            var buffer: CVPixelBuffer?
+            XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+                [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &buffer), kCVReturnSuccess)
+            let pixelBuffer = try XCTUnwrap(buffer)
+            XCTAssertEqual(CVPixelBufferLockBaseAddress(pixelBuffer, []), kCVReturnSuccess)
+            do {
+                defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+                let base = try XCTUnwrap(CVPixelBufferGetBaseAddress(pixelBuffer)).assumingMemoryBound(to: UInt8.self)
+                let stride = CVPixelBufferGetBytesPerRow(pixelBuffer)
+                for y in 0..<height {
+                    for x in 0..<width {
+                        let c = colors[(y >= height / 2 ? 2 : 0) + (x >= width / 2 ? 1 : 0)]
+                        let p = base.advanced(by: y * stride + x * 4)
+                        p[0] = c[2]; p[1] = c[1]; p[2] = c[0]; p[3] = 255
+                    }
+                }
+            }
+            let photo = try XCTUnwrap(ScannerAppearancePhotoSampler.encodeSensorImage(pixelBuffer,
+                width: width, height: height, context: context))
+            XCTAssertEqual(photo.width, 960); XCTAssertEqual(photo.height, 480)
+            XCTAssertTrue(ScannerAppearanceStore.validJPEG(photo.jpeg, width: 960, height: 480))
+            let source = try XCTUnwrap(CGImageSourceCreateWithData(photo.jpeg as CFData, nil))
+            let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+            XCTAssertNil(properties[kCGImagePropertyGPSDictionary])
+            XCTAssertEqual((properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1, 1)
+            let decoded = try XCTUnwrap(CIImage(data: photo.jpeg))
+            let depthWidth = width / 8, depthHeight = height / 8
+            let k = ScaledSceneDepthIntrinsics(fx: Float(width) / 16, fy: Float(height) / 16,
+                cx: Float(depthWidth) * 0.3, cy: Float(depthHeight) * 0.4,
+                calibrationImageWidth: width, calibrationImageHeight: height, depthCropX: 0, depthCropY: 0,
+                depthCropWidth: Float(width), depthCropHeight: Float(height), depthWidth: depthWidth, depthHeight: depthHeight)
+            let colorK = ScannerAppearanceStore.colorIntrinsics(depth: k, imageWidth: photo.width, imageHeight: photo.height)
+            for (index, fraction) in [(0, SIMD2<Double>(0.25, 0.25)), (1, SIMD2(0.75, 0.25)),
+                                      (2, SIMD2(0.25, 0.75)), (3, SIMD2(0.75, 0.75))] {
+                // Off-axis camera rays with a known sensor-raster target. UV v
+                // uses the OBJ/SceneKit bottom-left convention, CI uses y-up.
+                let sensorX = fraction.x * Double(width) - 0.5
+                let sensorY = fraction.y * Double(height) - 0.5
+                let rayX = (sensorX - Double(k.cx) * 8) / (Double(k.fx) * 8)
+                let rayY = (sensorY - Double(k.cy) * 8) / (Double(k.fy) * 8)
+                let u = (colorK[0] * rayX + colorK[2] + 0.5) / Double(photo.width)
+                let v = 1 - (colorK[1] * rayY + colorK[3] + 0.5) / Double(photo.height)
+                XCTAssertEqual(u, fraction.x, accuracy: 1e-12)
+                XCTAssertEqual(v, 1 - fraction.y, accuracy: 1e-12)
+                var rgba = [UInt8](repeating: 0, count: 4)
+                rgba.withUnsafeMutableBytes { bytes in
+                    context.render(decoded, toBitmap: bytes.baseAddress!, rowBytes: 4,
+                        bounds: CGRect(x: Int(u * Double(photo.width)), y: Int(v * Double(photo.height)), width: 1, height: 1),
+                        format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+                }
+                for channel in 0..<3 {
+                    XCTAssertEqual(Double(rgba[channel]), Double(colors[index][channel]), accuracy: 12,
+                        "The production JPEG must preserve the asymmetric sensor quadrants at its actual UV positions.")
+                }
+            }
         }
     }
 

@@ -1028,18 +1028,24 @@ enum ScannerTargetOverlayProjection {
 
 private struct ScannerProjectIdentity: View {
     let project: ScannerWorkspacePresentation.Project
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        HStack(spacing: 14) {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 14))
+            : AnyLayout(HStackLayout(spacing: 14))
+        layout {
             Image(systemName: "cube.transparent")
                 .font(.title2)
                 .foregroundStyle(ScannerProductTheme.accent)
                 .frame(width: 38, height: 38)
                 .background(ScannerProductTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             VStack(alignment: .leading, spacing: 3) {
-                Text(project.name).font(.headline).lineLimit(2)
+                Text(project.name).font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let savedDescription = project.savedDescription {
                     Text(savedDescription).font(.caption).foregroundStyle(ScannerProductTheme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer()

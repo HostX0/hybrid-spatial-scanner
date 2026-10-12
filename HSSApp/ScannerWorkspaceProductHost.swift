@@ -21,8 +21,13 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
     @State private var projectArchiveToShare: URL?
     @State private var isRecordingMissingEvidence = false
     @State private var missingEvidenceReason = ""
-    @State private var isBoundaryReviewPresented = false
-    @State private var boundaryReviewSnapshot: ScannerSceneSnapshot?
+    // A single item binds first presentation to its immutable snapshot. Two
+    // separate state writes could present an empty sheet on the first tap.
+    private struct BoundaryReviewPresentation: Identifiable {
+        let id: UUID
+        var snapshot: ScannerSceneSnapshot
+    }
+    @State private var boundaryReviewPresentation: BoundaryReviewPresentation?
     @State private var showsSourceColor = true
 
     var body: some View {
@@ -151,22 +156,25 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             // workspace's metric scene or project save path.
             ObjectCaptureLibraryView()
         }
-        .sheet(isPresented: $isBoundaryReviewPresented, onDismiss: { boundaryReviewSnapshot = nil }) {
-            if let snapshot = boundaryReviewSnapshot {
-                ScannerBoundaryReviewSheet(snapshot: snapshot,
-                    edges: ScannerBoundaryEdge.decode(snapshot: snapshot, projectID: workspace.selectedProjectID ?? UUID()),
-                    isCurrent: workspace.latestSnapshot?.revision == snapshot.revision,
-                    canApply: workspace.canRecordMissingEvidence && workspace.latestSnapshot?.revision == snapshot.revision,
-                    issue: workspace.currentIssue?.message,
-                    history: workspace.commandHistory,
-                    apply: { workspace.applyBoundaryEdit($0, expectedRevision: snapshot.revision) })
-            }
+        .sheet(item: $boundaryReviewPresentation) { review in
+            let snapshot = review.snapshot
+            ScannerBoundaryReviewSheet(snapshot: snapshot,
+                edges: ScannerBoundaryEdge.decode(snapshot: snapshot, projectID: workspace.selectedProjectID ?? UUID()),
+                isCurrent: workspace.latestSnapshot?.revision == snapshot.revision,
+                canApply: workspace.canRecordMissingEvidence && workspace.latestSnapshot?.revision == snapshot.revision,
+                issue: workspace.currentIssue?.message,
+                history: workspace.commandHistory,
+                apply: { workspace.applyBoundaryEdit($0, expectedRevision: snapshot.revision) })
         }
         .onChange(of: workspace.latestSnapshot?.revision) { _, _ in
             // Keep an accepted correction sheet connected to the new immutable
             // publication. The sheet's selection resets; it never retargets an
             // old edge ID to the nearest new geometry.
-            if isBoundaryReviewPresented { boundaryReviewSnapshot = workspace.latestSnapshot }
+            if let review = boundaryReviewPresentation {
+                boundaryReviewPresentation = workspace.latestSnapshot.map {
+                    BoundaryReviewPresentation(id: review.id, snapshot: $0)
+                }
+            }
         }
         .sheet(isPresented: $isFloorReferencePresented, onDismiss: { floorReferenceSnapshot = nil }) {
             if let snapshot = floorReferenceSnapshot {
@@ -252,9 +260,8 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             importProject: { isImportingProject = true },
             finishCapture: workspace.stopCapture,
             assist: {
-                guard !workspace.editableBoundary.isEmpty else { return }
-                boundaryReviewSnapshot = workspace.latestSnapshot
-                isBoundaryReviewPresented = true
+                guard !workspace.editableBoundary.isEmpty, let snapshot = workspace.latestSnapshot else { return }
+                boundaryReviewPresentation = BoundaryReviewPresentation(id: UUID(), snapshot: snapshot)
             },
             undo: {
                 guard let id = workspace.commandHistory?.undoID, let revision = workspace.latestSnapshot?.revision else { return }
@@ -837,8 +844,12 @@ private struct ScannerBoundaryReviewSheet: View {
         NavigationStack {
             Form {
                 Section("Review your scan") {
-                    Label("Choose a captured boundary, then add a measurement or refine its shape. Your original capture remains available.", systemImage: "scope")
-                        .font(.subheadline).foregroundStyle(.secondary)
+                    Label {
+                        Text("Choose a captured boundary, then add a measurement or refine its shape. Your original capture remains available.")
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.vertical, 4)
+                    } icon: { Image(systemName: "scope") }
+                    .font(.subheadline).foregroundStyle(.secondary)
                     ScannerBoundaryPicker(snapshot: snapshot, edges: edges, selectedEdgeID: selectedEdgeID) { id in
                         guard canApply else { return }
                         selectedEdgeID = id
@@ -846,6 +857,8 @@ private struct ScannerBoundaryReviewSheet: View {
                         confirmsExactDimension = false
                     }
                     .frame(height: 260).clipShape(RoundedRectangle(cornerRadius: 16))
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityAddTraits(.isImage)
                     .accessibilityLabel("Captured boundaries")
                     .accessibilityHint("Rotate to inspect the scan. Select a boundary from the list below.")
                     if !isCurrent {

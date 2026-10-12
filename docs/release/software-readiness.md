@@ -1,4 +1,30 @@
-# Software release readiness — 2026-10-11
+# Software release readiness — 2026-10-12
+
+## Current native and Apple delivery verdict
+
+The owner resumed necessary Mac verification and direct Apple upload on October
+12. The final native unit/bridge suite passed **121/121**. All **five functional
+UI journeys** passed, including English/Arabic supported boundary split, undo
+and redo. Four separate, unsuppressed accessibility audits still fail (Arabic
+boundary clipping and Dynamic Type support); they are not accepted or hidden.
+
+A fresh arm64 Release archive was signed with THE THIRD ACT LLC's existing
+distribution identity. Deep/strict signature verification, exact bundle/team,
+file-protection entitlement, packaged privacy manifest, localized camera text,
+encryption declaration and absence of Debug fixtures were checked. Authenticated
+Xcode Organizer confirmed **HybridSpatialScanner 0.1 (1) uploaded** to Apple.
+App Store record `6821764872` and English metadata/contact URLs exist. This is a
+verified first binary upload, not TestFlight processing, App Review or public launch.
+
+Remain: four accessibility issues, iPad acceptance, clean actual store screenshots,
+required store questionnaires/pricing, owner-confirmed legal privacy publication,
+Apple processing/review and supported-phone installation/capture/measurement/
+recovery/thermal/locked-device acceptance. No iPhone was connected or installed.
+The finite engine assessment remains closed; do not restart synthetic engine
+loops, widen tolerances, or rewrite the core to replace these delivery gates.
+See `docs/evidence/ENG-NATIVE-STORE-DELIVERY-01.md` for current evidence.
+
+## Retained October 11 assessment (historical, superseded where noted above)
 
 Engineering release record, not product marketing. This is a finite assessment;
 it does not reopen the completed seam investigation or request an engine rewrite.

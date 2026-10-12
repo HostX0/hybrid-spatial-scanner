@@ -1,5 +1,24 @@
 # ENG-14 — Store preparation and final submission gates
 
+## October 12 delivery update
+
+The earlier Mac pause below is historical: the owner resumed necessary native
+verification, signing and direct Apple upload. App record `6821764872`, exact
+bundle `org.hybridspatialscanner.app`, version 0.1/build 1 and company team
+`J3VB9XTF33` were verified. English metadata, support/marketing/privacy URLs and
+approved review contact are saved. Manual release is selected. The signed arm64
+Release archive passed signature/privacy packaging checks and Xcode confirmed
+**0.1 (1) uploaded**. Final native tests passed 121/121 and five functional UI
+journeys passed; four independent accessibility audits remain failures.
+
+The No-data-collection answer is saved but not published: Apple's final Publish
+dialog requires an owner-confirmed legal attestation. No App Review submission,
+TestFlight install or public release is claimed. iPad, actual clean screenshots,
+questionnaires/pricing, Apple processing and physical-device gates remain.
+See `docs/evidence/ENG-NATIVE-STORE-DELIVERY-01.md` for the actual delivery receipt.
+
+## Retained October 11 preparation (historical)
+
 Engineering record, not customer-facing copy. Scope: store metadata, public
 privacy/support and offline help. Dependencies: existing native library, local
 capture/export lifecycle and owner-approved public publisher/contact details.

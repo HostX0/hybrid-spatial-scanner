@@ -1,5 +1,6 @@
 import ARKit
 import CoreImage
+import CoreVideo
 import CryptoKit
 import Darwin
 import Foundation
@@ -32,14 +33,21 @@ final class ScannerAppearancePhotoSampler: @unchecked Sendable {
               normalized.rgbLayout.height == normalized.intrinsics.calibrationImageHeight,
               selector.shouldRetain(normalized) else { return nil }
         lastTime = arFrame.timestamp
-        let w = normalized.rgbLayout.width, h = normalized.rgbLayout.height
+        return Self.encodeSensorImage(arFrame.capturedImage, width: normalized.rgbLayout.width,
+                                      height: normalized.rgbLayout.height, context: context)
+    }
+
+    /// The same bounded encoder is exercised by native raster tests. Sampling
+    /// still happens under the delegate-path lock; only owned JPEG bytes escape.
+    static func encodeSensorImage(_ buffer: CVPixelBuffer, width w: Int, height h: Int,
+                                  context: CIContext) -> ScannerAppearancePhoto? {
         guard w > 0, h > 0, w <= 4096, h <= 4096, w.isMultiple(of: 2), h.isMultiple(of: 2),
               let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
         var scale: CGFloat = 1
         while CGFloat(max(w, h)) * scale > 960 { scale *= 0.5 }
         guard (CGFloat(w) * scale).rounded() == CGFloat(w) * scale,
               (CGFloat(h) * scale).rounded() == CGFloat(h) * scale else { return nil }
-        let image = CIImage(cvPixelBuffer: arFrame.capturedImage)
+        let image = CIImage(cvPixelBuffer: buffer)
             .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
             .settingProperties([:])
         // Sensor orientation is preserved. No borrowed image buffer escapes,
