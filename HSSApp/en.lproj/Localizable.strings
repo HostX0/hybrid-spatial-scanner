@@ -172,3 +172,11 @@
 "Include source images in 3D export" = "Include source images in 3D export";
 "3D geometry from accepted snapshot" = "3D geometry from accepted snapshot";
 "Room source images stay on this device. Offline 3D export includes used images only when you enable that option. Room archives currently do not include source color images." = "Room source images stay on this device. Offline 3D export includes used images only when you enable that option. Room archives currently do not include source color images.";
+"Preparing a local ZIP for the share sheet." = "Preparing a local ZIP for the share sheet.";
+"Confirm the current position of point A before locking it." = "Confirm the current position of point A before locking it.";
+"Enter a positive measured length in metres." = "Enter a positive measured length in metres.";
+"Enter a valid uncertainty in metres or leave it empty." = "Enter a valid uncertainty in metres or leave it empty.";
+"Confirm the exact model constraint before applying it." = "Confirm the exact model constraint before applying it.";
+"Check correction" = "Check correction";
+"OK" = "OK";
+"Export ready. Choose Files or another destination in the share sheet." = "Export ready. Choose Files or another destination in the share sheet.";

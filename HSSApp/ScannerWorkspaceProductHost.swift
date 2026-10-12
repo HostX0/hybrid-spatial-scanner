@@ -19,6 +19,9 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
     @State private var floorReferenceSnapshot: ScannerSceneSnapshot?
     @State private var currentCameraViewport: OverlayViewport?
     @State private var projectArchiveToShare: URL?
+    @State private var derivedExportToShare: URL?
+    @State private var isPreparingDerivedShare = false
+    @State private var derivedShareIssue: String?
     @State private var isRecordingMissingEvidence = false
     @State private var missingEvidenceReason = ""
     // A single item binds first presentation to its immutable snapshot. Two
@@ -97,6 +100,10 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
                 }
             }
         )
+        // The presented correction editor owns accessibility focus. Do not
+        // expose the covered workspace's controls through the modal sheet;
+        // they become available again when the editor is dismissed.
+        .accessibilityHidden(boundaryReviewPresentation != nil)
         .sheet(isPresented: $isCreatingProject) {
             ScannerProjectNameSheet(
                 name: Binding(
@@ -201,7 +208,57 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
                 projectArchiveToShare = archiveURL
             }
         }
+        .sheet(isPresented: Binding(
+            get: { derivedExportToShare != nil },
+            set: { if !$0 { clearDerivedShare() } }
+        ), onDismiss: clearDerivedShare) {
+            if let derivedExportToShare {
+                ScannerProjectArchiveShareSheet(archiveURL: derivedExportToShare)
+            }
+        }
+        .task(id: workspace.exportState) {
+            derivedShareIssue = nil
+            guard case .exported(let directory, _) = workspace.exportState,
+                  let projectID = workspace.selectedProjectID,
+                  let revision = workspace.latestSnapshot?.revision else {
+                isPreparingDerivedShare = false
+                return
+            }
+            let completedState = workspace.exportState
+            // The validated source must be <root>/<project>/exports/revision-*.
+            // No project/capture directory or arbitrary provider URL is shared.
+            let root = directory.deletingLastPathComponent()
+                .deletingLastPathComponent().deletingLastPathComponent()
+            isPreparingDerivedShare = true
+            do {
+                let archive = try await Task.detached(priority: .userInitiated) {
+                    try ScannerDerivedExportShare.package(directory: directory,
+                        projectID: projectID, sceneRevision: revision, trustedRoot: root)
+                }.value
+                guard !Task.isCancelled, workspace.exportState == completedState,
+                      workspace.selectedProjectID == projectID,
+                      workspace.latestSnapshot?.revision == revision else {
+                    try? FileManager.default.removeItem(at: archive)
+                    return
+                }
+                clearDerivedShare()
+                derivedExportToShare = archive
+                isPreparingDerivedShare = false
+            } catch {
+                guard !Task.isCancelled, workspace.exportState == completedState,
+                      workspace.selectedProjectID == projectID else { return }
+                isPreparingDerivedShare = false
+                derivedShareIssue = error.localizedDescription
+            }
+        }
         .task { workspace.reloadProjects() }
+    }
+
+    private func clearDerivedShare() {
+        // This exact transient ZIP was returned by our local packager, never a
+        // user-chosen source URL. Originals and completed derivative bundles stay.
+        if let derivedExportToShare { try? FileManager.default.removeItem(at: derivedExportToShare) }
+        derivedExportToShare = nil
     }
 
     private var presentation: ScannerWorkspacePresentation {
@@ -238,8 +295,8 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
             canUndo: workspace.canRecordMissingEvidence && workspace.commandHistory?.undoID != nil,
             canRecordMissingEvidence: workspace.canRecordMissingEvidence,
             canSave: workspace.saveState == .hasUnsavedChanges,
-            canExport: workspace.canExport,
-            isExporting: workspace.exportState == .exporting,
+            canExport: workspace.canExport && !isPreparingDerivedShare,
+            isExporting: workspace.exportState == .exporting || isPreparingDerivedShare,
             canExportProjectArchive: workspace.canExportProjectArchive,
             isExportingProjectArchive: workspace.projectArchiveExportState == .exporting,
             canOpenLibrary: workspace.canShowLibrary,
@@ -356,13 +413,15 @@ struct ScannerWorkspaceProductHost<Model: ScannerWorkspaceModeling>: View {
     }
 
     private var exportStatus: String? {
-        switch workspace.exportState {
+        if let derivedShareIssue { return String(localized: "Offline export failed: \(derivedShareIssue)") }
+        if isPreparingDerivedShare { return String(localized: "Preparing a local ZIP for the share sheet.") }
+        return switch workspace.exportState {
         case .idle:
             nil
         case .exporting:
             String(localized: "Creating PDF, SVG, DXF, OBJ, MTL, and provenance files locally.")
         case .exported:
-            String(localized: "Offline export saved inside this local project.")
+            String(localized: "Export ready. Choose Files or another destination in the share sheet.")
         case .failed(let message):
             String(localized: "Offline export failed: \(message)")
         }
@@ -581,7 +640,9 @@ private struct ScannerProjectArchiveShareSheet: UIViewControllerRepresentable {
     let archiveURL: URL
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [archiveURL], applicationActivities: nil)
+        let controller = UIActivityViewController(activityItems: [archiveURL], applicationActivities: nil)
+        controller.view.accessibilityIdentifier = "export.share-sheet"
+        return controller
     }
 
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
@@ -601,6 +662,7 @@ private struct ScannerProjectNameSheet: View {
                         .focused($isNameFocused)
                         .textInputAutocapitalization(.words)
                         .accessibilityLabel("Space name")
+                        .accessibilityIdentifier("project-name.input")
                 } footer: {
                     Text("A local project is created before capture so its source data and accepted revisions stay together.")
                 }
@@ -609,10 +671,12 @@ private struct ScannerProjectNameSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: cancel)
+                        .accessibilityIdentifier("project-name.cancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create", action: create)
                         .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("project-name.create")
                 }
             }
             .onAppear { isNameFocused = true }
@@ -812,6 +876,19 @@ struct ScannerFloorReferenceProposal {
     }
 }
 
+/// Keep editable values at full contrast at the scroll edge. The native
+/// opaque navigation bar already separates them from the stationary controls;
+/// an additional translucent fade can obscure partially visible field labels.
+private struct ScannerBoundaryScrollContrast: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.scrollEdgeEffectHidden(true, for: .all)
+        } else {
+            content
+        }
+    }
+}
+
 /// Revision-bound correction controls for retained, provenance-supported
 /// boundary graph edges. Targets are never inferred from displayed mesh data.
 @MainActor
@@ -830,6 +907,7 @@ private struct ScannerBoundaryReviewSheet: View {
     @State private var splitPosition = 0.5
     @State private var confirmsPosition = false
     @State private var confirmsExactDimension = false
+    @State private var inputIssue: String?
     @State private var dimensionText = ""
     @State private var uncertaintyText = ""
     @State private var source: ScannerBoundaryEdit.Source = .tape
@@ -873,7 +951,7 @@ private struct ScannerBoundaryReviewSheet: View {
                     if let issue { Label(issue, systemImage: "info.circle").foregroundStyle(ScannerProductTheme.warning) }
                 }
 
-                Section("Captured boundaries") {
+                Section {
                     if edges.isEmpty {
                         ContentUnavailableView("No captured boundary available", systemImage: "point.3.connected.trianglepath.dotted",
                             description: Text("Capture more of the room or review its floor reference to make boundaries available for correction."))
@@ -900,10 +978,14 @@ private struct ScannerBoundaryReviewSheet: View {
                             .accessibilityIdentifier("boundary-review.edge.\(edge.id.uuidString)")
                         }
                     }
+                } header: {
+                    ScannerDynamicText(String(localized: "Captured boundaries"), style: .headline,
+                        identifier: "boundary-review.captured-header", isHeader: true)
+                        .textCase(nil)
                 }
 
                 if let edge = selectedEdge {
-                    Section("Refine selected boundary") {
+                    Section {
                         Button {
                             apply(.protect(edge: edge.id))
                         } label: {
@@ -915,55 +997,128 @@ private struct ScannerBoundaryReviewSheet: View {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Split position along edge")
                             Slider(value: $splitPosition, in: 0.1...0.9) { Text("Split position") }
-                            Text("\(Int((splitPosition * 100).rounded()))% from point A")
-                                .font(.caption).foregroundStyle(.secondary)
+                            ScannerDynamicText(String(localized: "\(Int((splitPosition * 100).rounded()))% from point A"),
+                                style: .caption1, identifier: "boundary-review.split-position-detail")
                             Button("Split selected edge") { apply(.split(edge: edge.id, parameter: splitPosition)) }
                                 .disabled(!canApply)
                                 .accessibilityIdentifier("boundary-review.split")
                         }
 
-                        Toggle("Confirm current position of point A", isOn: $confirmsPosition)
-                        Button("Lock point A position") {
-                            apply(.lock(node: edge.startID, position: edge.start, confirmed: confirmsPosition))
+                        Toggle(isOn: $confirmsPosition) {
+                            Text("Confirm current position of point A")
+                                .font(.body).fixedSize(horizontal: false, vertical: true)
                         }
-                        .disabled(!canApply || !confirmsPosition)
+                        .accessibilityLabel("Confirm current position of point A")
+                        .accessibilityIdentifier("boundary-review.confirm-position")
+                        Button {
+                            guard confirmsPosition else {
+                                inputIssue = String(localized: "Confirm the current position of point A before locking it.")
+                                return
+                            }
+                            apply(.lock(node: edge.startID, position: edge.start, confirmed: confirmsPosition))
+                        } label: {
+                            Text("Lock point A position")
+                                .font(.body).fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(ScannerProductTheme.accent)
+                        .disabled(!canApply)
                         .accessibilityIdentifier("boundary-review.lock-position")
+                        .accessibilityLabel("Lock point A position")
+                    } header: {
+                        ScannerDynamicText(String(localized: "Refine selected boundary"), style: .headline,
+                            identifier: "boundary-review.refine-header", isHeader: true)
                     }
 
-                    Section("Set a reference dimension") {
-                        TextField("Measured length in metres", text: $dimensionText)
-                            .keyboardType(.decimalPad)
-                            .accessibilityIdentifier("boundary-review.dimension-value")
-                        Picker("Measurement source", selection: $source) {
-                            Text("Tape measure").tag(ScannerBoundaryEdit.Source.tape)
-                            Text("Laser measure").tag(ScannerBoundaryEdit.Source.laser)
-                            Text("Survey reference").tag(ScannerBoundaryEdit.Source.referenceSurvey)
-                            Text("Estimate").tag(ScannerBoundaryEdit.Source.guess)
+                    Section {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ScannerDynamicText(String(localized: "Measured length in metres"), style: .body,
+                                identifier: "boundary-review.dimension-heading")
+                            ScannerBoundaryMeasurementField(text: $dimensionText,
+                                label: String(localized: "Measured length in metres"),
+                                identifier: "boundary-review.dimension-value")
                         }
-                        Picker("Adjustment mode", selection: $mode) {
-                            Text("Soft measurement").tag(ScannerBoundaryEdit.Mode.softMeasurement)
-                            Text("Exact model").tag(ScannerBoundaryEdit.Mode.exactModel)
+                        VStack(alignment: .leading, spacing: 8) {
+                            ScannerDynamicText(String(localized: "Measurement source"), style: .body,
+                                identifier: "boundary-review.source-heading")
+                            Menu {
+                                Button("Tape measure") { source = .tape }
+                                Button("Laser measure") { source = .laser }
+                                Button("Survey reference") { source = .referenceSurvey }
+                                Button("Estimate") { source = .guess }
+                            } label: {
+                                HStack {
+                                    Text(sourceTitle)
+                                        .font(.body).fixedSize(horizontal: false, vertical: true)
+                                    Image(systemName: "chevron.up.chevron.down")
+                                }
+                            }
+                            .accessibilityIdentifier("boundary-review.source")
+                            .accessibilityLabel("Measurement source")
+                            .accessibilityValue(sourceTitle)
                         }
-                        TextField("Optional uncertainty in metres", text: $uncertaintyText)
-                            .keyboardType(.decimalPad)
+                        VStack(alignment: .leading, spacing: 8) {
+                            ScannerDynamicText(String(localized: "Adjustment mode"), style: .body,
+                                identifier: "boundary-review.mode-heading")
+                            Menu {
+                                Button("Soft measurement") { mode = .softMeasurement }
+                                Button("Exact model") { mode = .exactModel }
+                            } label: {
+                                HStack {
+                                    Text(modeTitle)
+                                        .font(.body).fixedSize(horizontal: false, vertical: true)
+                                    Image(systemName: "chevron.up.chevron.down")
+                                }
+                            }
+                            .accessibilityIdentifier("boundary-review.mode")
+                            .accessibilityLabel("Adjustment mode")
+                            .accessibilityValue(modeTitle)
+                        }
+                        VStack(alignment: .leading, spacing: 8) {
+                            ScannerDynamicText(String(localized: "Optional uncertainty in metres"), style: .body,
+                                identifier: "boundary-review.uncertainty-heading")
+                            ScannerBoundaryMeasurementField(text: $uncertaintyText,
+                                label: String(localized: "Optional uncertainty in metres"),
+                                identifier: "boundary-review.uncertainty-value")
+                        }
                         if mode == .exactModel {
                             Toggle("Confirm exact model constraint", isOn: $confirmsExactDimension)
                             Text("Exact constraints may conflict with protected geometry. A rejected proposal preserves the last accepted shape.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        Button("Apply reference dimension") {
-                            guard let metres = dimensionValue, metres > 0, !hasUncertainty || uncertaintyValue != nil else { return }
+                        Button {
+                            guard let metres = dimensionValue, metres > 0 else {
+                                inputIssue = String(localized: "Enter a positive measured length in metres.")
+                                return
+                            }
+                            guard !hasUncertainty || uncertaintyValue != nil else {
+                                inputIssue = String(localized: "Enter a valid uncertainty in metres or leave it empty.")
+                                return
+                            }
+                            guard mode != .exactModel || confirmsExactDimension else {
+                                inputIssue = String(localized: "Confirm the exact model constraint before applying it.")
+                                return
+                            }
                             apply(.dimension(a: edge.startID, b: edge.endID, metres: metres, source: source,
                                 uncertainty: hasUncertainty ? uncertaintyValue : nil, mode: mode))
+                        } label: {
+                            Text("Apply reference dimension")
+                                .font(.body).fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                         }
-                        .disabled(!canApply || (dimensionValue.map { $0 <= 0 } ?? true)
-                            || (hasUncertainty && uncertaintyValue == nil)
-                            || (mode == .exactModel && !confirmsExactDimension))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(ScannerProductTheme.accent)
+                        .disabled(!canApply)
                         .accessibilityIdentifier("boundary-review.set-dimension")
+                        .accessibilityLabel("Apply reference dimension")
+                    } header: {
+                        ScannerDynamicText(String(localized: "Set a reference dimension"), style: .headline,
+                            identifier: "boundary-review.dimension-header", isHeader: true)
                     }
                 }
 
-                Section("Correction history") {
+                Section {
                     if let id = history?.undoID {
                         Button("Undo last supported correction") { apply(.undo(original: id)) }
                             .disabled(!canApply).accessibilityIdentifier("boundary-review.undo")
@@ -973,15 +1128,21 @@ private struct ScannerBoundaryReviewSheet: View {
                             .disabled(!canApply).accessibilityIdentifier("boundary-review.redo")
                     }
                     if history?.undoID == nil && history?.redoID == nil {
-                        Text("No correction is available to undo here.")
-                            .font(.subheadline).foregroundStyle(.secondary)
+                        ScannerDynamicText(String(localized: "No correction is available to undo here."),
+                            style: .subheadline, identifier: "boundary-review.empty-history")
                     }
-                    Text("Review the result, then save your changes. If a correction conflicts with an earlier measurement or lock, the last accepted shape is kept.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    ScannerDynamicText(String(localized: "Review the result, then save your changes. If a correction conflicts with an earlier measurement or lock, the last accepted shape is kept."),
+                        style: .caption1, identifier: "boundary-review.history-help")
+                } header: {
+                    ScannerDynamicText(String(localized: "Correction history"), style: .headline,
+                        identifier: "boundary-review.history-header", isHeader: true)
                 }
             }
+            .modifier(ScannerBoundaryScrollContrast())
             .navigationTitle("Review")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Color(uiColor: .systemGroupedBackground), for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar { ToolbarItem(placement: .confirmationAction) {
                 Button { dismiss() } label: {
                     Label("Done", systemImage: "xmark").labelStyle(.iconOnly)
@@ -998,6 +1159,84 @@ private struct ScannerBoundaryReviewSheet: View {
         }
         .tint(ScannerProductTheme.accent)
         .presentationDetents([.large])
+        .alert("Check correction", isPresented: Binding(
+            get: { inputIssue != nil },
+            set: { if !$0 { inputIssue = nil } }
+        )) {
+            Button("OK", role: .cancel) { inputIssue = nil }
+        } message: {
+            Text(inputIssue ?? "")
+        }
+    }
+
+    private var sourceTitle: String {
+        switch source {
+        case .tape: String(localized: "Tape measure")
+        case .laser: String(localized: "Laser measure")
+        case .referenceSurvey: String(localized: "Survey reference")
+        case .guess: String(localized: "Estimate")
+        }
+    }
+
+    private var modeTitle: String {
+        switch mode {
+        case .softMeasurement: String(localized: "Soft measurement")
+        case .exactModel: String(localized: "Exact model")
+        }
+    }
+}
+
+/// Native numeric input follows the same semantic content-size mapping as its
+/// visible label (which names metres). No low-contrast placeholder or inferred
+/// dimension is used; value and height both update with the rendered font.
+private struct ScannerBoundaryMeasurementField: UIViewRepresentable {
+    @Binding var text: String
+    let label: String
+    let identifier: String
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    func makeUIView(context: Context) -> UITextField {
+        let field = UITextField()
+        field.keyboardType = .decimalPad
+        field.textAlignment = .natural
+        field.adjustsFontForContentSizeCategory = true
+        field.setContentCompressionResistancePriority(.required, for: .vertical)
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        field.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .editingChanged)
+        let toolbar = UIToolbar()
+        let done = UIBarButtonItem(title: String(localized: "Done"), style: .done,
+            target: field, action: #selector(UIResponder.resignFirstResponder))
+        done.accessibilityIdentifier = "boundary-review.keyboard-done"
+        toolbar.items = [UIBarButtonItem(systemItem: .flexibleSpace), done]
+        toolbar.sizeToFit()
+        field.inputAccessoryView = toolbar
+        return field
+    }
+
+    func updateUIView(_ field: UITextField, context: Context) {
+        context.coordinator.text = $text
+        if field.text != text { field.text = text }
+        field.font = .preferredFont(forTextStyle: .body,
+            compatibleWith: UITraitCollection(preferredContentSizeCategory: dynamicTypeSize.scannerContentSizeCategory))
+        field.textColor = .label
+        field.placeholder = nil
+        field.accessibilityLabel = label
+        field.accessibilityIdentifier = identifier
+        field.invalidateIntrinsicContentSize()
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextField, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? uiView.intrinsicContentSize.width,
+            height: max(44, (uiView.font?.lineHeight ?? 20) + 8))
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var text: Binding<String>
+        init(text: Binding<String>) { self.text = text }
+        @objc func changed(_ field: UITextField) { text.wrappedValue = field.text ?? "" }
     }
 }
 

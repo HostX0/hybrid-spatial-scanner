@@ -402,3 +402,11 @@
 "Include source images in 3D export" = "تضمين الصور في التصدير ثلاثي الأبعاد";
 "3D geometry from accepted snapshot" = "هندسة ثلاثية الأبعاد من المسح المقبول";
 "Room source images stay on this device. Offline 3D export includes used images only when you enable that option. Room archives currently do not include source color images." = "تبقى صور الغرفة على هذا الجهاز. يتضمّن التصدير ثلاثي الأبعاد الصور المستخدمة فقط عند تفعيل الخيار. لا تتضمّن أرشيفات الغرف صور الألوان حالياً.";
+"Preparing a local ZIP for the share sheet." = "جارٍ تجهيز ملف ZIP محلي للمشاركة.";
+"Confirm the current position of point A before locking it." = "أكّد الموضع الحالي للنقطة A قبل تثبيته.";
+"Enter a positive measured length in metres." = "أدخل طولاً مقاساً أكبر من صفر بالمتر.";
+"Enter a valid uncertainty in metres or leave it empty." = "أدخل قيمة صحيحة لعدم اليقين بالمتر أو اترك الحقل فارغاً.";
+"Confirm the exact model constraint before applying it." = "أكّد قيد النموذج الدقيق قبل تطبيقه.";
+"Check correction" = "راجع التصحيح";
+"OK" = "موافق";
+"Export ready. Choose Files or another destination in the share sheet." = "التصدير جاهز. اختر تطبيق الملفات أو وجهة أخرى من نافذة المشاركة.";

@@ -4,6 +4,32 @@ import simd
 @testable import HybridSpatialScanner
 
 final class ScannerWorkspacePipelineTests: XCTestCase {
+#if DEBUG && targetEnvironment(simulator)
+    @MainActor
+    func testUITestNamespaceIsCanonicalAndSeparateFromInstalledLibrary() throws {
+        let documents = URL(fileURLWithPath: "/owned-app/Documents", isDirectory: true)
+        let id = UUID()
+        let root = try XCTUnwrap(ScannerWorkspaceModel.uiTestingRoot(documentsRoot: documents,
+            environment: ["HSS_UI_TEST_RUN_ID": id.uuidString.lowercased()]))
+        XCTAssertEqual(root.path, documents.appendingPathComponent("HSSUITestProjects")
+            .appendingPathComponent(id.uuidString).path)
+        XCTAssertNotEqual(root, documents.appendingPathComponent("HSSProjects"))
+        let other = ScannerWorkspaceModel.uiTestingRoot(documentsRoot: documents,
+            environment: ["HSS_UI_TEST_RUN_ID": UUID().uuidString])
+        XCTAssertNotEqual(root, other)
+    }
+
+    @MainActor
+    func testUITestNamespaceRejectsMissingMalformedAndPathIdentifiers() {
+        let documents = URL(fileURLWithPath: "/owned-app/Documents", isDirectory: true)
+        XCTAssertNil(ScannerWorkspaceModel.uiTestingRoot(documentsRoot: documents, environment: [:]))
+        for value in ["", "../../HSSProjects", "/private", "not-a-uuid", UUID().uuidString + "/child"] {
+            XCTAssertNil(ScannerWorkspaceModel.uiTestingRoot(documentsRoot: documents,
+                environment: ["HSS_UI_TEST_RUN_ID": value]), value)
+        }
+    }
+#endif
+
     func testFreshProjectClockRecordsElapsedEventsNotSystemBootOrigin() throws {
         var clock = ProjectCaptureClock(lastDurableTime: 0)
         XCTAssertEqual(clock.projectTime(for: 1_000_000), 0)
@@ -1482,7 +1508,10 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
         }
     }
 
-    private func lockedBoundaryFixture(root: URL, projectID: UUID, captureID: UUID) async throws
+    // Preserve the test caller's actor instead of sending XCTestCase across
+    // the generic executor from the MainActor export-ownership helpers.
+    private func lockedBoundaryFixture(root: URL, projectID: UUID, captureID: UUID,
+        isolation: isolated (any Actor)? = #isolation) async throws
         -> (HSSProjectRuntime, ScannerBoundaryEdge, ScannerSceneSnapshot) {
         _ = try await createSyntheticProject(root: root, projectID: projectID, captureID: captureID)
         let runtime = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
@@ -1501,6 +1530,199 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
             }
         }
         return (runtime, edge, try await runtime.snapshot(provenance: [.syntheticTest], frozen: true))
+    }
+
+    @MainActor
+    func testOfflineExportLateFailureCannotReplaceLibraryState() async throws {
+        try await staleExportFailure(kind: .offline, cancellation: false)
+    }
+
+    @MainActor
+    func testArchiveExportLateFailureCannotReplaceLibraryState() async throws {
+        try await staleExportFailure(kind: .archive, cancellation: false)
+    }
+
+    @MainActor
+    func testOfflineExportLateCancellationCannotReplaceLibraryState() async throws {
+        try await staleExportFailure(kind: .offline, cancellation: true)
+    }
+
+    @MainActor
+    func testArchiveExportLateCancellationCannotReplaceLibraryState() async throws {
+        try await staleExportFailure(kind: .archive, cancellation: true)
+    }
+
+    @MainActor
+    func testOfflineExportOldSuccessCannotReplaceNewSameRevisionRequest() async throws {
+        try await staleExportSuccess(kind: .offline)
+    }
+
+    @MainActor
+    func testArchiveExportOldSuccessCannotReplaceNewSameRevisionRequest() async throws {
+        try await staleExportSuccess(kind: .archive)
+    }
+
+    @MainActor
+    func testOfflineExportCurrentFailureRemainsVisibleAndRetryable() async throws {
+        try await currentExportFailure(kind: .offline)
+    }
+
+    @MainActor
+    func testArchiveExportCurrentFailureRemainsVisibleAndRetryable() async throws {
+        try await currentExportFailure(kind: .archive)
+    }
+
+    private enum ExportTestKind { case offline, archive }
+
+    @MainActor
+    private func exportOwnershipFixture(gate: SuspendedExportTestOperation) async throws
+        -> (root: URL, model: ScannerWorkspaceModel, projectID: UUID) {
+        let root = try objectRoot()
+        let projectID = UUID(), captureID = UUID()
+        let (runtime, _, snapshot) = try await lockedBoundaryFixture(
+            root: root, projectID: projectID, captureID: captureID)
+        _ = try await runtime.checkpoint()
+        let catalog = try JSONSerialization.data(withJSONObject: ["projects": [[
+            "id": projectID.uuidString, "captureID": captureID.uuidString,
+            "name": "Export ownership fixture", "updatedAt": 0,
+            "sceneRevision": snapshot.revision, "state": "frozen", "sourceIsSynthetic": true
+        ]]])
+        try catalog.write(to: root.appendingPathComponent("workspace-catalog.json"))
+        let model = ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true,
+            offlineExportOperation: { _, _, _, _ in
+                try await gate.run(output: root.appendingPathComponent("export-\(UUID().uuidString)"))
+            }, archiveExportOperation: { _, destination in
+                _ = try await gate.run(output: URL(fileURLWithPath: destination))
+            })
+        model.openProject(id: projectID)
+        try await waitForExportTest { model.phase == .frozen }
+        XCTAssertTrue(model.canExport, "The native fixture must qualify through the production export gate.")
+        XCTAssertTrue(model.canExportProjectArchive)
+        return (root, model, projectID)
+    }
+
+    @MainActor
+    private func startTestExport(_ kind: ExportTestKind, model: ScannerWorkspaceModel) {
+        switch kind {
+        case .offline: model.exportSelectedProject()
+        case .archive: model.exportSelectedProjectArchive()
+        }
+    }
+
+    @MainActor
+    private func staleExportFailure(kind: ExportTestKind, cancellation: Bool) async throws {
+        let gate = SuspendedExportTestOperation()
+        let fixture = try await exportOwnershipFixture(gate: gate)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { Task { await gate.cancelAll() } }
+        startTestExport(kind, model: fixture.model)
+        try await waitForExportTest { await gate.pendingCount == 1 }
+        fixture.model.showLibrary()
+        XCTAssertEqual(fixture.model.phase, .browsing)
+        XCTAssertNil(fixture.model.selectedProjectID)
+        await gate.finishNext(failure: cancellation ? .cancelled : .injected)
+        try await waitForExportTest { await gate.finishedCount == 1 }
+        // Give the resumed operation's MainActor publication a bounded turn.
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(fixture.model.exportState, .idle,
+            "An abandoned export must not display its error on the new library context.")
+        XCTAssertEqual(fixture.model.projectArchiveExportState, .idle)
+    }
+
+    @MainActor
+    private func staleExportSuccess(kind: ExportTestKind) async throws {
+        let gate = SuspendedExportTestOperation()
+        let fixture = try await exportOwnershipFixture(gate: gate)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { Task { await gate.cancelAll() } }
+        let revision = fixture.model.latestSnapshot?.revision
+        startTestExport(kind, model: fixture.model)
+        try await waitForExportTest { await gate.pendingCount == 1 }
+        fixture.model.showLibrary()
+        fixture.model.openProject(id: fixture.projectID)
+        try await waitForExportTest { fixture.model.phase == .frozen }
+        XCTAssertEqual(fixture.model.latestSnapshot?.revision, revision,
+            "This specifically reproduces same-project/same-revision ABA; revision checks alone are insufficient.")
+        startTestExport(kind, model: fixture.model)
+        try await waitForExportTest { await gate.pendingCount == 2 }
+        await gate.finishNext()
+        try await waitForExportTest { await gate.finishedCount == 1 }
+        try await Task.sleep(for: .milliseconds(20))
+        switch kind {
+        case .offline: XCTAssertEqual(fixture.model.exportState, .exporting)
+        case .archive: XCTAssertEqual(fixture.model.projectArchiveExportState, .exporting)
+        }
+        let currentOutput = await gate.output(at: 1)
+        await gate.finishNext()
+        try await waitForExportTest {
+            switch kind {
+            case .offline:
+                if case .exported = fixture.model.exportState { return true }
+            case .archive:
+                if case .exported = fixture.model.projectArchiveExportState { return true }
+            }
+            return false
+        }
+        switch kind {
+        case .offline:
+            guard case .exported(let directory, _) = fixture.model.exportState else { return XCTFail() }
+            XCTAssertEqual(directory, currentOutput)
+        case .archive:
+            XCTAssertEqual(fixture.model.projectArchiveExportState, .exported(currentOutput))
+        }
+    }
+
+    @MainActor
+    private func currentExportFailure(kind: ExportTestKind) async throws {
+        let gate = SuspendedExportTestOperation()
+        let fixture = try await exportOwnershipFixture(gate: gate)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { Task { await gate.cancelAll() } }
+        startTestExport(kind, model: fixture.model)
+        try await waitForExportTest { await gate.pendingCount == 1 }
+        await gate.finishNext(failure: .injected)
+        try await waitForExportTest {
+            switch kind {
+            case .offline:
+                if case .failed = fixture.model.exportState { return true }
+            case .archive:
+                if case .failed = fixture.model.projectArchiveExportState { return true }
+            }
+            return false
+        }
+        switch kind {
+        case .offline:
+            guard case .failed(let message) = fixture.model.exportState else { return XCTFail() }
+            XCTAssertEqual(message, SuspendedExportTestOperation.Failure.injected.localizedDescription)
+            XCTAssertTrue(fixture.model.canExport)
+        case .archive:
+            guard case .failed(let message) = fixture.model.projectArchiveExportState else { return XCTFail() }
+            XCTAssertEqual(message, SuspendedExportTestOperation.Failure.injected.localizedDescription)
+            XCTAssertTrue(fixture.model.canExportProjectArchive)
+        }
+        // The repair must not suppress ordinary failures or permanently block a retry.
+        startTestExport(kind, model: fixture.model)
+        try await waitForExportTest { await gate.pendingCount == 1 }
+        await gate.finishNext()
+        try await waitForExportTest {
+            switch kind {
+            case .offline:
+                if case .exported = fixture.model.exportState { return true }
+            case .archive:
+                if case .exported = fixture.model.projectArchiveExportState { return true }
+            }
+            return false
+        }
+    }
+
+    @MainActor
+    private func waitForExportTest(_ predicate: () async -> Bool) async throws {
+        for _ in 0..<200 {
+            if await predicate() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("The controlled native export fixture did not reach its expected state.")
+        throw SuspendedExportTestOperation.Failure.injected
     }
 
     func testOfflineExportEligibilityRequiresFrozenPersistedMeasuredRevision() throws {
@@ -1645,7 +1867,8 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
     private func createSyntheticProject(
         root: URL,
         projectID: UUID,
-        captureID: UUID
+        captureID: UUID,
+        isolation: isolated (any Actor)? = #isolation
     ) async throws -> ScannerSceneSnapshot {
         let runtime = try HSSProjectRuntime(
             projectID: projectID,
@@ -1720,5 +1943,41 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
             0, 0, 1, 0,
             0, 0, 0, 1,
         ]
+    }
+}
+
+/// Only controls the completion timing of injected test work. Production export
+/// eligibility, project replay and model publication still execute unchanged.
+private actor SuspendedExportTestOperation {
+    enum Failure: LocalizedError, Equatable, Sendable {
+        case injected, cancelled
+        var errorDescription: String? { "Controlled export operation failure" }
+    }
+
+    private var pending: [(URL, CheckedContinuation<URL, Error>)] = []
+    private var outputs: [URL] = []
+    private(set) var finishedCount = 0
+    var pendingCount: Int { pending.count }
+
+    func run(output: URL) async throws -> URL {
+        defer { finishedCount += 1 }
+        return try await withCheckedThrowingContinuation { continuation in
+            outputs.append(output)
+            pending.append((output, continuation))
+        }
+    }
+
+    func output(at index: Int) -> URL { outputs[index] }
+
+    func finishNext(failure: Failure? = nil) {
+        guard !pending.isEmpty else { return }
+        let (output, continuation) = pending.removeFirst()
+        if failure == .cancelled { continuation.resume(throwing: CancellationError()) }
+        else if let failure { continuation.resume(throwing: failure) }
+        else { continuation.resume(returning: output) }
+    }
+
+    func cancelAll() {
+        while !pending.isEmpty { finishNext(failure: .cancelled) }
     }
 }

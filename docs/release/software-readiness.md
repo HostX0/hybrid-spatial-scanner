@@ -1,5 +1,38 @@
 # Software release readiness — 2026-10-12
 
+## Current build-4 software repair and actual Apple processing
+
+ENG-19 implements semantic multiline project/header text, an accessible modal
+focus boundary, correction input feedback/keyboard dismissal, request-identity
+guards against late and same-revision export completions, and a native local ZIP
+sharing path for PDF/SVG/DXF/OBJ/MTL/provenance. No engine, tolerance, C ABI,
+project schema, automatic upload or private-source inclusion policy changes.
+
+Real paired English/Arabic text grows at Accessibility XXXL. Both library strict
+audits pass, and actual correction feedback/numeric/source/keyboard/history and
+native ZIP Close/retry journeys pass. Exact final shipping-production native
+units passed 139/139; store-source checks passed 10/10. Strict selected-refinement
+audits still report font/contrast/clipping findings; absence in earlier viewports
+was not stable font closure. Four current Arabic font reports supply no associated
+element and identical unhighlighted screenshots, so no speculative patch is made.
+The failed English largest-text search exposed accumulated test drafts and a
+nonempty-library fixture guard. A new DEBUG-simulator-only UUID namespace isolates
+each test launch without deleting or borrowing any installed project library.
+No repeated whole-suite, engine or broad iPad audit is required for that repair.
+
+Build 4's actual signed arm64 archive/IPA passed independent signature/privacy
+checks. Xcode confirmed upload, and Apple metadata at 16:02 UTC shows **Validated**
+and **Ready to Submit**, GUID `d3895ec4-5ea9-433c-9883-0a4805ae7d97`. Build 4 is not
+associated/submitted/released. Build 3's **Waiting for Review** request below is
+unchanged and does not contain build-4 repairs. Source publication and merge are
+separate; a later paired handoff records their actual immutable identity. The
+subsequent simulator-only test-isolation repair is not inside the uploaded binary.
+Physical installation, sensor/measurement, resources, minimum-OS and VoiceOver
+acceptance are not established by simulator or packaging tests.
+See `docs/evidence/ENG-NATIVE-DYNAMIC-TYPE-EXPORT-01.md` for retained failures
+and exact product/evidence boundaries. This section supersedes pending build-4
+signing/upload/processing claims, not the retained failures or physical gaps.
+
 ## Current Apple submission and software verdict
 
 The exact signed **0.1 (3)** is **Validated**, saved on version 0.1 and now

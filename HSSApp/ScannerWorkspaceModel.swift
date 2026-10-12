@@ -70,15 +70,34 @@ enum ScannerRetainedPlanEpoch {
 
 @MainActor
 final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
+    typealias OfflineExportOperation = @Sendable (
+        ScannerSceneSnapshot, UUID, URL, ScannerTexturedMesh?
+    ) async throws -> URL
+    typealias ArchiveExportOperation = @Sendable (String, String) async throws -> Void
+
     @Published private(set) var localProjects: [ScannerProjectSummary] = []
     @Published private(set) var deletedProjects: [ScannerProjectSummary] = []
     @Published private(set) var isManagingLibrary = false
-    @Published private(set) var phase: ScannerWorkspacePhase = .browsing
+    @Published private(set) var phase: ScannerWorkspacePhase = .browsing {
+        didSet { if phase != .frozen { invalidateInFlightExports() } }
+    }
     @Published private(set) var latestSnapshot: ScannerSceneSnapshot? {
-        didSet { refreshOptionalAppearance() }
+        didSet {
+            if latestSnapshot?.revision != oldValue?.revision
+                || latestSnapshot?.isFrozen != oldValue?.isFrozen {
+                invalidateInFlightExports()
+            }
+            refreshOptionalAppearance()
+        }
     }
     @Published private(set) var selectedProjectID: UUID? {
-        didSet { if selectedProjectID != oldValue { commandHistory = nil; includeSourceImagesInExport = false } }
+        didSet {
+            if selectedProjectID != oldValue {
+                invalidateInFlightExports()
+                commandHistory = nil
+                includeSourceImagesInExport = false
+            }
+        }
     }
     @Published var selectedProjectName: String = "" {
         didSet {
@@ -90,8 +109,12 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
     @Published private(set) var currentIssue: ScannerWorkspaceIssue?
     @Published private(set) var saveState: ScannerWorkspaceSaveState = .noProject
-    @Published private(set) var exportState: ScannerExportState = .idle
-    @Published private(set) var projectArchiveExportState: ScannerProjectArchiveExportState = .idle
+    @Published private(set) var exportState: ScannerExportState = .idle {
+        didSet { if exportState != .exporting { offlineExportRequest = nil } }
+    }
+    @Published private(set) var projectArchiveExportState: ScannerProjectArchiveExportState = .idle {
+        didSet { if projectArchiveExportState != .exporting { archiveExportRequest = nil } }
+    }
     @Published private(set) var captureAccounting: ScannerCaptureAccounting = .zero
     @Published private(set) var targetSelectionState: NativeTargetSelectionState = .awaitingSelection
     @Published private(set) var commandHistory: ScannerCommandHistory?
@@ -213,6 +236,17 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     private let catalogURL: URL
     private let sourceIsSynthetic: Bool
     private let appearanceStore: ScannerAppearanceStore
+    private let offlineExportOperation: OfflineExportOperation
+    private let archiveExportOperation: ArchiveExportOperation
+    /// Job identity is intentionally ephemeral. Reopening the same project at
+    /// the same revision is a new UI context, not ownership of an older job.
+    private struct ExportRequest: Equatable {
+        let id = UUID()
+        let projectID: UUID
+        let sceneRevision: UInt64
+    }
+    private var offlineExportRequest: ExportRequest?
+    private var archiveExportRequest: ExportRequest?
     private var optionalAppearanceEnabled = true
     private var appearanceResourcesAvailable = true
     private var appearanceSourceIsVerified = true
@@ -273,16 +307,41 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
 
     init(
         trustedRoot: URL? = nil,
-        sourceIsSynthetic: Bool = false
+        sourceIsSynthetic: Bool = false,
+        offlineExportOperation: OfflineExportOperation? = nil,
+        archiveExportOperation: ArchiveExportOperation? = nil
     ) {
-        let root = trustedRoot ?? FileManager.default.urls(
+        let documentsRoot = FileManager.default.urls(
             for: .documentDirectory,
             in: .userDomainMask
-        ).first!.appendingPathComponent("HSSProjects", isDirectory: true)
+        ).first!
+        var defaultRoot = documentsRoot.appendingPathComponent("HSSProjects", isDirectory: true)
+#if DEBUG && targetEnvironment(simulator)
+        // Each explicit UI-test launch owns a new namespace. Never clear or
+        // borrow the installed app's existing library to reset a test fixture.
+        if let isolated = Self.uiTestingRoot(documentsRoot: documentsRoot,
+            environment: ProcessInfo.processInfo.environment) {
+            defaultRoot = isolated
+        }
+#endif
+        let root = trustedRoot ?? defaultRoot
         self.trustedRoot = root
         self.catalogURL = root.appendingPathComponent("workspace-catalog.json", isDirectory: false)
         self.sourceIsSynthetic = sourceIsSynthetic
         self.appearanceStore = ScannerAppearanceStore(trustedRoot: root)
+        // Default production work still runs off the UI executor. Injectable
+        // operations let native tests hold an old completion across navigation
+        // without depending on file size, disk timing, or an actual failure.
+        self.offlineExportOperation = offlineExportOperation ?? { snapshot, projectID, root, appearance in
+            try await Task.detached(priority: .userInitiated) {
+                try ScannerOfflineExporter.export(snapshot: snapshot, projectID: projectID,
+                    trustedRoot: root, appearance: appearance)
+            }.value
+        }
+        self.archiveExportOperation = archiveExportOperation ?? { projectPath, destinationPath in
+            try await HSSProjectArchiveExport.writeArchive(
+                projectPath: projectPath, destinationPath: destinationPath)
+        }
 
         Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
             .sink { [weak self] _ in
@@ -337,6 +396,16 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
 #if DEBUG
+#if targetEnvironment(simulator)
+    static func uiTestingRoot(documentsRoot: URL, environment: [String: String]) -> URL? {
+        guard let runID = environment["HSS_UI_TEST_RUN_ID"],
+              let id = UUID(uuidString: runID),
+              runID.lowercased() == id.uuidString.lowercased() else { return nil }
+        return documentsRoot.appendingPathComponent("HSSUITestProjects", isDirectory: true)
+            .appendingPathComponent(id.uuidString, isDirectory: true)
+    }
+#endif
+
     /// Explicit native UI-test setup only. Release has no launch-time seeding
     /// path. Refuses a nonempty library and uses actual source/checkpoint APIs.
     func seedReferenceRoomForUITesting() async throws {
@@ -625,6 +694,9 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
     }
 
     func exportSelectedProject() {
+        // An accidental second invocation must not invalidate the active job
+        // by replacing its progress with an ineligibility error.
+        guard exportState != .exporting else { return }
         guard canExport,
               let snapshot = latestSnapshot,
               let projectID = selectedProjectID else {
@@ -633,31 +705,26 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             )
             return
         }
+        let request = ExportRequest(projectID: projectID, sceneRevision: snapshot.revision)
+        offlineExportRequest = request
         exportState = .exporting
         let root = trustedRoot
         let appearance = includeSourceImagesInExport ? reviewTexturedMesh : nil
+        let operation = offlineExportOperation
         Task { [weak self] in
             do {
-                let directory = try await Task.detached(priority: .userInitiated) {
-                    try ScannerOfflineExporter.export(
-                        snapshot: snapshot,
-                        projectID: projectID,
-                        trustedRoot: root,
-                        appearance: appearance
-                    )
-                }.value
-                guard let self,
-                      selectedProjectID == projectID,
-                      latestSnapshot?.revision == snapshot.revision else { return }
+                let directory = try await operation(snapshot, projectID, root, appearance)
+                guard let self, ownsOfflineExport(request) else { return }
                 exportState = .exported(directory: directory, at: Date())
             } catch {
-                guard let self else { return }
+                guard let self, ownsOfflineExport(request) else { return }
                 exportState = .failed(error.localizedDescription)
             }
         }
     }
 
     func exportSelectedProjectArchive() {
+        guard projectArchiveExportState != .exporting else { return }
         guard canExportProjectArchive,
               let projectID = selectedProjectID,
               let entry = selectedCatalogEntry else {
@@ -666,6 +733,8 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             )
             return
         }
+        let request = ExportRequest(projectID: projectID, sceneRevision: entry.sceneRevision)
+        archiveExportRequest = request
         projectArchiveExportState = .exporting
         let projectDirectory = trustedRoot.appendingPathComponent(projectID.hssDirectoryName, isDirectory: true)
         let archiveDirectory = trustedRoot.appendingPathComponent("archives", isDirectory: true)
@@ -676,21 +745,40 @@ final class ScannerWorkspaceModel: ScannerWorkspaceModeling {
             ),
             isDirectory: false
         )
+        let operation = archiveExportOperation
         Task { [weak self] in
             do {
-                try await HSSProjectArchiveExport.writeArchive(
-                    projectPath: projectDirectory.path(percentEncoded: false),
-                    destinationPath: archive.path(percentEncoded: false)
-                )
-                guard let self,
-                      selectedProjectID == projectID,
-                      selectedCatalogEntry?.sceneRevision == entry.sceneRevision else { return }
+                try await operation(projectDirectory.path(percentEncoded: false),
+                    archive.path(percentEncoded: false))
+                guard let self, ownsArchiveExport(request) else { return }
                 projectArchiveExportState = .exported(archive)
             } catch {
-                guard let self else { return }
+                guard let self, ownsArchiveExport(request) else { return }
                 projectArchiveExportState = .failed(describe(error))
             }
         }
+    }
+
+    private func ownsOfflineExport(_ request: ExportRequest) -> Bool {
+        offlineExportRequest == request && exportState == .exporting
+            && selectedProjectID == request.projectID
+            && latestSnapshot?.revision == request.sceneRevision && phase == .frozen
+    }
+
+    private func ownsArchiveExport(_ request: ExportRequest) -> Bool {
+        archiveExportRequest == request && projectArchiveExportState == .exporting
+            && selectedProjectID == request.projectID
+            && selectedCatalogEntry?.sceneRevision == request.sceneRevision
+            && latestSnapshot?.revision == request.sceneRevision && phase == .frozen
+    }
+
+    private func invalidateInFlightExports() {
+        offlineExportRequest = nil
+        archiveExportRequest = nil
+        if exportState == .exporting { exportState = .idle }
+        if projectArchiveExportState == .exporting { projectArchiveExportState = .idle }
+        // A completed immutable bundle/archive is not deleted. Navigation and
+        // existing explicit state resets decide whether to show that result.
     }
 
     func openProject(id: UUID) {

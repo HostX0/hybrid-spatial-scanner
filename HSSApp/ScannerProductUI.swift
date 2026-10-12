@@ -239,8 +239,17 @@ struct ScannerWorkspaceView<CameraContent: View, SceneContent: View>: View {
 private struct ScannerReadinessScreen: View {
     let presentation: ScannerWorkspacePresentation
     let actions: ScannerWorkspaceActions
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            ScrollView { content }
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 24) {
             HStack {
                 VStack(alignment: .leading, spacing: 6) {
@@ -258,6 +267,7 @@ private struct ScannerReadinessScreen: View {
                             .frame(width: 48, height: 48)
                     }
                     .accessibilityLabel("Open projects")
+                    .accessibilityIdentifier("readiness.open-library")
                 }
             }
 
@@ -281,6 +291,7 @@ private struct ScannerReadinessScreen: View {
             .buttonStyle(ScannerPrimaryButtonStyle())
             .disabled(!presentation.canStartCapture)
             .accessibilityHint("Starts the camera only when the device is ready")
+            .accessibilityIdentifier("readiness.start")
         }
         .padding(24)
     }
@@ -502,6 +513,7 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
                 }
                 .buttonStyle(ScannerSecondaryButtonStyle())
                 .disabled(!presentation.canExport || presentation.isExporting)
+                .accessibilityIdentifier("review.export")
                 if let exportStatus = presentation.exportStatus {
                     Label(exportStatus, systemImage: presentation.isExporting ? "hourglass" : "externaldrive.fill")
                         .font(.subheadline)
@@ -618,6 +630,7 @@ private struct ScannerLibraryScreen: View {
                         }
                         .buttonStyle(ScannerPrimaryButtonStyle())
                         .disabled(!presentation.canStartCapture)
+                        .accessibilityIdentifier("library.create")
                         Text("Depth and mesh capture requires a supported LiDAR device.")
                             .font(.caption).foregroundStyle(ScannerProductTheme.muted)
                     }
@@ -1072,11 +1085,12 @@ private struct ScannerProjectIdentity: View {
                 .frame(width: 38, height: 38)
                 .background(ScannerProductTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             VStack(alignment: .leading, spacing: 3) {
-                Text(project.name).font(.headline)
-                    .fixedSize(horizontal: false, vertical: true)
+                ScannerDynamicText(project.name, style: .headline,
+                    identifier: "project.name.\(project.id.uuidString)")
                 if let savedDescription = project.savedDescription {
-                    Text(savedDescription).font(.caption).foregroundStyle(ScannerProductTheme.muted)
-                        .fixedSize(horizontal: false, vertical: true)
+                    ScannerDynamicText(savedDescription, style: .caption1,
+                        color: UIColor(ScannerProductTheme.muted),
+                        identifier: "project.saved-date.\(project.id.uuidString)")
                 }
             }
             Spacer()
@@ -1084,6 +1098,76 @@ private struct ScannerProjectIdentity: View {
         }
         .padding(16)
         .background(ScannerProductTheme.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
+/// These multiline identity/header labels expose UIKit's preferred-font and
+/// automatic content-size behavior directly to accessibility. The surrounding
+/// SwiftUI layout still owns available width and expands vertically; no font
+/// size cap, audit exception, or replacement accessibility-only text is used.
+struct ScannerDynamicText: UIViewRepresentable {
+    let text: String
+    let style: UIFont.TextStyle
+    var color: UIColor = .label
+    let identifier: String
+    var isHeader = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    init(_ text: String, style: UIFont.TextStyle, color: UIColor = .label,
+         identifier: String, isHeader: Bool = false) {
+        self.text = text
+        self.style = style
+        self.color = color
+        self.identifier = identifier
+        self.isHeader = isHeader
+    }
+
+    func makeUIView(context: Context) -> UILabel {
+        let label = UILabel()
+        label.numberOfLines = 0
+        label.lineBreakMode = .byWordWrapping
+        label.textAlignment = .natural
+        label.adjustsFontForContentSizeCategory = true
+        label.setContentCompressionResistancePriority(.required, for: .vertical)
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return label
+    }
+
+    func updateUIView(_ label: UILabel, context: Context) {
+        label.text = text
+        label.font = UIFont.preferredFont(forTextStyle: style,
+            compatibleWith: UITraitCollection(preferredContentSizeCategory: dynamicTypeSize.scannerContentSizeCategory))
+        label.textColor = color
+        label.accessibilityIdentifier = identifier
+        label.accessibilityTraits = isHeader ? [.staticText, .header] : .staticText
+        label.invalidateIntrinsicContentSize()
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UILabel, context: Context) -> CGSize? {
+        let width = proposal.width ?? uiView.intrinsicContentSize.width
+        let size = uiView.sizeThatFits(CGSize(width: max(1, width), height: .greatestFiniteMagnitude))
+        return CGSize(width: min(width, size.width), height: size.height)
+    }
+
+}
+
+extension DynamicTypeSize {
+    var scannerContentSizeCategory: UIContentSizeCategory {
+        switch self {
+        case .xSmall: .extraSmall
+        case .small: .small
+        case .medium: .medium
+        case .large: .large
+        case .xLarge: .extraLarge
+        case .xxLarge: .extraExtraLarge
+        case .xxxLarge: .extraExtraExtraLarge
+        case .accessibility1: .accessibilityMedium
+        case .accessibility2: .accessibilityLarge
+        case .accessibility3: .accessibilityExtraLarge
+        case .accessibility4: .accessibilityExtraExtraLarge
+        case .accessibility5: .accessibilityExtraExtraExtraLarge
+        @unknown default: .large
+        }
     }
 }
 

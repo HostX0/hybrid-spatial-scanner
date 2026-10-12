@@ -1,5 +1,19 @@
 # ENG-14 — Store preparation and final submission gates
 
+## Build-4 software follow-through (not an Apple replacement receipt)
+
+ENG-19 repairs semantic text/modal/correction and derivative-sharing gaps,
+including demonstrated asynchronous-export ownership defects. Build counter is 4.
+Exact final shipping native units passed 139/139 and store-source checks 10/10.
+The signed arm64 archive/IPA passed strict signature/privacy checks; native Xcode
+confirmed upload. App Store Connect at 16:02 UTC shows **Validated / Ready to
+Submit**, build GUID `d3895ec4-5ea9-433c-9883-0a4805ae7d97`. Build 4 is not associated
+or submitted for review. This does not relabel build 3's unchanged submitted
+artifact or cancel its request. Selected-refinement font/contrast/clipping audits
+remain open; test-namespace repair does not change the uploaded Release behavior.
+No installation, review approval or public release is inferred. Exact retained
+failed/successful results are in `docs/evidence/ENG-NATIVE-DYNAMIC-TYPE-EXPORT-01.md`.
+
 ## Current actual submission — October 12, 10:16 AM Baghdad
 
 Apple accepted the actual **0.1 (3)** App Review submission. Fresh request
