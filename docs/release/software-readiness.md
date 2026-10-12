@@ -1,5 +1,28 @@
 # Software release readiness — 2026-10-12
 
+## Current build-5 correction repair
+
+ENG-20 closes the demonstrated editor font/clip repair through identified targets,
+not a blind font change: responsive selected-control cards, retained lazy bounded
+edge rows, semantic multiline visible name/length/Split labels and minimum44
+touch targets. Both original EN/AR strict editor methods pass all four unfiltered
+audit types; accepted split/undo/redo and modal Done/reopen remain functional.
+Both paired L/Accessibility XXXL growth/input methods pass, including fully visible
+repaired labels and actual numeric2.0/keyboard Done. Four affected methods passed;
+no whole-suite, iPad or engine loop was commissioned. Prior failures below remain
+historical evidence, not silently rewritten. Final store-source checks pass10/10.
+
+Actual signed arm64 build5 Release archive/local IPA passed independent strict
+signature, existing company/profile, exact0.1(5), protection/privacy and absent
+DEBUG fixtures. Native upload was initiated; completed processing/association/
+replacement receipts are recorded separately when observed. The owner explicitly
+requested replacing build3's review with processed corrected build5. Manual release,
+privacy and store assets remain unchanged. Not review approval, launch, install or
+physical metrology. See `docs/evidence/ENG-CORRECTION-TEXT-REFLOW-01.md`.
+
+The build4 selected-editor unresolved warnings below are superseded only by the
+new demonstrated editor repair/affected checks, not by blanket accessibility claims.
+
 ## Current build-4 software repair and actual Apple processing
 
 ENG-19 implements semantic multiline project/header text, an accessible modal

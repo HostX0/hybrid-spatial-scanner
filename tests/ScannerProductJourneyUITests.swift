@@ -59,7 +59,7 @@ final class ScannerReleaseStoreScreenshotUITests: XCTestCase {
         attach(app, name: language + "-02-review")
         correction.tap()
         XCTAssertTrue(app.buttons["boundary-review.done"].waitForExistence(timeout: 5))
-        let edge = app.collectionViews.firstMatch.buttons.matching(
+        let edge = app.scrollViews["boundary-review.content"].buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH %@", "boundary-review.edge.")).firstMatch
         XCTAssertTrue(edge.waitForExistence(timeout: 5))
         edge.tap()
@@ -387,6 +387,97 @@ final class ScannerProductJourneyUITests: XCTestCase {
     }
 
     @MainActor
+    func testEnglishCorrectedEditorTextGrowthAndLargestInput() {
+        correctedEditorTextGrowthAndLargestInput(language: "en", locale: "en_US")
+    }
+
+    @MainActor
+    func testArabicCorrectedEditorTextGrowthAndLargestInput() {
+        correctedEditorTextGrowthAndLargestInput(language: "ar", locale: "ar_IQ")
+    }
+
+    private struct CorrectionTextMetrics {
+        let nameHeight: CGFloat
+        let lengthHeight: CGFloat
+        let splitHeight: CGFloat
+    }
+
+    @MainActor
+    private func correctedEditorTextGrowthAndLargestInput(language: String, locale: String) {
+        let normal = measureCorrectedEditor(language: language, locale: locale,
+            category: "UICTContentSizeCategoryL", exerciseInput: false)
+        let largest = measureCorrectedEditor(language: language, locale: locale,
+            category: "UICTContentSizeCategoryAccessibilityXXXL", exerciseInput: true)
+        let attachment = XCTAttachment(string: """
+            Language: \(language)
+            Actual element heights, normal L -> Accessibility XXXL:
+            Boundary name: \(normal.nameHeight) -> \(largest.nameHeight)
+            Boundary length: \(normal.lengthHeight) -> \(largest.lengthHeight)
+            Split label: \(normal.splitHeight) -> \(largest.splitHeight)
+            All measured labels were fully revealed in the editor viewport.
+            These are rendered bounds, not a UIFont point-size claim.
+            """)
+        attachment.name = language + " corrected editor paired text growth"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertGreaterThan(largest.nameHeight, normal.nameHeight * 1.5)
+        XCTAssertGreaterThan(largest.lengthHeight, normal.lengthHeight * 1.5)
+        XCTAssertGreaterThan(largest.splitHeight, normal.splitHeight * 1.5)
+    }
+
+    @MainActor
+    private func measureCorrectedEditor(language: String, locale: String,
+        category: String, exerciseInput: Bool) -> CorrectionTextMetrics {
+        let app = launch(language: language, locale: locale, referenceRoom: true, contentSize: category)
+        defer { app.terminate() }
+        let project = app.buttons["project.open.01000000-0000-5000-8000-000000000000"]
+        reveal(project, in: app)
+        project.tap()
+        let review = app.buttons["boundary-review.open"]
+        XCTAssertTrue(review.waitForExistence(timeout: 10))
+        // XCTest's ordinary tap performs its native scroll-to-visible gesture.
+        // No launch-time editor selection, injected scroll offset or engine edit.
+        review.tap()
+        XCTAssertTrue(app.buttons["boundary-review.done"].waitForExistence(timeout: 5))
+        let editor = app.scrollViews["boundary-review.content"]
+        XCTAssertTrue(editor.exists)
+        let edge = editor.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@",
+            "boundary-review.edge.")).firstMatch
+        reveal(edge, in: app)
+        let edgeID = String(edge.identifier.dropFirst("boundary-review.edge.".count))
+        let name = editor.staticTexts["boundary-review.edge-name." + edgeID]
+        let length = editor.staticTexts["boundary-review.edge-length." + edgeID]
+        reveal(name, in: app)
+        let nameHeight = name.frame.height
+        reveal(length, in: app)
+        let lengthHeight = length.frame.height
+        reveal(edge, in: app)
+        XCTAssertGreaterThanOrEqual(edge.frame.height, 44)
+        edge.tap()
+        let split = editor.buttons["boundary-review.split"]
+        reveal(split, in: app)
+        XCTAssertGreaterThanOrEqual(split.frame.height, 44)
+        let splitLabel = editor.staticTexts["boundary-review.split-label"]
+        reveal(splitLabel, in: app)
+        let splitHeight = splitLabel.frame.height
+        attach(app, name: language + " " + category + " corrected editor")
+        if exerciseInput {
+            let field = editor.textFields["boundary-review.dimension-value"]
+            reveal(field, in: app)
+            field.tap()
+            field.typeText("2.0")
+            let done = app.buttons["boundary-review.keyboard-done"]
+            XCTAssertTrue(done.waitForExistence(timeout: 5))
+            done.tap()
+            XCTAssertEqual(field.value as? String, "2.0")
+            attach(app, name: language + " largest corrected editor numeric entry")
+        }
+        app.buttons["boundary-review.done"].tap()
+        XCTAssertTrue(review.waitForExistence(timeout: 5))
+        return CorrectionTextMetrics(nameHeight: nameHeight, lengthHeight: lengthHeight, splitHeight: splitHeight)
+    }
+
+    @MainActor
     func testEnglishLargestTextLibraryAndBoundaryControls() {
         largestTextJourney(language: "en", locale: "en_US")
     }
@@ -482,7 +573,7 @@ final class ScannerProductJourneyUITests: XCTestCase {
             app.buttons["boundary-review.done"].tap()
             return metrics
         }
-        let form = app.collectionViews.firstMatch
+        let form = app.scrollViews["boundary-review.content"]
         let edge = form.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "boundary-review.edge.")).firstMatch
         reveal(edge, in: app)
         XCTAssertTrue(edge.isEnabled)
@@ -513,7 +604,7 @@ final class ScannerProductJourneyUITests: XCTestCase {
         XCTAssertTrue(app.buttons["boundary-review.done"].waitForExistence(timeout: 5))
         // Scope to the presented Form: the underlying workspace intentionally
         // has its own undo action with the same semantic identifier.
-        var form = app.collectionViews.firstMatch
+        var form = app.scrollViews["boundary-review.content"]
         XCTAssertTrue(form.exists)
         // Modal focus excludes the known-present covered workspace action,
         // without hiding the editor's header, boundary rows or Done control.
@@ -615,7 +706,7 @@ final class ScannerProductJourneyUITests: XCTestCase {
             XCTAssertTrue(review.isHittable)
             review.tap()
             XCTAssertTrue(app.buttons["boundary-review.done"].waitForExistence(timeout: 5))
-            form = app.collectionViews.firstMatch
+            form = app.scrollViews["boundary-review.content"]
             XCTAssertTrue(form.exists)
             XCTAssertFalse(review.exists)
             reveal(capturedHeader, in: app)
@@ -717,7 +808,7 @@ final class ScannerProductJourneyUITests: XCTestCase {
         // unbounded retry or accept a genuinely oversized control.
         for attempt in 0...14 {
             let appFrame = app.frame
-            let form = app.collectionViews.firstMatch
+            let form = app.scrollViews["boundary-review.content"]
             let isBoundaryReview = app.buttons["boundary-review.done"].exists && form.exists
             let scroll = app.scrollViews.firstMatch
             let hasScroll = !isBoundaryReview && scroll.exists
@@ -770,9 +861,12 @@ final class ScannerProductJourneyUITests: XCTestCase {
             // Stay in the trailing gutter: a center gesture pans the SceneKit
             // preview. Slow motion and a held endpoint avoid a fling past the
             // measured correction; this is a real UI gesture, not state setup.
-            let lower = scrollingElement.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.8))
+            // Outside the editor, use the scroll content rather than its empty
+            // trailing padding; the old gutter drag did not move Review at AX sizes.
+            let dragX: CGFloat = isBoundaryReview ? 0.98 : 0.5
+            let lower = scrollingElement.coordinate(withNormalizedOffset: CGVector(dx: dragX, dy: 0.8))
             let upper = scrollingElement.coordinate(withNormalizedOffset:
-                CGVector(dx: 0.98, dy: 0.8 - dragDistance / containerFrame.height))
+                CGVector(dx: dragX, dy: 0.8 - dragDistance / containerFrame.height))
             if moveDown {
                 upper.press(forDuration: 0.01, thenDragTo: lower, withVelocity: .slow, thenHoldForDuration: 0.1)
             } else {

@@ -889,6 +889,48 @@ private struct ScannerBoundaryScrollContrast: ViewModifier {
     }
 }
 
+/// The editor owns multiline row heights rather than a reused Form cell. Keep
+/// the measured controls eager, while the potentially large boundary list below
+/// remains lazy. No text-size limit or alternate accessibility text is applied.
+private struct ScannerBoundaryActionStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+            .opacity(configuration.isPressed ? 0.8 : 1)
+    }
+}
+
+private struct ScannerBoundaryCard<Content: View, Header: View>: View {
+    let content: Content
+    let header: Header
+
+    init(@ViewBuilder content: () -> Content, @ViewBuilder header: () -> Header) {
+        self.content = content()
+        self.header = header()
+    }
+
+    init(@ViewBuilder content: () -> Content) where Header == EmptyView {
+        self.content = content()
+        self.header = EmptyView()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            header.padding(.horizontal, 4)
+            VStack(alignment: .leading, spacing: 18) { content }
+                .font(.body)
+                .buttonStyle(ScannerBoundaryActionStyle())
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(uiColor: .secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 /// Revision-bound correction controls for retained, provenance-supported
 /// boundary graph edges. Targets are never inferred from displayed mesh data.
 @MainActor
@@ -920,8 +962,9 @@ private struct ScannerBoundaryReviewSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                ScannerBoundaryCard {
                     Text("Boundary corrections").font(.title2.weight(.bold))
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(alignment: .top, spacing: 12) {
@@ -951,11 +994,12 @@ private struct ScannerBoundaryReviewSheet: View {
                     if let issue { Label(issue, systemImage: "info.circle").foregroundStyle(ScannerProductTheme.warning) }
                 }
 
-                Section {
+                ScannerBoundaryCard {
                     if edges.isEmpty {
                         ContentUnavailableView("No captured boundary available", systemImage: "point.3.connected.trianglepath.dotted",
                             description: Text("Capture more of the room or review its floor reference to make boundaries available for correction."))
                     } else {
+                        LazyVStack(alignment: .leading, spacing: 16) {
                         ForEach(Array(edges.enumerated()), id: \.element.id) { index, edge in
                             Button {
                                 selectedEdgeID = edge.id
@@ -966,16 +1010,22 @@ private struct ScannerBoundaryReviewSheet: View {
                                     Image(systemName: selectedEdgeID == edge.id ? "largecircle.fill.circle" : "circle")
                                         .foregroundStyle(selectedEdgeID == edge.id ? ScannerProductTheme.accent : .secondary)
                                     VStack(alignment: .leading, spacing: 4) {
-                                        Text("Boundary \(index + 1)").font(.headline)
-                                        Text("Length: \(edge.lengthMetres.formatted(.number.precision(.fractionLength(2)))) m")
-                                            .font(.caption).foregroundStyle(.secondary)
+                                        ScannerDynamicText(String(localized: "Boundary \(index + 1)"),
+                                            style: .headline,
+                                            identifier: "boundary-review.edge-name.\(edge.id.uuidString)")
+                                        ScannerDynamicText(String(localized: "Length: \(edge.lengthMetres.formatted(.number.precision(.fractionLength(2)))) m"),
+                                            style: .caption1, color: .secondaryLabel,
+                                            identifier: "boundary-review.edge-length.\(edge.id.uuidString)")
                                     }
                                     Spacer(minLength: 0)
-                                }.contentShape(Rectangle())
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .disabled(!canApply)
                             .accessibilityIdentifier("boundary-review.edge.\(edge.id.uuidString)")
+                        }
                         }
                     }
                 } header: {
@@ -985,7 +1035,7 @@ private struct ScannerBoundaryReviewSheet: View {
                 }
 
                 if let edge = selectedEdge {
-                    Section {
+                    ScannerBoundaryCard {
                         Button {
                             apply(.protect(edge: edge.id))
                         } label: {
@@ -999,8 +1049,13 @@ private struct ScannerBoundaryReviewSheet: View {
                             Slider(value: $splitPosition, in: 0.1...0.9) { Text("Split position") }
                             ScannerDynamicText(String(localized: "\(Int((splitPosition * 100).rounded()))% from point A"),
                                 style: .caption1, identifier: "boundary-review.split-position-detail")
-                            Button("Split selected edge") { apply(.split(edge: edge.id, parameter: splitPosition)) }
+                            Button { apply(.split(edge: edge.id, parameter: splitPosition)) } label: {
+                                ScannerDynamicText(String(localized: "Split selected edge"),
+                                    style: .body, color: UIColor(ScannerProductTheme.accent),
+                                    identifier: "boundary-review.split-label")
+                            }
                                 .disabled(!canApply)
+                                .accessibilityLabel("Split selected edge")
                                 .accessibilityIdentifier("boundary-review.split")
                         }
 
@@ -1031,7 +1086,7 @@ private struct ScannerBoundaryReviewSheet: View {
                             identifier: "boundary-review.refine-header", isHeader: true)
                     }
 
-                    Section {
+                    ScannerBoundaryCard {
                         VStack(alignment: .leading, spacing: 8) {
                             ScannerDynamicText(String(localized: "Measured length in metres"), style: .body,
                                 identifier: "boundary-review.dimension-heading")
@@ -1118,7 +1173,7 @@ private struct ScannerBoundaryReviewSheet: View {
                     }
                 }
 
-                Section {
+                ScannerBoundaryCard {
                     if let id = history?.undoID {
                         Button("Undo last supported correction") { apply(.undo(original: id)) }
                             .disabled(!canApply).accessibilityIdentifier("boundary-review.undo")
@@ -1137,7 +1192,13 @@ private struct ScannerBoundaryReviewSheet: View {
                     ScannerDynamicText(String(localized: "Correction history"), style: .headline,
                         identifier: "boundary-review.history-header", isHeader: true)
                 }
+                }
+                .padding(20)
+                .frame(maxWidth: 740)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
+            .accessibilityIdentifier("boundary-review.content")
+            .background(Color(uiColor: .systemGroupedBackground))
             .modifier(ScannerBoundaryScrollContrast())
             .navigationTitle("Review")
             .navigationBarTitleDisplayMode(.inline)

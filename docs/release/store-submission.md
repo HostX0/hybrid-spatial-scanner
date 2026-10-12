@@ -1,5 +1,23 @@
 # ENG-14 — Store preparation and final submission gates
 
+## Corrected build5 candidate and authorized replacement
+
+ENG-20 repairs identified boundary-label/Split scaling and clipping using semantic
+multiline visible labels and responsive cards, with lazy bounded edge rows and
+unchanged geometry/command guards. Original EN/AR strict editor audits and paired
+largest-text/input checks passed (four affected methods), without filtering or a
+full-suite/engine rerun. Store-source checks pass10/10. Signed arm64 0.1(5) archive
+and independent local IPA passed strict signature/privacy verification using the
+existing company identity/profile. Actual Xcode upload started; it is not yet a
+completed processing/review receipt at this source checkpoint.
+
+The owner now expressly authorizes removing the exact existing build3 review and
+submitting processed corrected build5 instead. Do not cancel before the replacement
+is processed/verified. Preserve manual release/free pricing/privacy and retained
+store assets. Adding for review is not submission; read back the new request/build.
+Subsequent actual outcome is recorded in paired Apple/server delivery receipts.
+See `docs/evidence/ENG-CORRECTION-TEXT-REFLOW-01.md`; earlier build3/4 history remains.
+
 ## Build-4 software follow-through (not an Apple replacement receipt)
 
 ENG-19 repairs semantic text/modal/correction and derivative-sharing gaps,
