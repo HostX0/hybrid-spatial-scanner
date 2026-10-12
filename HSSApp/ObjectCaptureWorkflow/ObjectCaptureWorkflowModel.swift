@@ -28,6 +28,7 @@ public final class ObjectCaptureWorkflowModel: ObservableObject {
   @Published public private(set) var captureSession: ObjectCaptureSession?
 
   private let onComplete: (ObjectCaptureArtifact) -> Void
+  private let resumingSessionID: UUID?
   private var paths: ObjectCaptureSessionPaths?
   private var photogrammetrySession: PhotogrammetrySession?
   private var captureStateTask: Task<Void, Never>?
@@ -38,10 +39,11 @@ public final class ObjectCaptureWorkflowModel: ObservableObject {
   private var didBeginReconstruction = false
   private var didDeliverCompletion = false
 
-  public init(onComplete: @escaping (ObjectCaptureArtifact) -> Void) {
+  public init(resumingSessionID: UUID? = nil, onComplete: @escaping (ObjectCaptureArtifact) -> Void) {
     self.onComplete = onComplete
+    self.resumingSessionID = resumingSessionID
 
-    guard ObjectCaptureSession.isSupported else {
+    guard resumingSessionID != nil || ObjectCaptureSession.isSupported else {
       phase = .unavailable(
         reason:
           "Guided Object Capture is unavailable on this device. Room scanning remains available."
@@ -60,6 +62,17 @@ public final class ObjectCaptureWorkflowModel: ObservableObject {
 
   public func start() {
     guard case .ready = phase else { return }
+    if let resumingSessionID {
+      do {
+        let retained = try ObjectCaptureStorage.reconstructionPaths(id: resumingSessionID)
+        self.paths = retained
+        capturedImageCount = try ObjectCaptureStorage.imageCount(at: retained.imagesDirectory)
+        beginReconstruction()
+      } catch {
+        fail("Retained photos could not be opened safely: \(error.localizedDescription)")
+      }
+      return
+    }
     guard ObjectCaptureSession.isSupported, PhotogrammetrySession.isSupported else {
       phase = .unavailable(
         reason: "Object Capture is unavailable on this device. Room scanning remains available."
@@ -163,7 +176,7 @@ public final class ObjectCaptureWorkflowModel: ObservableObject {
       return
     }
     resetTransientState()
-    if ObjectCaptureSession.isSupported, PhotogrammetrySession.isSupported {
+    if (resumingSessionID != nil || ObjectCaptureSession.isSupported), PhotogrammetrySession.isSupported {
       phase = .ready
     } else {
       phase = .unavailable(
@@ -390,6 +403,11 @@ public final class ObjectCaptureWorkflowModel: ObservableObject {
   }
 
   private func fail(_ message: String) {
+    captureStateTask?.cancel()
+    feedbackTask?.cancel()
+    imageCountTask?.cancel()
+    scanPassTask?.cancel()
+    reconstructionTask?.cancel()
     captureSession?.cancel()
     photogrammetrySession?.cancel()
     captureSession = nil

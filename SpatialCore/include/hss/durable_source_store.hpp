@@ -140,6 +140,14 @@ class DurableSourceStore {
   RecoveryResult recover() const;
   StoreStatus read_payload(const StoredRecord& record, std::vector<uint8_t>* payload) const;
 
+  // Export-only derived copy into a fresh caller-owned staging filesystem.
+  // Remove the first event's clock origin from every record and its encoded
+  // context; preserve intervals, identities, geometry and exact command/result
+  // UTF-8 bytes. Never modify this store. Stream one bounded payload at a time.
+  // No active manifest is published on failure. Existing destinations and
+  // fallback recovery are rejected rather than overwritten or silently shared.
+  StoreStatus write_portable_copy(FileSystem& destination) const;
+
  private:
   FileSystem& file_system_;
   RetentionLimits limits_;

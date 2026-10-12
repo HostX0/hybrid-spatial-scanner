@@ -140,6 +140,49 @@ extension UUID {
     }
 }
 
+/// Purges only app-owned UUID project storage and its generated local archives.
+/// User-shared copies in Files/providers and separate Object Capture sessions
+/// are outside this ownership boundary. No path from imported metadata is used.
+enum HSSLocalProjectRemoval {
+    static func remove(projectID: UUID, trustedRoot: URL, fileManager: FileManager = .default) throws {
+        guard trustedRoot.isFileURL else { throw CocoaError(.fileReadInvalidFileName) }
+        let root = trustedRoot.standardizedFileURL.resolvingSymlinksInPath()
+        let project = root.appendingPathComponent(projectID.hssDirectoryName, isDirectory: true)
+        let archives = root.appendingPathComponent("archives", isDirectory: true)
+        var targets: [URL] = []
+        if fileManager.fileExists(atPath: project.path) {
+            let values = try project.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+            guard values.isSymbolicLink != true, values.isDirectory == true,
+                  project.resolvingSymlinksInPath().deletingLastPathComponent() == root else {
+                throw CocoaError(.fileReadNoPermission)
+            }
+            targets.append(project)
+        }
+        if fileManager.fileExists(atPath: archives.path) {
+            let values = try archives.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+            guard values.isSymbolicLink != true, values.isDirectory == true else {
+                throw CocoaError(.fileReadNoPermission)
+            }
+            let prefix = projectID.hssDirectoryName + "-r"
+            for url in try fileManager.contentsOfDirectory(at: archives, includingPropertiesForKeys: [.isSymbolicLinkKey, .isRegularFileKey]) {
+                let name = url.lastPathComponent
+                guard name.hasPrefix(prefix), name.hasSuffix(".hsscan") else { continue }
+                let payload = name.dropFirst(prefix.count).dropLast(".hsscan".count)
+                guard let dash = payload.firstIndex(of: "-"),
+                      UInt64(payload[..<dash]) != nil,
+                      UUID(uuidString: String(payload[payload.index(after: dash)...])) != nil else { continue }
+                let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey])
+                guard values.isSymbolicLink != true, values.isRegularFile == true else {
+                    throw CocoaError(.fileReadNoPermission)
+                }
+                targets.append(url)
+            }
+        }
+        // Validate the complete target list before the first destructive step.
+        for target in targets { try fileManager.removeItem(at: target) }
+    }
+}
+
 private extension Bool {
     init?(hssLiteral: String) {
         switch hssLiteral {

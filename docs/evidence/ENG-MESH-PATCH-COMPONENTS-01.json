@@ -1,0 +1,55 @@
+{
+  "evidence_id": "ENG-MESH-PATCH-COMPONENTS-01",
+  "status": "dependency-ready-not-production-integrated",
+  "base_head": "c865a8a7c049073007ee7713ec9ac040909518dd",
+  "production_source_observed": {
+    "path": "SpatialCore/src/live_reconstruction.cpp",
+    "blob_sha": "883465c0b83f6a37f7402daf625c981c11c685ca"
+  },
+  "implementation": {
+    "path": "SpatialCore/include/hss/mesh_patch_components.hpp",
+    "algorithm": "indexed-shared-edge deterministic connected components",
+    "normal_gate_abs_dot": 0.99999,
+    "symmetric_cross_plane_distance_m": 0.002,
+    "max_triangles": 65536,
+    "max_components": 2048,
+    "max_samples_per_component": 96,
+    "non_manifold_edges_are_merge_bridges": false,
+    "external_runtime_dependencies_added": 0,
+    "abi_changed": false,
+    "schema_changed": false
+  },
+  "regressions": {
+    "triangle_order_permutations_per_fixture": 32,
+    "exact_coplanar_grid_components": 1,
+    "noisy_0_10_mm_grid_components": 1,
+    "crease_0_20_deg_components": 2,
+    "crease_0_50_deg_components": 2,
+    "protrusion_chain_components": 5,
+    "stable_sample_count": 96,
+    "invalid_geometry_rejected": true,
+    "resource_limits_explicit": true
+  },
+  "verification": [
+    {"compiler": "g++ 14.2.0", "mode": "O2 warnings-as-errors", "result": "pass"},
+    {"compiler": "clang++ 17.0.0", "mode": "O2 warnings-as-errors", "result": "pass"},
+    {"compiler": "clang++ 17.0.0", "mode": "ASan+UBSan", "result": "pass-no-diagnostics"}
+  ],
+  "synthetic_host_benchmark": {
+    "triangles": 64800,
+    "vertices": 32761,
+    "height_perturbation_mm": 0.05,
+    "runs_ms": [20.3867, 21.9204, 19.2365, 19.8931, 20.6290],
+    "median_ms": 20.3867,
+    "device_claim": false
+  },
+  "not_run": [
+    "production live_reconstruction integration",
+    "full CTest",
+    "Xcode/iOS build",
+    "simulator",
+    "physical iPhone LiDAR/ARKit",
+    "real-room metrology",
+    "Metal/device thermal and memory profiling"
+  ]
+}

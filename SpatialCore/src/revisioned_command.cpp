@@ -7,6 +7,8 @@
 #include <unordered_set>
 #include <utility>
 
+#include <type_traits>
+
 namespace hss::command {
 namespace {
 
@@ -143,7 +145,13 @@ const CurrentTarget *find_target(const SceneState &scene,
   return target == scene.current_targets.end() ? nullptr : &*target;
 }
 
-SubmissionResult failure(Status status) { return {.status = status}; }
+SubmissionResult failure(Status status) {
+  return {.status = status,
+          .outcome = std::nullopt,
+          .result_utf8_bytes = {},
+          .command_sha256 = {},
+          .durably_committed = false};
+}
 
 uint32_t load_be32(const uint8_t *bytes) {
   return (static_cast<uint32_t>(bytes[0]) << 24U) |
@@ -321,8 +329,7 @@ SubmissionResult RevisionedCommandGate::submit(
         candidate.revision != accepted_scene.revision + 1U ||
         !valid_scene(candidate, options_.max_targets))
       return failure(Status::kInvalidApplyResult);
-    accepted_scene = std::move(candidate);
-    associated_revision = accepted_scene.revision;
+    associated_revision = candidate.revision;
     status = Status::kApplied;
   } else if (applied.outcome == Outcome::kConflict) {
     status = Status::kConflict;
@@ -331,13 +338,33 @@ SubmissionResult RevisionedCommandGate::submit(
   Record record{std::string(exact_utf8_bytes), digest,
                 std::move(applied.result_utf8_bytes), applied.outcome,
                 associated_revision};
-  const std::string result_copy = record.exact_result_utf8_bytes;
+  static_assert(std::is_nothrow_move_assignable_v<SceneState>);
+  static_assert(std::is_nothrow_move_constructible_v<SubmissionResult>);
+  // Complete every potentially allocating result/record operation before
+  // changing accepted_scene. The final moves use the standard allocators.
+  SubmissionResult result{.status = status,
+                          .outcome = applied.outcome,
+                          .result_utf8_bytes = record.exact_result_utf8_bytes,
+                          .command_sha256 = digest,
+                          .durably_committed = false};
   records_.push_back({command.command_id, std::move(record)});
-  return {.status = status,
-          .outcome = applied.outcome,
-          .result_utf8_bytes = result_copy,
-          .command_sha256 = digest,
-          .durably_committed = false};
+  if (applied.outcome == Outcome::kApplied)
+    accepted_scene = std::move(candidate);
+  return result;
+}
+
+bool RevisionedCommandGate::rollback_last_record(
+    std::string_view command_id, const std::array<uint8_t, 32U> &digest,
+    Outcome outcome, uint64_t associated_revision) noexcept {
+  if (records_.empty())
+    return false;
+  const auto &last = records_.back();
+  if (last.command_id != command_id || last.record.command_sha256 != digest ||
+      last.record.outcome != outcome ||
+      last.record.associated_scene_revision != associated_revision)
+    return false;
+  records_.pop_back();
+  return true;
 }
 
 const char *status_name(Status status) {

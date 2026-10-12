@@ -1,0 +1,130 @@
+{
+  "product_name": "Hybrid Spatial Scanner",
+  "publisher": "THE THIRD ACT LLC",
+  "support_email": "Hello@the-3rdact.com",
+  "support_phone": "+17192867476",
+  "support_phone_display": "+1 (719) 286-7476",
+  "company_url": "https://the-3rdact.com",
+  "origin": "https://hybrid-spatial-scanner.azoz96.chatgpt.site",
+  "effective_date": "2026-10-11",
+  "en": {
+    "language_label": "العربية",
+    "skip": "Skip to content",
+    "nav": {"overview": "Overview", "support": "Support", "privacy": "Privacy"},
+    "footer": "An on-device product by THE THIRD ACT LLC.",
+    "contact_label": "Contact the team",
+    "email_label": "Email support",
+    "phone_label": "US phone",
+    "contents_label": "On this page",
+    "overview": {
+      "title": "Capture a space. Keep its context.",
+      "eyebrow": "HYBRID SPATIAL SCANNER",
+      "intro": "Room and object workflows that keep your captures, review and files on your device. Find practical help and understand your privacy choices before you share.",
+      "description": "Product support and privacy information for Hybrid Spatial Scanner by THE THIRD ACT LLC.",
+      "sections": [
+        {"title": "A room is more than its outline", "paragraphs": ["Review captured 3D geometry alongside supported plan detail. Keep missing evidence visible, preserve important boundary features, and add a reference measurement when the current target supports it."]},
+        {"title": "Your work stays with you", "paragraphs": ["Save and reopen local projects without an account or a cloud reconstruction service. Export selected results through the system share sheet when you choose."]},
+        {"title": "Appearance is not a measurement", "paragraphs": ["Source color can help you recognize captured surfaces. Unsupported regions remain neutral, and a nicer-looking surface does not change dimensions or prove that a hidden area was observed."]}
+      ],
+      "note_title": "Know your device and your result",
+      "note": "Room capture requires supported LiDAR depth and mesh reconstruction. Object capture has separate device requirements. Review warnings and verify critical dimensions independently; this is not a certified surveying or safety assessment tool."
+    },
+    "privacy": {
+      "title": "Privacy, without the fine-print maze.",
+      "eyebrow": "PRIVACY POLICY",
+      "intro": "Your rooms can reveal private places. Here is what the app uses, what stays local, and what changes when you decide to share or contact us.",
+      "description": "How Hybrid Spatial Scanner handles local scans, source photos, sharing, deletion and support enquiries.",
+      "date_label": "Effective 11 October 2026",
+      "sections": [
+        {"title": "Who we are", "paragraphs": ["Hybrid Spatial Scanner is provided by THE THIRD ACT LLC. Contact Hello@the-3rdact.com or +1 (719) 286-7476 for app support or privacy enquiries."]},
+        {"title": "On-device processing", "paragraphs": ["The app does not require an account and does not include advertising, tracking or an analytics service. Capture, reconstruction, project review and supported exports run on your device. The app does not automatically upload scans to a server operated by us."]},
+        {"title": "Camera and spatial information", "paragraphs": ["When you explicitly start a scan, the app uses camera images and supported device depth and motion information. A project may contain source observations, photographs, geometry, dimensions, project names and review notes. These can reveal a private space or people and belongings within it. Scan only where you have permission and avoid capturing information you do not need."]},
+        {"title": "Room and object photographs", "paragraphs": ["Room source images are retained locally for the optional source-color view. Unsupported color remains unavailable rather than being invented. Room archives currently preserve the measured scan without these source color images.", "Object captures are separate from room projects. They retain source photographs locally so you can resume a session or reconstruct a model. Sharing an object model does not include those retained source photographs."]},
+        {"title": "Storage and deletion", "paragraphs": ["Projects remain on your device until you delete them or remove the app. Moving a room project to Trash keeps it recoverable; permanent deletion from Trash removes that room's local source data and related exports. Deleting a room does not delete separate object captures.", "Deleting an object capture removes that session's local photographs, checkpoint and model. Deletion cannot erase files you previously shared, independently saved copies, or copies in device backups. Manage those copies at their destination and review your device backup settings."]},
+        {"title": "Import, export and sharing", "paragraphs": ["You choose what to import, export and share using the system document picker and share sheet. Room archives can include spatial observations, geometry and your review notes. Portable room archives remove the original device clock origin while retaining scan event intervals and geometry.", "Including source images in a room's 3D export is optional and off by default. If you enable it, the export contains only the images used by the supported color view. Review a bundle before sharing: a spatial model or image can disclose a private place even without your name.", "Apps, file providers, recipients and cloud destinations you select handle their copies under their own policies. Device backup services also operate under your device settings. We do not control those services or their retention."]},
+        {"title": "Permissions and device checks", "paragraphs": ["Camera access is requested for scanning. You can withdraw camera permission in device Settings; new captures then become unavailable. The app checks available storage and device pressure to protect retained work. These operational checks are not sent to us as analytics or included in exported scans."]},
+        {"title": "If you contact support", "paragraphs": ["Emailing or calling us is optional and separate from scanning. We receive the contact information and message you choose to provide and use them to answer your request and resolve the issue. Our email and communication providers process those communications to deliver the service. Do not send passwords, verification codes or private room captures unless you decide they are necessary and have permission to share them.", "Support correspondence is retained as needed to resolve and follow up on your request and meet applicable obligations. You can ask us about, correct, or request deletion of information you supplied by contacting Hello@the-3rdact.com. We may need to retain information where law or an unresolved dispute requires it. We cannot access or remotely delete scans stored only on your device."]},
+        {"title": "This website", "paragraphs": ["These product pages do not add advertising, analytics tags, a scan uploader or a contact form. Visiting the website sends ordinary connection information, such as your IP address and browser request details, to the hosting service so it can deliver and secure the pages. This is separate from the app's local capture workflow. Opening an email, telephone or company-website link uses the service you choose."]},
+        {"title": "Changes and questions", "paragraphs": ["We will update this policy when our data practices change. The effective date appears above. Introducing an account, app-operated cloud processing or telemetry requires updated disclosures and any required permission before use. For questions about this policy or your information, contact Hello@the-3rdact.com."]}
+      ]
+    },
+    "support": {
+      "title": "Get back to your space.",
+      "eyebrow": "HELP & SUPPORT",
+      "intro": "Start with the practical answers below. If you need more help, contact THE THIRD ACT LLC directly—no account, ticket portal or scan upload required.",
+      "description": "Hybrid Spatial Scanner support: compatible capture, local projects, missing evidence, exports, recovery and privacy.",
+      "contact_intro": "Include the app name, your device model, iOS version and a short description of what happened. A cropped screenshot is optional; remove private details first. We never need your password or verification code.",
+      "sections": [
+        {"title": "Why is room capture unavailable?", "paragraphs": ["Room scanning needs a device that supports LiDAR scene depth and mesh reconstruction, camera permission, enough local storage and usable tracking. The app explains the current blocked condition. A device without the required capture features may still open compatible local projects; it is not silently switched to an equivalent measurement mode. Object Capture has separate hardware support checks."]},
+        {"title": "How do I start and save a room?", "paragraphs": ["Create a room from the local library, give it a name and start capture when readiness allows it. Move slowly while looking at visible detail. Pause or finish to review the result, its issues and available plans. Save before closing. An unsaved preview and a durably saved revision are different states."]},
+        {"title": "Why are an area or a surface still unknown?", "paragraphs": ["A usable floor reference, supported boundaries and coherent coordinates matter more than a complete-looking model. Covered, reflective or missing-depth regions can remain unknown. Review the linked issue, capture another safe view, confirm a supported floor reference or add a physical reference measurement where offered. Do not climb or walk backward to fill a scan. Save a draft when the evidence remains incomplete."]},
+        {"title": "Can I correct a boundary?", "paragraphs": ["The review offers corrections only for current supported targets. Protecting a feature preserves its topology; locking a position is a separate confirmed action. A reference dimension records its source and uncertainty. If new source data changes a target, a correction or undo may become unavailable: keep the unresolved note rather than forcing it onto a nearby edge."]},
+        {"title": "Why is some of the 3D view uncolored?", "paragraphs": ["Color uses a supported source view for the selected saved geometry. Missing, stale or unverifiable images leave a neutral measured mesh. Color does not improve measurement accuracy. Source images are not included in room archives, and image inclusion in 3D exports is off until you explicitly enable it."]},
+        {"title": "What can I export?", "paragraphs": ["Review the formats offered for the current result. Supported room outputs include plan PDF, SVG and DXF, captured 3D OBJ bundles and portable room archives. Availability depends on valid source and plan evidence. Preserve companion files when moving a 3D bundle. Object-model sharing is a separate workflow. The system share sheet lets you choose a destination; nothing is automatically sent to us."]},
+        {"title": "What should I do after an interruption?", "paragraphs": ["Reopen the saved project and read any recovery warning before continuing. Accepted local source is retained, but a preview not yet saved may be lost. Tracking recovery can need another view; a new capture is not automatically aligned with earlier geometry. If storage or device pressure pauses capture, save, make safe space or let the device cool before retrying. Do not delete the only copy of a project to troubleshoot."]},
+        {"title": "How do I delete my scans?", "paragraphs": ["Move a room to Trash, then choose permanent deletion to remove its local project data and related exports. Delete object sessions separately from the object library. Previously shared files and device backups are not erased by local deletion. There is no app account to delete. See the privacy policy for sharing and support-information choices."]},
+        {"title": "Can I use this for critical measurements?", "paragraphs": ["Check critical dimensions with an appropriate independent measurement. Fitted, user-measured and unknown evidence are different. A textured model is not proof of precision, structural safety or a complete survey. The app is not a certified surveying instrument or a substitute for professional safety assessment."]}
+      ]
+    }
+  },
+  "ar": {
+    "language_label": "English",
+    "skip": "انتقل إلى المحتوى",
+    "nav": {"overview": "التطبيق", "support": "الدعم", "privacy": "الخصوصية"},
+    "footer": "منتج يعمل على جهازك من THE THIRD ACT LLC.",
+    "contact_label": "تواصل مع الفريق",
+    "email_label": "بريد الدعم",
+    "phone_label": "الهاتف الأمريكي",
+    "contents_label": "في هذه الصفحة",
+    "overview": {
+      "title": "امسح المكان. واحتفظ بتفاصيله.",
+      "eyebrow": "HYBRID SPATIAL SCANNER",
+      "intro": "مسح الغرف والمجسمات، ومراجعة النتائج والملفات على جهازك. هنا تجد المساعدة وخيارات الخصوصية قبل أن تختار المشاركة.",
+      "description": "معلومات التطبيق والدعم والخصوصية لتطبيق Hybrid Spatial Scanner من THE THIRD ACT LLC.",
+      "sections": [
+        {"title": "الغرفة أكثر من حدودها", "paragraphs": ["راجع الهندسة الثلاثية الأبعاد الملتقطة مع تفاصيل المخطط المدعومة. أبقِ الأدلة الناقصة واضحة، واحمِ التفاصيل المهمة للحدود، وأضف قياساً مرجعياً عندما يكون الهدف الحالي مدعوماً."]},
+        {"title": "عملك يبقى معك", "paragraphs": ["احفظ المشاريع المحلية وافتحها مجدداً دون حساب أو خدمة إعادة بناء سحابية. صدّر النتائج التي تختارها باستخدام نافذة المشاركة في النظام."]},
+        {"title": "المظهر ليس قياساً", "paragraphs": ["يساعدك لون المصدر على تمييز الأسطح الملتقطة. تبقى المناطق غير المدعومة محايدة؛ تحسين المظهر لا يغيّر الأبعاد ولا يثبت أن منطقة مخفية قد رُصدت."]}
+      ],
+      "note_title": "اعرف إمكانات جهازك ونتيجتك",
+      "note": "مسح الغرف يتطلب دعماً لعمق LiDAR وإعادة بناء الشبكة. لمسح المجسمات متطلبات مستقلة. راجع التحذيرات وتحقّق من الأبعاد المهمة بقياس مستقل؛ التطبيق ليس أداة مساحة معتمدة أو وسيلة لتقييم السلامة."
+    },
+    "privacy": {
+      "title": "خصوصية واضحة، بلا تعقيد.",
+      "eyebrow": "سياسة الخصوصية",
+      "intro": "قد يكشف مسح الغرفة تفاصيل مكان خاص. هذه هي البيانات التي يستخدمها التطبيق، وما يبقى محلياً، وما يتغيّر عندما تختار المشاركة أو التواصل معنا.",
+      "description": "كيفية التعامل مع المسوحات والصور المحلية والمشاركة والحذف واستفسارات الدعم في Hybrid Spatial Scanner.",
+      "date_label": "سارية من 11 تشرين الأول 2026",
+      "sections": [
+        {"title": "من نحن", "paragraphs": ["تقدّم THE THIRD ACT LLC تطبيق Hybrid Spatial Scanner. للتواصل بشأن الدعم أو الخصوصية، راسل Hello@the-3rdact.com أو اتصل على +1 (719) 286-7476."]},
+        {"title": "المعالجة على الجهاز", "paragraphs": ["لا يتطلب التطبيق حساباً، ولا يتضمن إعلانات أو تتبّعاً أو خدمة تحليلات. يعمل الالتقاط وإعادة البناء ومراجعة المشاريع والتصدير المدعوم على جهازك. لا يرفع التطبيق المسوحات تلقائياً إلى خادم تديره شركتنا."]},
+        {"title": "الكاميرا والمعلومات المكانية", "paragraphs": ["عندما تبدأ المسح بنفسك، يستخدم التطبيق صور الكاميرا ومعلومات العمق والحركة التي يدعمها الجهاز. قد يتضمن المشروع مشاهدات المصدر والصور والهندسة والأبعاد واسم المشروع وملاحظات المراجعة. يمكن أن تكشف هذه البيانات مكاناً خاصاً أو أشخاصاً وممتلكات فيه. امسح الأماكن التي لديك إذن بتصويرها، وتجنّب التقاط المعلومات غير الضرورية."]},
+        {"title": "صور الغرف والمجسمات", "paragraphs": ["تُحتفظ بصور مصدر الغرفة محلياً لعرض لون المصدر الاختياري. يبقى اللون غير المدعوم غير متاح بدلاً من اختلاقه. تحفظ أرشيفات الغرف حالياً المسح المقاس دون صور لون المصدر.", "التقاط المجسمات مستقل عن مشاريع الغرف. تُحتفظ بصوره المصدرية محلياً لاستئناف الجلسة أو إعادة بناء النموذج. مشاركة نموذج المجسم لا تتضمن تلك الصور المصدرية المحتفظ بها."]},
+        {"title": "التخزين والحذف", "paragraphs": ["تبقى المشاريع على جهازك حتى تحذفها أو تزيل التطبيق. نقل مشروع غرفة إلى سلة المحذوفات يبقيه قابلاً للاستعادة؛ الحذف الدائم من السلة يزيل بيانات مصدر الغرفة والتصديرات المحلية المرتبطة بها. حذف غرفة لا يحذف جلسات المجسمات المستقلة.", "حذف جلسة مجسم يزيل صورها المحلية ونقطة الاستئناف والنموذج. لا يمحو الحذف الملفات التي شاركتها سابقاً أو النسخ التي حفظتها بشكل مستقل أو النسخ الاحتياطية للجهاز. أدِر تلك النسخ في وجهتها وراجع إعدادات النسخ الاحتياطي."]},
+        {"title": "الاستيراد والتصدير والمشاركة", "paragraphs": ["أنت تختار ما تستورده وتصدّره وتشاركه باستخدام منتقي المستندات ونافذة المشاركة في النظام. يمكن أن تتضمن أرشيفات الغرف المشاهدات المكانية والهندسة وملاحظاتك. تُزيل الأرشيفات المحمولة نقطة بداية ساعة الجهاز الأصلية مع الاحتفاظ بفواصل أحداث المسح وهندسته.", "تضمين صور المصدر في التصدير الثلاثي الأبعاد للغرفة اختياري ومتوقف افتراضياً. عند تفعيله، يتضمن التصدير الصور المستخدمة في عرض اللون المدعوم فقط. راجع الحزمة قبل المشاركة: قد يكشف نموذج مكاني أو صورة مكاناً خاصاً حتى دون اسمك.", "تتعامل التطبيقات ومزوّدو الملفات والمستلمون والوجهات السحابية التي تختارها مع نسخهم وفق سياساتهم. تعمل خدمات النسخ الاحتياطي أيضاً وفق إعدادات الجهاز. لا نتحكم في هذه الخدمات أو مدة احتفاظها بالبيانات."]},
+        {"title": "الأذونات وفحوص الجهاز", "paragraphs": ["يُطلب إذن الكاميرا للمسح. يمكنك سحبه من إعدادات الجهاز، وعندها يتوقف إنشاء مسوحات جديدة. يفحص التطبيق المساحة المتاحة وضغط موارد الجهاز لحماية العمل المحفوظ. لا تُرسل هذه الفحوص إلينا كتحليلات ولا تُدرج في المسوحات المصدّرة."]},
+        {"title": "عندما تتواصل مع الدعم", "paragraphs": ["التواصل بالبريد أو الهاتف اختياري ومستقل عن المسح. نستلم معلومات التواصل والرسالة التي تختار تقديمها، ونستخدمها للإجابة عن طلبك ومعالجة المشكلة. يعالج مزوّدو البريد والاتصالات هذه المراسلات لتقديم الخدمة. لا ترسل كلمات مرور أو رموز تحقق أو مسوحات غرف خاصة إلا إذا قررت أنها ضرورية وكان لديك إذن بمشاركتها.", "نحتفظ بمراسلات الدعم بالقدر اللازم لمعالجة الطلب ومتابعته والوفاء بالالتزامات المعمول بها. يمكنك الاستفسار عن معلومات قدّمتها أو تصحيحها أو طلب حذفها عبر Hello@the-3rdact.com. قد يلزم الاحتفاظ بمعلومات يفرضها القانون أو نزاع لم يُحسم. لا يمكننا الوصول إلى المسوحات الموجودة على جهازك فقط أو حذفها عن بُعد."]},
+        {"title": "هذا الموقع", "paragraphs": ["لا تضيف صفحات المنتج هذه إعلانات أو وسوم تحليلات أو وسيلة لرفع المسوحات أو نموذج تواصل. ترسل زيارة الموقع معلومات الاتصال المعتادة، مثل عنوان IP وتفاصيل طلب المتصفح، إلى خدمة الاستضافة لتقديم الصفحات وحمايتها. هذا مستقل عن المسح المحلي في التطبيق. فتح رابط بريد أو هاتف أو موقع الشركة يستخدم الخدمة التي تختارها."]},
+        {"title": "التغييرات والاستفسارات", "paragraphs": ["سنحدّث هذه السياسة عند تغيّر ممارسات البيانات. يظهر تاريخ السريان أعلاه. إضافة حساب أو معالجة سحابية تديرها الشركة أو قياس استخدام تتطلب تحديث الإفصاحات والحصول على أي إذن لازم قبل الاستخدام. للأسئلة عن هذه السياسة أو معلوماتك، راسل Hello@the-3rdact.com."]}
+      ]
+    },
+    "support": {
+      "title": "ارجع إلى مسحك بثقة.",
+      "eyebrow": "المساعدة والدعم",
+      "intro": "ابدأ بالإجابات العملية أدناه. للمزيد من المساعدة تواصل مباشرة مع THE THIRD ACT LLC؛ دون حساب أو بوابة تذاكر أو رفع مسحك.",
+      "description": "دعم Hybrid Spatial Scanner: إمكانات الالتقاط والمشاريع المحلية والأدلة الناقصة والتصدير والاستعادة والخصوصية.",
+      "contact_intro": "اذكر اسم التطبيق وطراز جهازك وإصدار iOS ووصفاً مختصراً لما حدث. لقطة شاشة مقتطعة اختيارية؛ أزل التفاصيل الخاصة أولاً. لا نحتاج كلمة مرورك أو رمز التحقق.",
+      "sections": [
+        {"title": "لماذا لا يتاح مسح الغرفة؟", "paragraphs": ["يتطلب مسح الغرف جهازاً يدعم عمق LiDAR وإعادة بناء الشبكة، وإذن الكاميرا، ومساحة محلية كافية، وتتبعاً قابلاً للاستخدام. يوضح التطبيق العائق الحالي. قد يفتح الجهاز غير الداعم مشاريع محلية متوافقة؛ لكنه لا يتحول خفيةً إلى وضع قياس مكافئ. لمسح المجسمات فحوص دعم مستقلة."]},
+        {"title": "كيف أبدأ غرفة وأحفظها؟", "paragraphs": ["أنشئ غرفة من المكتبة المحلية، وسمّها، وابدأ الالتقاط عندما تسمح الجاهزية. تحرك ببطء مع إبقاء التفاصيل المرئية في مجال الكاميرا. أوقف الالتقاط مؤقتاً أو أنهه لمراجعة النتيجة والمشكلات والمخططات المتاحة. احفظ قبل الإغلاق؛ المعاينة غير المحفوظة والمراجعة المحفوظة بشكل دائم حالتان مختلفتان."]},
+        {"title": "لماذا تبقى مساحة أو منطقة مجهولة؟", "paragraphs": ["مرجع أرضية صالح وحدود مدعومة وإحداثيات متسقة أهم من نموذج يبدو مكتملاً. قد تبقى المناطق المغطاة أو العاكسة أو فاقدة العمق مجهولة. راجع المشكلة المرتبطة، والتقط زاوية أخرى آمنة، وأكّد مرجع أرضية مدعوماً أو أضف قياساً مرجعياً فعلياً عند إتاحة ذلك. لا تتسلق أو تمشِ إلى الخلف لاستكمال المسح. احفظ مسودة إذا بقيت الأدلة ناقصة."]},
+        {"title": "هل أستطيع تصحيح الحدود؟", "paragraphs": ["تعرض المراجعة التصحيحات للأهداف الحالية المدعومة فقط. حماية التفاصيل تحفظ بنيتها؛ قفل الموضع إجراء مستقل يتطلب تأكيداً. يسجّل القياس المرجعي مصدره وعدم اليقين. إذا غيّرت بيانات مصدر جديدة الهدف، قد يتوقف تطبيق تصحيح أو تراجع؛ أبقِ الملاحظة غير المحسومة بدلاً من فرضها على حافة قريبة."]},
+        {"title": "لماذا بعض العرض الثلاثي الأبعاد بلا لون؟", "paragraphs": ["يستخدم اللون صورة مصدر مدعومة للهندسة المحفوظة المختارة. الصور الناقصة أو القديمة أو غير القابلة للتحقق تترك شبكة مقاسة محايدة. اللون لا يحسّن دقة القياس. لا تُدرج صور المصدر في أرشيفات الغرف، ويبقى تضمينها في التصدير الثلاثي الأبعاد متوقفاً حتى تفعّله بنفسك."]},
+        {"title": "ماذا أستطيع تصديره؟", "paragraphs": ["راجع الصيغ المتاحة للنتيجة الحالية. تشمل مخرجات الغرف المدعومة مخططات PDF وSVG وDXF، وحزم OBJ للهندسة الملتقطة، وأرشيفات الغرف المحمولة. تتوقف الإتاحة على أدلة مصدر ومخطط صالحة. احتفظ بالملفات المرافقة عند نقل حزمة ثلاثية الأبعاد. مشاركة نموذج مجسم مسار مستقل. تختار وجهة من نافذة المشاركة؛ لا يُرسل شيء إلينا تلقائياً."]},
+        {"title": "ماذا أفعل بعد انقطاع؟", "paragraphs": ["افتح المشروع المحفوظ واقرأ أي تحذير استعادة قبل المتابعة. يُحتفظ بالمصدر المحلي المقبول، لكن قد تفقد معاينة لم تُحفظ بعد. قد يحتاج استرداد التتبع إلى زاوية أخرى؛ الالتقاط الجديد لا يصطف تلقائياً مع الهندسة السابقة. إذا أوقفت المساحة أو موارد الجهاز الالتقاط، احفظ ووفّر مساحة بأمان أو دع الجهاز يبرد قبل المحاولة. لا تحذف النسخة الوحيدة من مشروعك لمعالجة مشكلة."]},
+        {"title": "كيف أحذف مسوحاتي؟", "paragraphs": ["انقل الغرفة إلى سلة المحذوفات، ثم اختر الحذف الدائم لإزالة بياناتها المحلية والتصديرات المرتبطة. احذف جلسات المجسمات بشكل مستقل من مكتبتها. لا يمحو الحذف المحلي الملفات التي شاركتها أو نسخ الجهاز الاحتياطية. لا يوجد حساب تطبيق يحتاج إلى الحذف. راجع سياسة الخصوصية لخيارات المشاركة ومعلومات الدعم."]},
+        {"title": "هل يصلح للقياسات الحساسة؟", "paragraphs": ["تحقّق من الأبعاد الحساسة بقياس مستقل مناسب. الدليل الملائم هندسياً والمقاس بواسطة المستخدم والمجهول حالات مختلفة. النموذج الملوّن لا يثبت الدقة أو السلامة الإنشائية أو اكتمال المسح. التطبيق ليس أداة مساحة معتمدة ولا بديلاً عن تقييم السلامة المهني."]}
+      ]
+    }
+  }
+}

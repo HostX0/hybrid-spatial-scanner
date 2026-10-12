@@ -20,6 +20,18 @@
 #include <variant>
 #include <vector>
 
+#if defined(HSS_PROJECT_STORE_TESTING)
+namespace {
+// Compiled only into hss_project_store_test. It injects the one allocation
+// boundary whose failure must leave the pending stream wholly unchanged.
+bool fail_next_pending_append_for_test = false;
+} // namespace
+
+extern "C" void hss_project_store_test_fail_next_pending_append() {
+  fail_next_pending_append_for_test = true;
+}
+#endif
+
 extern "C" HSSStatus hss_engine_set_source_is_synthetic(HSSEngine *, uint32_t)
     __attribute__((weak));
 extern "C" HSSStatus hss_engine_set_plan_reference(HSSEngine *,
@@ -238,16 +250,16 @@ hss::project::Context control_context(const HSSProjectEventContext &value) {
 
 HSSStatus accept_control(StreamState *state,
                          const hss::project::Control &control) {
-  const auto &context = std::visit(
-      [](const auto &value) -> const hss::project::Context & {
-        return value.context;
+  const auto *context = std::visit(
+      [](const auto &value) -> const hss::project::Context * {
+        return &value.context;
       },
       control);
   StreamState next = *state;
-  if (!next.have_event || replay_id(context.capture_id) != next.capture_id ||
-      context.event_sequence <= next.last_sequence ||
-      context.monotonic_time_s < next.last_time ||
-      !next.epoch_revisions.contains(context.session_epoch))
+  if (!next.have_event || replay_id(context->capture_id) != next.capture_id ||
+      context->event_sequence <= next.last_sequence ||
+      context->monotonic_time_s < next.last_time ||
+      !next.epoch_revisions.contains(context->session_epoch))
     return HSS_STALE_REVISION;
   const uint64_t before = std::visit(
       [](const auto &value) { return value.before_scene_revision; }, control);
@@ -259,12 +271,12 @@ HSSStatus accept_control(StreamState *state,
       (command != nullptr &&
        command->disposition ==
            hss::project::CommandControl::Disposition::kApplied);
-  if (before != next.last_scene_revision || after != context.accepted_scene_revision ||
+  if (before != next.last_scene_revision || after != context->accepted_scene_revision ||
       (mutates && after != before + 1U) || (!mutates && after != before)) {
     return HSS_STALE_REVISION;
   }
-  next.last_sequence = context.event_sequence;
-  next.last_time = context.monotonic_time_s;
+  next.last_sequence = context->event_sequence;
+  next.last_time = context->monotonic_time_s;
   next.last_scene_revision = after;
   *state = std::move(next);
   return HSS_OK;
@@ -1285,16 +1297,16 @@ HSSStatus validate_stored_record(HSSProjectStore *store,
     if (command_like !=
         (stored.source.kind == hss::storage::SourceKind::kCommand))
       return HSS_PROJECT_STORE_CORRUPT;
-    const auto &common = std::visit(
-        [](const auto &value) -> const hss::project::Context & {
-          return value.context;
+    const auto *common = std::visit(
+        [](const auto &value) -> const hss::project::Context * {
+          return &value.context;
         },
         decoded.control);
-    if (replay_id(common.capture_id) != stored.source.capture_id ||
-        common.session_epoch != stored.source.session_epoch ||
-        common.event_sequence != stored.source.event_sequence ||
-        common.monotonic_time_s != stored.source.monotonic_time_s ||
-        common.accepted_scene_revision != stored.source.source_revision) {
+    if (replay_id(common->capture_id) != stored.source.capture_id ||
+        common->session_epoch != stored.source.session_epoch ||
+        common->event_sequence != stored.source.event_sequence ||
+        common->monotonic_time_s != stored.source.monotonic_time_s ||
+        common->accepted_scene_revision != stored.source.source_revision) {
       return HSS_PROJECT_STORE_CORRUPT;
     }
     status = accept_control(state, decoded.control);
@@ -1374,8 +1386,18 @@ HSSStatus append_encoded(HSSProjectStore *store,
                          : accept_control(&next, *control);
   if (status != HSS_OK)
     return status;
-  store->pending_bytes += record.payload.size();
+  const uint64_t record_bytes = record.payload.size();
+#if defined(HSS_PROJECT_STORE_TESTING)
+  if (fail_next_pending_append_for_test) {
+    fail_next_pending_append_for_test = false;
+    throw std::bad_alloc();
+  }
+#endif
+  // push_back may allocate. Do not publish any accounting until it succeeds:
+  // callers map allocation failure to HSS_RESOURCE_LIMIT and retry exactly the
+  // same source record.
   store->pending.push_back(std::move(record));
+  store->pending_bytes += record_bytes;
   store->state = std::move(next);
   fill_receipt(*store, store->state.last_sequence, receipt);
   return HSS_OK;

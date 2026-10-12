@@ -1,8 +1,10 @@
 #include "HSSProjectArchiveExport.hpp"
+#include "hss/durable_source_store.hpp"
 
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cstdlib>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -417,6 +419,57 @@ Result write_hsscan_archive(const std::string& project_directory, const std::str
   published = true;
   fs::remove(staging, error);
   return {Status::kOk, {}};
+}
+
+Result write_portable_hsscan_archive(const std::string& project_directory, const std::string& destination_path) {
+  const fs::path source(project_directory), destination(destination_path);
+  std::error_code error;
+  if (destination.empty() || destination.filename().empty() || fs::exists(destination, error))
+    return {Status::kIoError, "The portable archive destination already exists or is unavailable."};
+  const auto status = fs::symlink_status(source, error);
+  if (error || fs::is_symlink(status) || !fs::is_directory(status))
+    return invalid_project("The saved project directory is unavailable.");
+  std::set<std::string> sources{"project.json", "active.manifest"};
+  if (!has_no_symlink_components(source, "active.manifest") ||
+      !parse_active_manifest(source / "active.manifest", &sources))
+    return invalid_project("The committed project has no valid active source inventory.");
+  for (const std::string& relative : sources) {
+    uint64_t bytes = 0U;
+    if (!has_no_symlink_components(source, relative) || !regular_file(source / relative, &bytes) ||
+        bytes > (relative == "project.json" || relative == "active.manifest" ? kMaximumManifestBytes : kMaximumChunkBytes))
+      return invalid_project("The committed source inventory is linked, unavailable, or oversized.");
+  }
+  fs::create_directories(destination.parent_path(), error);
+  const auto parent_status = fs::symlink_status(destination.parent_path(), error);
+  if (error || fs::is_symlink(parent_status) || !fs::is_directory(parent_status))
+    return {Status::kIoError, "The portable archive destination directory is unavailable."};
+  const auto canonical_source = fs::weakly_canonical(source, error);
+  if (error) return invalid_project("The saved project directory is unavailable.");
+  const auto canonical_parent = fs::weakly_canonical(destination.parent_path(), error);
+  if (error || canonical_parent == canonical_source || canonical_parent.string().rfind(canonical_source.string() + "/", 0U) == 0U)
+    return invalid_project("A portable archive cannot be staged inside its source project.");
+  std::string pattern = (canonical_parent / ".hss-portable-XXXXXX").string();
+  std::vector<char> path(pattern.begin(), pattern.end());
+  path.push_back('\0');
+  const char* created = ::mkdtemp(path.data());
+  if (created == nullptr) return {Status::kIoError, "Private portable archive staging could not be created."};
+  struct PrivateStage {
+    fs::path path;
+    ~PrivateStage() { std::error_code ignored; fs::remove_all(path, ignored); }
+  } stage{fs::path(created)};
+  storage::NativeFileSystem original(source.string()), portable(stage.path.string());
+  storage::RetentionLimits limits;
+  limits.max_epoch_records = 1'024;
+  limits.max_depth_records = 8'192;
+  limits.max_mesh_records = 8'192;
+  limits.max_command_records = 1'024;
+  limits.max_retained_bytes = kMaximumProjectBytes;
+  limits.max_chunk_bytes = kMaximumChunkBytes;
+  storage::DurableSourceStore store(original, limits);
+  const auto copied = store.write_portable_copy(portable);
+  if (copied != storage::StoreStatus::kOk)
+    return invalid_project("The committed project could not produce a validated clock-relative archive. The local source was preserved.");
+  return write_hsscan_archive(stage.path.string(), destination_path);
 }
 
 }  // namespace hss::native_export

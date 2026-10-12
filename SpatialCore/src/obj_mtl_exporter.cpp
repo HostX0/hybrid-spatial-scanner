@@ -38,6 +38,13 @@ bool valid(AppearanceState state) {
 }
 
 bool valid_options(const Options &options) {
+  const auto &name = options.material_library_filename;
+  if (name.empty() || name.size() > 96 || !name.ends_with(".mtl") ||
+      !std::all_of(name.begin(),name.end(),[](unsigned char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+               (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+      }) || name.front() == '.' || name.find("..") != std::string::npos)
+    return false;
   return options.max_vertices > 0U && options.max_vertices <= kHardMaximumVertices &&
          options.max_faces > 0U && options.max_faces <= kHardMaximumFaces &&
          options.max_texture_coordinates <= kHardMaximumTextureCoordinates &&
@@ -166,7 +173,7 @@ Status validate_snapshot(const Snapshot &snapshot, const Options &options,
     if (!finite_texture_coordinate(coordinate))
       return Status::kInvalidAppearance;
   }
-  std::set<std::string> texture_paths;
+  std::map<std::string, TextureReference> texture_paths, texture_assets;
   for (const AppearanceSlot &slot : snapshot.appearance_slots) {
     if (!stable_identifier(slot.target_id) || !valid(slot.state) ||
         !slots->emplace(slot.target_id, &slot).second) {
@@ -199,10 +206,13 @@ Status validate_snapshot(const Snapshot &snapshot, const Options &options,
         slot.texture->local_asset_id != slot.candidate_asset_id) {
       return Status::kRevisionMismatch;
     }
-    if (!valid_texture(*slot.texture) ||
-        !texture_paths.insert(slot.texture->bundle_relative_path).second) {
+    if (!valid_texture(*slot.texture)) {
       return Status::kInvalidTextureReference;
     }
+    const auto [path, new_path] = texture_paths.emplace(slot.texture->bundle_relative_path, *slot.texture);
+    const auto [asset, new_asset] = texture_assets.emplace(slot.texture->local_asset_id, *slot.texture);
+    if ((!new_path && path->second != *slot.texture) || (!new_asset && asset->second != *slot.texture))
+      return Status::kInvalidTextureReference;
   }
   std::set<std::string> face_ids;
   for (const Face &face : snapshot.faces) {
@@ -286,10 +296,11 @@ void append_face(std::string &output, const Face &face, bool include_texture) {
 
 std::string obj(const Snapshot &snapshot,
                 const std::map<std::string, const AppearanceSlot *> &slots,
-                bool include_textures) {
+                bool include_textures, const std::string &library_filename) {
   std::string output;
   output.reserve(snapshot.vertices_m.size() * 48U + snapshot.faces.size() * 32U);
-  output.append("# HSS frozen captured mesh; metres declared in manifest\nmtllib capture.mtl\n");
+  output.append("# HSS frozen captured mesh; metres declared in manifest\nmtllib ");
+  output.append(library_filename); output.push_back('\n');
   for (const Vertex &vertex : snapshot.vertices_m)
     append_obj_vertex(output, vertex);
   if (include_textures) {
@@ -418,12 +429,13 @@ Result export_snapshot(const Snapshot &snapshot, const Options &options) {
     if (validation != Status::kOk)
       return failure(validation);
     Artifact artifact;
-    artifact.obj_utf8 = obj(snapshot, slots, options.include_textures);
+    artifact.obj_utf8 = obj(snapshot, slots, options.include_textures, options.material_library_filename);
     artifact.mtl_utf8 = mtl(snapshot, options.include_textures);
     artifact.manifest_json = manifest(snapshot, options.include_textures);
     if (options.include_textures) {
+      std::set<std::string> included_paths;
       for (const AppearanceSlot &slot : snapshot.appearance_slots) {
-        if (slot.state == AppearanceState::kVerified)
+        if (slot.state == AppearanceState::kVerified && included_paths.insert(slot.texture->bundle_relative_path).second)
           artifact.texture_references.push_back(*slot.texture);
       }
     }
@@ -460,5 +472,7 @@ const char *appearance_state_name(AppearanceState state) {
   }
   return "invalid";
 }
+
+bool is_valid_texture_reference(const TextureReference &texture) { return valid_texture(texture); }
 
 } // namespace hss::obj_mtl

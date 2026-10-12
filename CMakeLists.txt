@@ -288,12 +288,23 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 add_library(hss_guidance_policy STATIC
   SpatialCore/src/guidance_policy.cpp
+  SpatialCore/src/guidance_policy_c.cpp
 )
+
+add_library(hss_calibrated_appearance STATIC SpatialCore/src/calibrated_appearance.cpp)
+target_include_directories(hss_calibrated_appearance PUBLIC include SpatialCore/include)
+target_link_libraries(hss_calibrated_appearance PUBLIC hss_obj_mtl_exporter SpatialCore)
+target_compile_options(hss_calibrated_appearance PRIVATE -Wall -Wextra -Werror -Wpedantic)
+if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+ target_compile_options(hss_calibrated_appearance PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+ target_link_options(hss_calibrated_appearance INTERFACE -fsanitize=address,undefined)
+endif()
 target_include_directories(hss_guidance_policy
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/SpatialCore/include>
 )
 target_compile_features(hss_guidance_policy PUBLIC cxx_std_20)
+target_include_directories(hss_guidance_policy PUBLIC include)
 target_compile_options(hss_guidance_policy PRIVATE -Wall -Wextra -Werror -Wpedantic)
 if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_compile_options(hss_guidance_policy PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -329,6 +340,27 @@ endif()
 target_link_libraries(SpatialCore PUBLIC hss_robust_plane_fit hss_boundary_graph hss_topology_protection hss_ring_net_area hss_scene_editing hss_dynamic_provenance hss_annotation_geometry)
 
 if(HSS_BUILD_TESTS)
+# Host-only saved synthetic room for native UI journeys. Not linked into iOS.
+add_executable(hss_native_boundary_fixture tools/create_native_boundary_fixture.cpp)
+target_link_libraries(hss_native_boundary_fixture PRIVATE SpatialCore)
+target_compile_options(hss_native_boundary_fixture PRIVATE -Wall -Wextra -Werror -Wpedantic)
+
+# External licensed data stays outside the repository and app bundle.
+add_executable(hss_real_rgbd_evaluate tools/evaluate_real_rgbd.cpp)
+target_link_libraries(hss_real_rgbd_evaluate PRIVATE SpatialCore hss_obj_mtl_exporter hss_calibrated_appearance hss_guidance_policy)
+target_compile_options(hss_real_rgbd_evaluate PRIVATE -Wall -Wextra -Werror -Wpedantic)
+
+add_executable(hss_calibrated_appearance_test tests/hss_calibrated_appearance_test.cpp)
+target_link_libraries(hss_calibrated_appearance_test PRIVATE hss_calibrated_appearance)
+target_compile_options(hss_calibrated_appearance_test PRIVATE -Wall -Wextra -Werror -Wpedantic)
+if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+ target_compile_options(hss_calibrated_appearance_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+ target_link_options(hss_calibrated_appearance_test PRIVATE -fsanitize=address,undefined)
+ target_compile_options(hss_real_rgbd_evaluate PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+ target_link_options(hss_real_rgbd_evaluate PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME hss_calibrated_appearance COMMAND hss_calibrated_appearance_test)
+
 add_executable(abi_smoke tests/abi_smoke.c)
 target_include_directories(abi_smoke PRIVATE include)
 target_link_libraries(abi_smoke PRIVATE SpatialCore)
@@ -354,6 +386,7 @@ add_executable(hss_project_store_test
   SpatialCore/src/project_store.cpp
 )
 target_include_directories(hss_project_store_test PRIVATE include SpatialCore/include)
+target_compile_definitions(hss_project_store_test PRIVATE HSS_PROJECT_STORE_TESTING=1)
 add_executable(hss_provisional_plan_test tests/hss_provisional_plan_test.cpp)
 target_link_libraries(hss_provisional_plan_test PRIVATE SpatialCore)
 target_compile_definitions(hss_provisional_plan_test PRIVATE HSS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
@@ -580,6 +613,30 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_link_options(hss_live_reconstruction_test PRIVATE -fsanitize=address,undefined)
 endif()
 add_test(NAME hss_live_reconstruction COMMAND hss_live_reconstruction_test)
+add_executable(hss_live_permutation_regression_test
+  tests/hss_live_permutation_characterization_test.cpp
+)
+target_link_libraries(hss_live_permutation_regression_test PRIVATE SpatialCore hss_obj_mtl_exporter)
+target_compile_options(hss_live_permutation_regression_test PRIVATE
+  -Wall -Wextra -Werror -Wpedantic
+)
+if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+ target_compile_options(hss_live_permutation_regression_test PRIVATE
+   -fsanitize=address,undefined -fno-omit-frame-pointer
+ )
+ target_link_options(hss_live_permutation_regression_test PRIVATE
+   -fsanitize=address,undefined
+ )
+endif()
+add_test(NAME hss_live_permutation_regression
+  COMMAND hss_live_permutation_regression_test
+)
+add_test(NAME hss_full_component_plane_support
+  COMMAND hss_live_permutation_regression_test --full-component-support
+)
+add_test(NAME hss_independent_seam_characterization
+  COMMAND hss_live_permutation_regression_test --independent-seams
+)
 add_executable(hss_plan_annotation_runtime_test
   tests/hss_plan_annotation_runtime_test.cpp
 )
@@ -604,6 +661,7 @@ if(HSS_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
  target_link_options(hss_engine_scene_editing_adapter_test PRIVATE -fsanitize=address,undefined)
 endif()
 add_test(NAME hss_engine_scene_editing_adapter COMMAND hss_engine_scene_editing_adapter_test)
+add_test(NAME hss_targeted_protection_refinement COMMAND hss_engine_scene_editing_adapter_test --targeted-protection)
 add_executable(hss_dynamic_runtime_integration_test
   tests/hss_dynamic_runtime_integration_test.cpp
 )
@@ -640,4 +698,14 @@ endif()
 add_test(NAME hss_resource_runtime_integration
   COMMAND hss_resource_runtime_integration_test
 )
+endif()
+
+include(cmake/HSSMeshPipelineTests.cmake)
+
+if(HSS_BUILD_TESTS)
+add_test(NAME hss_mixed_room_replay COMMAND hss_live_permutation_regression_test --mixed-room)
+endif()
+
+if(HSS_BUILD_TESTS)
+add_test(NAME hss_perturbed_room COMMAND hss_live_permutation_regression_test --perturbed-room)
 endif()

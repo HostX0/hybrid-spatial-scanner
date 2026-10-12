@@ -1354,29 +1354,51 @@ extern "C" HSSStatus hss_engine_apply_command_json(HSSEngine *engine,
       return remembered(engine, HSS_INTERNAL_ERROR);
     const std::string exact(reinterpret_cast<const char *>(command.data),
                             static_cast<size_t>(command.length));
-    const auto processed = engine->scene_editor.process(
+    auto processed = engine->scene_editor.process(
         engine->live.snapshot()->json, exact);
-    if (processed.exact_result_json.size() > kMaxJsonRecordBytes)
-      return remembered(engine, HSS_RESOURCE_LIMIT);
-    engine->command_result = processed.exact_result_json;
-    engine->has_command_result = true;
-    if (processed.pending_dynamic_exclusion) {
-      engine->pending_exclusions[processed.pending_dynamic_exclusion->command_id] =
-          {*processed.pending_dynamic_exclusion,
-           engine->live.snapshot()->revision};
-    }
-    if (processed.scene_changed) {
-      const auto counts =
-          hss::scene_editing::scene_counts(processed.candidate_scene_json);
-      if (!counts)
+    const auto abort_publication = [&](HSSStatus status) {
+      if (processed.owns_new_record &&
+          !engine->scene_editor.rollback_last_process(processed))
         return remembered(engine, HSS_INTERNAL_ERROR);
-      const HSSStatus published = engine->live.publish_edited_scene(
-          processed.candidate_scene_json,
-          engine->live.snapshot()->revision + 1U, counts->node_count,
-          counts->edge_count, counts->issue_count);
-      if (published != HSS_OK)
-        return remembered(engine, published);
-      ++engine->accepted_commands;
+      return remembered(engine, status);
+    };
+    // Move (not copy) result bytes before publication so no allocation follows
+    // a successful immutable snapshot commit.
+    std::string staged_result = std::move(processed.exact_result_json);
+    try {
+      if (staged_result.size() > kMaxJsonRecordBytes)
+        return abort_publication(HSS_RESOURCE_LIMIT);
+      if (processed.scene_changed) {
+        if (!processed.owns_new_record || !processed.journal_record ||
+            processed.pending_dynamic_exclusion)
+          return abort_publication(HSS_INTERNAL_ERROR);
+        const auto counts =
+            hss::scene_editing::scene_counts(processed.candidate_scene_json);
+        if (!counts)
+          return abort_publication(HSS_INTERNAL_ERROR);
+        const HSSStatus published = engine->live.publish_edited_scene(
+            std::move(processed.candidate_scene_json),
+            engine->live.snapshot()->revision + 1U, counts->node_count,
+            counts->edge_count, counts->issue_count,
+            std::move(processed.retained_unknowns));
+        if (published != HSS_OK)
+          return abort_publication(published);
+        ++engine->accepted_commands;
+      } else if (processed.pending_dynamic_exclusion) {
+        const auto &pending = *processed.pending_dynamic_exclusion;
+        const auto inserted = engine->pending_exclusions.try_emplace(
+            pending.command_id, pending, engine->live.snapshot()->revision);
+        if (!inserted.second)
+          return abort_publication(HSS_INTERNAL_ERROR);
+      }
+      if (!staged_result.empty()) {
+        engine->command_result.swap(staged_result);
+        engine->has_command_result = true;
+      }
+    } catch (const std::bad_alloc &) {
+      return abort_publication(HSS_RESOURCE_LIMIT);
+    } catch (...) {
+      return abort_publication(HSS_INTERNAL_ERROR);
     }
     switch (processed.status) {
     case hss::scene_editing::Status::kApplied:
@@ -1395,6 +1417,8 @@ extern "C" HSSStatus hss_engine_apply_command_json(HSSEngine *engine,
       return remembered(engine, HSS_UNSUPPORTED_CAPABILITY);
     case hss::scene_editing::Status::kResourceLimitExceeded:
       return remembered(engine, HSS_RESOURCE_LIMIT);
+    case hss::scene_editing::Status::kInternalError:
+      return remembered(engine, HSS_INTERNAL_ERROR);
     default:
       return remembered(engine, HSS_INVALID_ARGUMENT);
     }
@@ -1512,6 +1536,34 @@ hss_engine_copy_command_result_json(const HSSEngine *engine,
   } catch (...) {
     return HSS_INTERNAL_ERROR;
   }
+}
+
+extern "C" HSSStatus hss_engine_copy_command_history_json(
+    const HSSEngine* engine, uint8_t* destination, uint64_t capacity, uint64_t* required) {
+  if (required != nullptr) *required = 0U;
+  try {
+    if (engine == nullptr || required == nullptr || (destination == nullptr && capacity != 0U))
+      return HSS_INVALID_ARGUMENT;
+    HSSEngineStats stats{};
+    if (hss_engine_get_stats(engine, &stats) != HSS_OK) return HSS_INTERNAL_ERROR;
+    std::string json = "{\"schema_version\":\"1.1\",\"project_id\":\"" + uuid(engine->config.project_id) + "\",\"scene_revision\":\"" +
+                       std::to_string(stats.scene_revision) + "\",\"records\":[";
+    bool first = true;
+    for (const auto& record : engine->scene_editor.journal()) {
+      if (!first) json += ',';
+      first = false;
+      // IDs and command types were validated by the processor. Never append
+      // unvalidated user payload strings or notes to this presentation view.
+      json += "{\"command_id\":\"" + record.command_id + "\",\"type\":\"" + record.command_type +
+              "\",\"original_command_id\":" + (record.original_command_id.empty() ? std::string("null") : "\"" + record.original_command_id + "\"") +
+              ",\"before_scene_revision\":\"" + std::to_string(record.before_scene_revision) +
+              "\",\"after_scene_revision\":\"" + std::to_string(record.after_scene_revision) + "\"}";
+      if (json.size() > 16U * 1024U * 1024U) return HSS_RESOURCE_LIMIT;
+    }
+    json += "]}";
+    return copy_out(reinterpret_cast<const uint8_t*>(json.data()), json.size(), destination, capacity, required);
+  } catch (const std::bad_alloc&) { return HSS_RESOURCE_LIMIT; }
+  catch (...) { return HSS_INTERNAL_ERROR; }
 }
 
 extern "C" HSSStatus hss_engine_step(HSSEngine *engine,

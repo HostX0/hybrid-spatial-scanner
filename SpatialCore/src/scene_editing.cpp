@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -16,6 +17,8 @@
 #include <unordered_set>
 #include <utility>
 #include <variant>
+
+#include <type_traits>
 
 namespace hss::scene_editing {
 namespace {
@@ -955,7 +958,10 @@ bool segments_intersect(const P2 &a, const P2 &b, const P2 &c, const P2 &d,
   const int o2 = orientation(cross2(a, b, d), epsilon);
   const int o3 = orientation(cross2(c, d, a), epsilon);
   const int o4 = orientation(cross2(c, d, b), epsilon);
-  if (o1 != o2 && o3 != o4)
+  // Proper crossings require strictly opposite sides. A tolerance-zero
+  // orientation may be collinear only with the infinite supporting line;
+  // finite endpoint contact is checked by on_segment below.
+  if (o1 * o2 < 0 && o3 * o4 < 0)
     return true;
   return (o1 == 0 && on_segment(a, b, c, epsilon)) ||
          (o2 == 0 && on_segment(a, b, d, epsilon)) ||
@@ -2858,6 +2864,292 @@ bool same_scene_payload_except_revision(const std::string &expected,
   }
 }
 
+
+// Keep exact command-owned nonmetric annotations: target-independent unknowns
+// and explicit unresolved protection intent when source lineage is unproven.
+// Candidate membership naturally handles existing strict undo/redo. No mutable
+// overlay sidecar is committed ahead of immutable scene publication.
+bool collect_retained_unknowns(const Object &scene,
+                              const std::vector<JournalRecord> &journal,
+                              const CommandData &current,
+                              uint64_t revision,
+                              std::shared_ptr<const RetainedUnknowns> *output,
+                              bool *resource_limit) {
+  auto retained = std::make_shared<RetainedUnknowns>();
+  // Index the validated candidate once. A linear scan for every journaled
+  // annotation made the capacity regression needlessly quadratic per edit.
+  using Index = std::map<std::string_view, const Json *, std::less<>>;
+  const auto index_entities = [](const Array &items) {
+    Index index;
+    for (const Json &entity : items)
+      index.emplace(member(entity.object(), "id")->string(), &entity);
+    return index;
+  };
+  const auto find_entity = [](const Index &index, const std::string &id) -> const Json * {
+    const auto found = index.find(id);
+    return found == index.end() ? nullptr : found->second;
+  };
+  const Index features = index_entities(member(scene, "features")->array());
+  const Index issues = index_entities(member(scene, "issues")->array());
+  const Array &constraints = member(scene, "constraints")->array();
+  size_t retained_constraints = 0U;
+  const auto collect = [&](const CommandData &command) {
+    if (command.type != "mark_unknown" || !command.targets.empty())
+      return true;
+    const auto *feature = find_entity(features, deterministic_uuid(command.command_id, "unknown-feature"));
+    const auto *issue = find_entity(issues, deterministic_uuid(command.command_id, "unknown-issue"));
+    if (!feature && !issue) // An accepted undo removed both entities.
+      return true;
+    if (!feature || !issue) return false;
+    if (retained->size() >= kMaxRetainedUnknowns) {
+      *resource_limit = true;
+      return false;
+    }
+    // Compare the entire validated entity to the original command's output:
+    // no targeted/foreign geometry, changed protection, or orphan reference
+    // can become a target-independent retained annotation by appearance alone.
+    Object expected{{"features", Json(Array{})}, {"issues", Json(Array{})}};
+    (void)apply_unknown(expected, command, revision);
+    Json expected_feature = member(expected, "features")->array().front();
+    Json expected_issue = member(expected, "issues")->array().front();
+    const Json *prior_revision = member(issue->object(), "scene_revision");
+    if (!prior_revision)
+      return false;
+    expected_issue.object()["scene_revision"] = *prior_revision;
+    // Protection of this command-created, nonmetric annotation is safe:
+    // preserve only the exact topology-protection constraint targeting it,
+    // never use this exception to rebase a measured node/edge/surface.
+    RetainedUnknown item;
+    const std::string feature_id = deterministic_uuid(command.command_id, "unknown-feature");
+    for (const Json &constraint : constraints) {
+      const auto targets = json_ids(*member(constraint.object(), "target_ids"));
+      if (std::find(targets.begin(), targets.end(), feature_id) == targets.end())
+        continue;
+      std::string source_command;
+      if (targets != std::vector<std::string>{feature_id} ||
+          !string_member(constraint.object(), "source_command_id", &source_command))
+        return false;
+      bool authorized = current.command_id == source_command &&
+          current.type == "protect_feature" && current.targets == targets;
+      for (const auto &record : journal) {
+        if (authorized || record.command_id != source_command ||
+            record.command_type != "protect_feature" ||
+            record.before_scene_revision == record.after_scene_revision) continue;
+        const Json parsed = JsonParser(record.exact_command_utf8).parse();
+        CommandData protection;
+        authorized = command_base(parsed, &protection) && protection.targets == targets;
+      }
+      const Json expected_constraint = make_constraint(
+          deterministic_uuid(source_command, "topology-protection"),
+          "topology_protection", targets, source_command, Json(nullptr),
+          "none", true, 0.0, "user_intent");
+      if (!authorized || serialize(constraint) != serialize(expected_constraint)) return false;
+      if (retained_constraints >= kMaxRetainedUnknowns) {
+        *resource_limit = true;
+        return false;
+      }
+      ++retained_constraints;
+      item.protection_constraints_json.push_back(serialize(constraint));
+    }
+    expected_feature.object()["protected_topology"] =
+        Json(!item.protection_constraints_json.empty());
+    if (serialize(*feature) != serialize(expected_feature) ||
+        serialize(*issue) != serialize(expected_issue))
+      return false;
+    item.feature_json = serialize(*feature);
+    std::string *part = &item.issue_before_revision;
+    *part = "{";
+    bool first = true;
+    for (const auto &[key, value] : issue->object()) {
+      if (!first) *part += ',';
+      first = false;
+      *part += serialize(Json(key)) + ':';
+      if (key == "scene_revision")
+        part = &item.issue_after_revision;
+      else
+        *part += serialize(value);
+    }
+    *part += '}';
+    retained->push_back(std::move(item));
+    return true;
+  };
+  for (const auto &record : journal) {
+    if (record.command_type != "mark_unknown" ||
+        record.before_scene_revision == record.after_scene_revision)
+      continue;
+    const Json original = JsonParser(record.exact_command_utf8).parse();
+    CommandData original_data;
+    if (!command_base(original, &original_data) || !collect(original_data))
+      return false;
+  }
+  if (!collect(current)) return false;
+
+  // Protection of a source-derived target has no proven identity across a
+  // rebuild. Stage a nonmetric unknown marker for that rebuild, not an active
+  // constraint rebound to a coincident/new edge. The exact accepted command
+  // and result remain in the journal. A pre-rebuild undo removes the active
+  // constraint, so no marker is staged. Once exposed, the marker must match
+  // its command-owned bytes before a later edit may retain it again.
+  const Index constraint_index = index_entities(constraints);
+  std::set<std::string> independent_features;
+  for (const auto &item : *retained) {
+    const Json feature = JsonParser(item.feature_json).parse();
+    independent_features.insert(member(feature.object(), "id")->string());
+  }
+  const auto collect_protection = [&](const CommandData &command) {
+    if (command.type != "protect_feature" || command.targets.size() != 1U ||
+        independent_features.contains(command.targets.front()))
+      return true;
+    const std::string constraint_id = deterministic_uuid(command.command_id, "topology-protection");
+    const std::string feature_id = deterministic_uuid(command.command_id, "protection-conflict-feature");
+    const std::string issue_id = deterministic_uuid(command.command_id, "protection-conflict-issue");
+    const Json *constraint = find_entity(constraint_index, constraint_id);
+    const Json *feature = find_entity(features, feature_id);
+    const Json *issue = find_entity(issues, issue_id);
+    if (!constraint && !feature && !issue)
+      return true; // Removed by an accepted reversal, not a live intent.
+    if (retained->size() >= kMaxRetainedUnknowns) {
+      *resource_limit = true;
+      return false;
+    }
+    const Json expected_feature(Object{
+        {"attachment", Json("unresolved")}, {"edge_ids", Json(Array{})},
+        {"id", Json(feature_id)}, {"kind", Json("unknown")},
+        {"protected_topology", Json(false)},
+        {"provenance", provenance("unknown", "user", {}, "needs_review")},
+        {"surface_ids", Json(Array{})}});
+    Json expected_issue = make_issue(issue_id, "HSS_TARGET_LINEAGE_UNRESOLVED",
+        {feature_id}, revision, "warning",
+        "Accepted user protect_feature command " + command.command_id +
+        " for historical target " + command.targets.front() +
+        " requires review after source refinement: target lineage is unproven. "
+        "No measured target was rebound and no protection is enforced on a replacement.",
+        "Inspect the refined geometry and explicitly confirm a current target; "
+        "retain this unresolved intent until its lineage is proven.", command.event_sequence_text);
+    if (constraint) {
+      const Json expected_constraint = make_constraint(constraint_id,
+          "topology_protection", command.targets, command.command_id,
+          Json(nullptr), "none", true, 0.0, "user_intent");
+      if (feature || issue || serialize(*constraint) != serialize(expected_constraint))
+        return false;
+    } else {
+      if (!feature || !issue)
+        return false;
+      expected_issue.object()["scene_revision"] = *member(issue->object(), "scene_revision");
+      if (serialize(*feature) != serialize(expected_feature) ||
+          serialize(*issue) != serialize(expected_issue))
+        return false;
+    }
+    RetainedUnknown item;
+    item.feature_json = serialize(expected_feature);
+    std::string *part = &item.issue_before_revision;
+    *part = "{";
+    bool first = true;
+    for (const auto &[key, value] : expected_issue.object()) {
+      if (!first) *part += ',';
+      first = false;
+      *part += serialize(Json(key)) + ':';
+      if (key == "scene_revision") part = &item.issue_after_revision;
+      else *part += serialize(value);
+    }
+    *part += '}';
+    retained->push_back(std::move(item));
+    return true;
+  };
+  for (const auto &record : journal) {
+    if (record.command_type != "protect_feature" ||
+        record.before_scene_revision == record.after_scene_revision)
+      continue;
+    const Json original = JsonParser(record.exact_command_utf8).parse();
+    CommandData original_data;
+    if (!command_base(original, &original_data) || !collect_protection(original_data))
+      return false;
+  }
+  if (!collect_protection(current)) return false;
+
+  // A split, reference dimension or position lock is valid on its accepted
+  // graph. Source rebuilding has no proved correspondence for its old target
+  // IDs. Preserve the accepted intent as a command-owned review marker rather
+  // than silently dropping it or attaching its metric constraint to a new edge.
+  const Index node_index = index_entities(member(scene, "nodes")->array());
+  const auto collect_correction = [&](const CommandData &command) {
+    if (command.type != "split_edge" && command.type != "set_dimension" &&
+        command.type != "lock_position") return true;
+    const std::string feature_id = deterministic_uuid(command.command_id, "correction-conflict-feature");
+    const std::string issue_id = deterministic_uuid(command.command_id, "correction-conflict-issue");
+    const Json *feature = find_entity(features, feature_id);
+    const Json *issue = find_entity(issues, issue_id);
+    bool active = false;
+    if (command.type == "split_edge") {
+      active = find_entity(node_index, deterministic_uuid(command.command_id, "split-node")) != nullptr;
+    } else {
+      const bool lock = command.type == "lock_position";
+      const Json *constraint = find_entity(constraint_index,
+          deterministic_uuid(command.command_id, lock ? "position-lock" : "dimension"));
+      if (constraint && member(constraint->object(), "status")->string() == "active") {
+        Json expected;
+        if (lock) {
+          expected = make_constraint(deterministic_uuid(command.command_id, "position-lock"),
+              "position_lock", command.targets, command.command_id,
+              *member(*command.payload, "position_m"), "m", true, 0.0, "user_intent");
+        } else {
+          const auto &payload = *command.payload;
+          expected = make_constraint(deterministic_uuid(command.command_id, "dimension"), "distance",
+              {member(payload, "endpoint_a")->string(), member(payload, "endpoint_b")->string()},
+              command.command_id, Json(dimension_metres(member(payload, "value")->number(), member(payload, "unit")->string())),
+              "m", member(payload, "mode")->string() == "exact_model", member(payload, "weight")->number(),
+              source_for_dimension(member(payload, "source")->string()));
+        }
+        if (serialize(*constraint) != serialize(expected)) return false;
+        active = true;
+      }
+    }
+    if (!active && !feature && !issue) return true; // Explicit undo/unlock removed the intent.
+    if (active && (feature || issue)) return false;
+    if (retained->size() >= kMaxRetainedUnknowns) { *resource_limit = true; return false; }
+    const Json expected_feature(Object{
+        {"attachment", Json("unresolved")}, {"edge_ids", Json(Array{})},
+        {"id", Json(feature_id)}, {"kind", Json("unknown")}, {"protected_topology", Json(false)},
+        {"provenance", provenance("unknown", "user", {}, "needs_review")}, {"surface_ids", Json(Array{})}});
+    Json expected_issue = make_issue(issue_id, "HSS_CORRECTION_LINEAGE_UNRESOLVED", {feature_id}, revision,
+        "warning", "Accepted " + command.type + " correction " + command.command_id +
+        " needs review after source refinement. Historical targets have no proved current correspondence; "
+        "no metric constraint or edited boundary was rebound to replacement geometry.",
+        "Inspect the updated scan and explicitly confirm the intended boundary or reference measurement.",
+        command.event_sequence_text);
+    if (!active) {
+      if (!feature || !issue) return false;
+      expected_issue.object()["scene_revision"] = *member(issue->object(), "scene_revision");
+      if (serialize(*feature) != serialize(expected_feature) || serialize(*issue) != serialize(expected_issue)) return false;
+    }
+    RetainedUnknown item;
+    item.feature_json = serialize(expected_feature);
+    std::string *part = &item.issue_before_revision;
+    *part = "{";
+    bool first = true;
+    for (const auto &[key, value] : expected_issue.object()) {
+      if (!first) *part += ',';
+      first = false;
+      *part += serialize(Json(key)) + ':';
+      if (key == "scene_revision") part = &item.issue_after_revision;
+      else *part += serialize(value);
+    }
+    *part += '}';
+    retained->push_back(std::move(item));
+    return true;
+  };
+  for (const auto &record : journal) {
+    if ((record.command_type != "split_edge" && record.command_type != "set_dimension" &&
+         record.command_type != "lock_position") || record.before_scene_revision == record.after_scene_revision) continue;
+    const Json original = JsonParser(record.exact_command_utf8).parse();
+    CommandData original_data;
+    if (!command_base(original, &original_data) || !collect_correction(original_data)) return false;
+  }
+  if (!collect_correction(current)) return false;
+  *output = std::move(retained);
+  return true;
+}
+
 } // namespace
 
 Processor::Processor(Options options)
@@ -2940,11 +3232,13 @@ ProcessResult Processor::process(std::string_view current_scene_json,
   command::SceneState gate_accepted = gate_scene(accepted);
   const std::string before_scene = serialize(accepted.root);
   std::string candidate_scene;
+  std::shared_ptr<const RetainedUnknowns> retained_unknowns;
   MutationResult mutation;
   bool callback_ran = false;
   bool pending_exclusion = false;
+  bool retention_resource_limit = false;
 
-  const command::SubmissionResult submitted = gate_.submit(
+  command::SubmissionResult submitted = gate_.submit(
       envelope, exact_command_utf8, gate_accepted,
       [&](const command::CommandEnvelope &,
           command::SceneState &candidate_gate) -> command::ApplyResult {
@@ -3043,6 +3337,16 @@ ProcessResult Processor::process(std::string_view current_scene_json,
                                       : validation_diagnostic;
           }
         }
+        if (mutation.outcome == command::Outcome::kApplied &&
+            !collect_retained_unknowns(*candidate.object, journal_, command_data,
+                                      new_revision, &retained_unknowns,
+                                      &retention_resource_limit)) {
+          // Invalid apply result prevents the gate from committing any record.
+          // Map the known capacity condition below, without inventing an applied result.
+          if (retention_resource_limit) return {command::Outcome::kRejected, {}};
+          mutation.outcome = command::Outcome::kRejected;
+          mutation.diagnostic = "retained unknown annotation limit or ownership conflict";
+        }
         uint64_t result_revision = accepted.revision;
         if (mutation.outcome == command::Outcome::kApplied) {
           candidate_scene = serialize(candidate.root);
@@ -3055,9 +3359,13 @@ ProcessResult Processor::process(std::string_view current_scene_json,
         return {mutation.outcome, exact_result};
       });
 
+  if (retention_resource_limit && !submitted.outcome) {
+    result.status = Status::kResourceLimitExceeded;
+    return result;
+  }
   result.status = map_gate_status(submitted.status);
   result.command_sha256 = submitted.command_sha256;
-  result.exact_result_json = submitted.result_utf8_bytes;
+  result.exact_result_json = std::move(submitted.result_utf8_bytes);
 
   if (submitted.status == command::Status::kDuplicateMismatch) {
     result.exact_result_json = result_json(
@@ -3074,37 +3382,90 @@ ProcessResult Processor::process(std::string_view current_scene_json,
   if (submitted.status == command::Status::kStoredRetry)
     return result;
 
-  if (callback_ran) {
-    JournalRecord record;
-    record.ordinal = static_cast<uint64_t>(journal_.size());
-    record.command_id = command_data.command_id;
-    record.command_type = command_data.type;
-    record.original_command_id = mutation.original_command_id;
-    record.event_sequence = command_data.event_sequence_text;
-    record.exact_command_utf8 = std::string(exact_command_utf8);
-    record.command_sha256 = submitted.command_sha256;
-    record.exact_result_utf8 = submitted.result_utf8_bytes;
-    record.before_scene_revision = accepted.revision;
-    record.after_scene_revision = submitted.outcome == command::Outcome::kApplied
-                                      ? accepted.revision + 1U
-                                      : accepted.revision;
-    record.before_scene_json = before_scene;
-    record.after_scene_json = submitted.outcome == command::Outcome::kApplied
-                                  ? candidate_scene
-                                  : before_scene;
-    journal_.push_back(record);
-    result.journal_record = std::move(record);
-  }
-  if (submitted.outcome == command::Outcome::kApplied) {
-    result.scene_changed = true;
-    result.candidate_scene_json = std::move(candidate_scene);
-  }
-  if (pending_exclusion) {
-    dynamic_exclusions_.push_back(exclusion);
-    result.pending_dynamic_exclusion = exclusion;
-    result.status = Status::kPendingUnsupported;
+  if (callback_ran && submitted.outcome.has_value()) {
+    const uint64_t associated_revision =
+        *submitted.outcome == command::Outcome::kApplied
+            ? accepted.revision + 1U : accepted.revision;
+    try {
+      JournalRecord record;
+      record.ordinal = static_cast<uint64_t>(journal_.size());
+      record.command_id = command_data.command_id;
+      record.command_type = command_data.type;
+      record.original_command_id = mutation.original_command_id;
+      record.event_sequence = command_data.event_sequence_text;
+      record.exact_command_utf8 = std::string(exact_command_utf8);
+      record.command_sha256 = submitted.command_sha256;
+      record.exact_result_utf8 = result.exact_result_json;
+      record.before_scene_revision = accepted.revision;
+      record.after_scene_revision = associated_revision;
+      record.before_scene_json = before_scene;
+      record.after_scene_json = *submitted.outcome == command::Outcome::kApplied
+                                    ? candidate_scene : before_scene;
+      // Reserve/copy all fallible output before the no-throw semantic commit.
+      if (journal_.size() == journal_.capacity())
+        journal_.reserve(std::min(options_.max_records,
+            std::max(journal_.size() + 1U, journal_.capacity() * 2U)));
+      result.journal_record = record;
+      if (pending_exclusion) {
+        if (dynamic_exclusions_.size() == dynamic_exclusions_.capacity())
+          dynamic_exclusions_.reserve(std::min(options_.max_records,
+              std::max(dynamic_exclusions_.size() + 1U,
+                       dynamic_exclusions_.capacity() * 2U)));
+        result.pending_dynamic_exclusion = exclusion;
+      }
+      static_assert(std::is_nothrow_move_constructible_v<JournalRecord>);
+      static_assert(std::is_nothrow_move_constructible_v<DynamicExclusion>);
+      journal_.push_back(std::move(record));
+      if (pending_exclusion)
+        dynamic_exclusions_.push_back(std::move(exclusion));
+      result.owns_new_record = true;
+      result.recorded_outcome = submitted.outcome;
+      result.associated_scene_revision = associated_revision;
+    } catch (const std::bad_alloc &) {
+      const bool restored = gate_.rollback_last_record(command_data.command_id,
+          submitted.command_sha256, *submitted.outcome, associated_revision);
+      result = ProcessResult{};
+      result.status = restored ? Status::kResourceLimitExceeded : Status::kInternalError;
+      return result;
+    } catch (...) {
+      (void)gate_.rollback_last_record(command_data.command_id,
+          submitted.command_sha256, *submitted.outcome, associated_revision);
+      result = ProcessResult{};
+      result.status = Status::kInternalError;
+      return result;
+    }
+    if (*submitted.outcome == command::Outcome::kApplied) {
+      result.scene_changed = true;
+      result.retained_unknowns = std::move(retained_unknowns);
+      result.candidate_scene_json = std::move(candidate_scene);
+    }
+    if (pending_exclusion)
+      result.status = Status::kPendingUnsupported;
   }
   return result;
+}
+
+bool Processor::rollback_last_process(const ProcessResult &result) noexcept {
+  if (!result.owns_new_record || !result.recorded_outcome ||
+      !result.journal_record || journal_.empty())
+    return false;
+  const auto &expected = *result.journal_record;
+  const auto &last = journal_.back();
+  if (last.ordinal != expected.ordinal || last.command_id != expected.command_id ||
+      last.command_sha256 != result.command_sha256 ||
+      last.after_scene_revision != result.associated_scene_revision)
+    return false;
+  if (result.pending_dynamic_exclusion &&
+      (dynamic_exclusions_.empty() ||
+       dynamic_exclusions_.back().command_id != expected.command_id))
+    return false;
+  if (!gate_.rollback_last_record(expected.command_id, result.command_sha256,
+          *result.recorded_outcome, result.associated_scene_revision))
+    return false;
+  if (result.pending_dynamic_exclusion)
+    dynamic_exclusions_.pop_back();
+  journal_.pop_back();
+  return true;
 }
 
 const char *status_name(Status status) {

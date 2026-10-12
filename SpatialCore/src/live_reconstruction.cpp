@@ -21,6 +21,7 @@ namespace {
 constexpr size_t kMaxAnchors = 128, kMaxEpochs = 32, kMaxFrames = 256;
 constexpr size_t kMaxVertices = 65536, kMaxTriangles = 65536, kMaxMetric = 2048;
 constexpr double kExtent = 10000, kJoin = 1e-7;
+constexpr double kPlaneSupportM = 0.002;
 using Key = std::string;
 std::string uuid(const HSSId &id) {
   const char *hex = "0123456789abcdef";
@@ -103,10 +104,59 @@ struct State {
 };
 struct Patch {
   std::string identity, support;
+  std::vector<plane_fit::WeightedSample> samples;
+  std::optional<plane_fit::Plane> plane;
+  uint64_t source_sequence{};
+  size_t expected_triangles{}, checked_triangles{};
+  bool support_failed{false};
+};
+
+using TriangleKey = std::array<uint32_t, 3>;
+
+TriangleKey canonical_triangle(TriangleKey triangle) {
+  std::sort(triangle.begin(), triangle.end());
+  return triangle;
+}
+
+uint64_t splitmix64(uint64_t value) {
+  value += 0x9e3779b97f4a7c15ULL;
+  value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+  value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+  return value ^ (value >> 31U);
+}
+
+std::string triangle_suffix(const TriangleKey &triangle) {
+  return std::to_string(triangle[0]) + ":" + std::to_string(triangle[1]) +
+         ":" + std::to_string(triangle[2]);
+}
+
+struct FaceWork {
+  TriangleKey triangle{};
+  TriangleKey canonical{};
   HSSVec3d normal{};
   double offset{};
-  std::vector<plane_fit::WeightedSample> samples;
+  bool valid{false};
 };
+
+struct EdgeIncidence {
+  size_t count{};
+  std::array<size_t, 2> faces{};
+};
+
+struct ComponentWork {
+  TriangleKey canonical{
+      std::numeric_limits<uint32_t>::max(),
+      std::numeric_limits<uint32_t>::max(),
+      std::numeric_limits<uint32_t>::max()};
+  size_t triangle_count{};
+  size_t representative{std::numeric_limits<size_t>::max()};
+  bool ambiguous{false};
+  bool metric_skipped{false};
+  size_t patch_index{std::numeric_limits<size_t>::max()};
+  std::map<uint32_t, uint64_t> sample_ranks;
+  std::string surface;
+};
+
 struct Node {
   HSSVec3d point;
   boundary::Point2d uv;
@@ -154,9 +204,37 @@ struct Reconstruction::Impl {
     size_t anchor = 0, vertex = 0, triangle = 0, base = 0, patch_index = 0,
            item = 0, loop_seed = 0;
     int phase = 0;
+    int anchor_stage = 0;
     bool metric_limit = false;
     std::vector<Patch> patches;
-    std::map<std::pair<uint32_t, uint32_t>, size_t> adjacency;
+
+    using EdgeMap =
+        std::map<std::pair<uint32_t, uint32_t>, EdgeIncidence>;
+    using ComponentMap = std::map<size_t, ComponentWork>;
+    using CanonicalRoots = std::map<TriangleKey, std::vector<size_t>>;
+    using FaceOrder = std::map<TriangleKey, std::vector<size_t>>;
+
+    std::vector<FaceWork> faces;
+    EdgeMap edge_incidence;
+    EdgeMap::iterator edge_it{};
+    std::vector<size_t> dsu_parent;
+    std::vector<size_t> dsu_size;
+    std::vector<TriangleKey> dsu_key;
+    size_t face_index = 0;
+    size_t anchor_fit_index = 0;
+    ComponentMap components;
+    ComponentMap::iterator component_it{};
+    CanonicalRoots canonical_roots;
+    CanonicalRoots::iterator canonical_it{};
+    FaceOrder face_order;
+    FaceOrder::iterator slice_it{};
+    size_t slice_subindex = 0;
+    size_t retained_constraint_index = 0, retained_constraint_count = 0;
+    size_t canonical_subindex = 0;
+    size_t degenerate_triangles = 0;
+    size_t non_manifold_edges = 0;
+    size_t ambiguous_components = 0;
+
     std::vector<Node> nodes;
     std::vector<Edge> edges;
     std::vector<Region> regions;
@@ -213,6 +291,130 @@ struct Reconstruction::Impl {
               std::to_string(a.source->event.anchor_revision) + ":" +
               std::to_string(a.source->event.event_sequence));
   }
+
+  size_t dsu_find(size_t index) {
+    auto &b = *build;
+    while (b.dsu_parent[index] != index) {
+      b.dsu_parent[index] = b.dsu_parent[b.dsu_parent[index]];
+      index = b.dsu_parent[index];
+    }
+    return index;
+  }
+
+  void dsu_unite(size_t left, size_t right) {
+    auto &b = *build;
+    left = dsu_find(left);
+    right = dsu_find(right);
+    if (left == right)
+      return;
+    if (b.dsu_size[left] < b.dsu_size[right] ||
+        (b.dsu_size[left] == b.dsu_size[right] &&
+         b.dsu_key[right] < b.dsu_key[left]))
+      std::swap(left, right);
+    b.dsu_parent[right] = left;
+    b.dsu_size[left] += b.dsu_size[right];
+    b.dsu_key[left] = std::min(b.dsu_key[left], b.dsu_key[right]);
+  }
+
+  void consider_sample(ComponentWork &component, uint32_t vertex) {
+    if (component.sample_ranks.contains(vertex))
+      return;
+    const uint64_t rank =
+        splitmix64(config.deterministic_seed ^ uint64_t(vertex));
+    if (component.sample_ranks.size() < 96U) {
+      component.sample_ranks.emplace(vertex, rank);
+      return;
+    }
+    auto worst = std::max_element(
+        component.sample_ranks.begin(), component.sample_ranks.end(),
+        [](const auto &left, const auto &right) {
+          return std::pair{left.second, left.first} <
+                 std::pair{right.second, right.first};
+        });
+    if (std::pair{rank, vertex} < std::pair{worst->second, worst->first}) {
+      component.sample_ranks.erase(worst);
+      component.sample_ranks.emplace(vertex, rank);
+    }
+  }
+
+  static bool opposite_vertex(const FaceWork &face, uint32_t edge_a,
+                              uint32_t edge_b, uint32_t *out) {
+    for (uint32_t vertex : face.triangle)
+      if (vertex != edge_a && vertex != edge_b) {
+        *out = vertex;
+        return true;
+      }
+    return false;
+  }
+
+  bool compatible_faces(size_t left_index, size_t right_index,
+                        uint32_t edge_a, uint32_t edge_b) {
+    auto &b = *build;
+    const auto &left = b.faces[left_index];
+    const auto &right = b.faces[right_index];
+    if (!left.valid || !right.valid ||
+        std::abs(dot(left.normal, right.normal)) < 0.99999)
+      return false;
+    uint32_t left_vertex = 0U, right_vertex = 0U;
+    if (!opposite_vertex(left, edge_a, edge_b, &left_vertex) ||
+        !opposite_vertex(right, edge_a, edge_b, &right_vertex))
+      return false;
+    const auto &left_point = b.out->vertices[b.base + left_vertex];
+    const auto &right_point = b.out->vertices[b.base + right_vertex];
+    const double left_to_right =
+        std::abs(dot(right.normal, left_point) + right.offset);
+    const double right_to_left =
+        std::abs(dot(left.normal, right_point) + left.offset);
+    return std::max(left_to_right, right_to_left) <= 0.002;
+  }
+
+  void reset_anchor_work() {
+    auto &b = *build;
+    b.vertex = 0U;
+    b.triangle = 0U;
+    b.anchor_stage = 0;
+    b.faces.clear();
+    b.edge_incidence.clear();
+    b.dsu_parent.clear();
+    b.dsu_size.clear();
+    b.dsu_key.clear();
+    b.face_index = 0U;
+    b.anchor_fit_index = b.patches.size();
+    b.components.clear();
+    b.canonical_roots.clear();
+    b.face_order.clear();
+    b.slice_subindex = 0U;
+    b.canonical_subindex = 0U;
+    b.degenerate_triangles = 0U;
+    b.non_manifold_edges = 0U;
+    b.ambiguous_components = 0U;
+  }
+
+  // Retire one map entry per quantum. Component sample maps are capped at 96;
+  // the remaining vectors contain trivial elements and retain bounded capacity.
+  // Do not hide an anchor-sized tree destruction behind its final triangle.
+  bool retire_anchor_unit() {
+    auto &b = *build;
+    if (!b.edge_incidence.empty()) {
+      b.edge_incidence.erase(b.edge_incidence.begin());
+      return false;
+    }
+    if (!b.components.empty()) {
+      b.components.erase(b.components.begin());
+      return false;
+    }
+    if (!b.canonical_roots.empty()) {
+      b.canonical_roots.erase(b.canonical_roots.begin());
+      return false;
+    }
+    if (!b.face_order.empty()) {
+      b.face_order.erase(b.face_order.begin());
+      return false;
+    }
+    reset_anchor_work();
+    return true;
+  }
+
   size_t node(HSSVec3d p, const std::string &support_id) {
     auto &b = *build;
     auto key = std::tuple{std::llround(p.x / kJoin), std::llround(p.y / kJoin),
@@ -251,6 +453,12 @@ struct Reconstruction::Impl {
     if (hits.size() != 2 ||
         dot(sub(hits[0], hits[1]), sub(hits[0], hits[1])) < 1e-12)
       return;
+    // A cyclic rotation names the same oriented triangle and yields the same
+    // two intersections, but may visit them in the opposite order. Canonical
+    // endpoint order belongs to the derived cut only; raw indices stay intact.
+    if (std::tie(hits[1].x, hits[1].y, hits[1].z) <
+        std::tie(hits[0].x, hits[0].y, hits[0].z))
+      std::swap(hits[0], hits[1]);
     size_t a = node(hits[0], sup), c = node(hits[1], sup);
     if (a == c)
       return;
@@ -265,54 +473,52 @@ struct Reconstruction::Impl {
   void triangle_unit() {
     auto &b = *build;
     const auto &[key, a] = b.anchors[b.anchor];
+    (void)key;
     const auto &e = a.source->event;
-    std::array<uint32_t, 3> idx{};
-    std::memcpy(idx.data(),
+
+    TriangleKey local{};
+    std::memcpy(local.data(),
                 e.payload.data() + e.mesh.vertex_count * 12 + b.triangle * 12,
                 12);
-    std::array<HSSVec3d, 3> p;
+    const size_t face_index = b.faces.size();
+    FaceWork face;
+    face.triangle = local;
+    face.canonical = canonical_triangle(local);
+
+    std::array<HSSVec3d, 3> points{};
     for (size_t i = 0; i < 3; ++i) {
-      idx[i] += uint32_t(b.base);
-      p[i] = b.out->vertices[idx[i]];
-      b.out->triangles.push_back(idx[i]);
+      const uint32_t global = local[i] + uint32_t(b.base);
+      points[i] = b.out->vertices[global];
+      b.out->triangles.push_back(global);
     }
-    const auto sup = support(key, a);
-    HSSVec3d n = cross(sub(p[1], p[0]), sub(p[2], p[0]));
-    double len = std::sqrt(dot(n, n));
-    if (len > 1e-10) {
-      n = mul(n, 1 / len);
-      double d = -dot(n, p[0]);
-      size_t patch = b.patches.size();
+
+    const bool repeated =
+        local[0] == local[1] || local[1] == local[2] || local[0] == local[2];
+    HSSVec3d normal =
+        repeated ? HSSVec3d{} :
+                   cross(sub(points[1], points[0]), sub(points[2], points[0]));
+    const double length = std::sqrt(dot(normal, normal));
+    if (!repeated && length > 1e-10) {
+      normal = mul(normal, 1.0 / length);
+      face.normal = normal;
+      face.offset = -dot(normal, points[0]);
+      face.valid = true;
+      b.face_order[face.canonical].push_back(face_index);
       for (size_t i = 0; i < 3; ++i) {
-        auto edge = std::minmax(idx[i], idx[(i + 1) % 3]);
-        auto found = b.adjacency.find(edge);
-        if (found == b.adjacency.end())
-          continue;
-        auto &prior = b.patches[found->second];
-        if (prior.samples.size() <= 93 &&
-            std::abs(dot(prior.normal, n)) > 0.99999 &&
-            std::abs(dot(prior.normal, p[0]) + prior.offset) < 0.002) {
-          patch = found->second;
-          break;
-        }
+        const auto edge = std::minmax(local[i], local[(i + 1U) % 3U]);
+        auto &incidence = b.edge_incidence[{edge.first, edge.second}];
+        if (incidence.count < incidence.faces.size())
+          incidence.faces[incidence.count] = face_index;
+        ++incidence.count;
       }
-      if (patch == b.patches.size() && patch < kMaxMetric)
-        b.patches.push_back(
-            {id(sup + ":patch:" + std::to_string(b.triangle)), sup, n, d, {}});
-      if (patch < b.patches.size()) {
-        auto &group = b.patches[patch];
-        for (auto q : p)
-          group.samples.push_back({{q.x, q.y, q.z}, 1.0, e.event_sequence});
-        for (size_t i = 0; i < 3; ++i) {
-          auto edge = std::minmax(idx[i], idx[(i + 1) % 3]);
-          b.adjacency[edge] = patch;
-        }
-        slice(p, sup, group.identity);
-      } else {
-        b.metric_limit = true;
-        slice(p, sup, id(sup + ":mesh"));
-      }
+    } else {
+      ++b.degenerate_triangles;
     }
+
+    b.faces.push_back(face);
+    b.dsu_parent.push_back(face_index);
+    b.dsu_size.push_back(1U);
+    b.dsu_key.push_back(face.canonical);
     ++b.triangle;
   }
   void loop_unit() {
@@ -609,7 +815,9 @@ HSSStatus Reconstruction::publish_edited_scene(std::string candidate_scene_json,
                                                uint64_t expected_revision,
                                                uint64_t node_count,
                                                uint64_t edge_count,
-                                               uint64_t issue_count) {
+                                               uint64_t issue_count,
+                                               std::shared_ptr<const scene_editing::RetainedUnknowns>
+                                                   retained_unknowns) {
   auto &x = *impl_;
   if (x.build || expected_revision == 0U ||
       expected_revision != x.accepted->revision + 1U ||
@@ -623,7 +831,43 @@ HSSStatus Reconstruction::publish_edited_scene(std::string candidate_scene_json,
   if (!lease)
     return HSS_RESOURCE_LIMIT;
   try {
+    std::shared_ptr<UnknownOverlay> overlay;
+    if (retained_unknowns && !retained_unknowns->empty()) {
+      if (retained_unknowns->size() > scene_editing::kMaxRetainedUnknowns)
+        return HSS_RESOURCE_LIMIT;
+      uint64_t payload = 0U, serialized = 0U;
+      for (const auto &item : *retained_unknowns) {
+        for (const auto *text : {&item.feature_json, &item.issue_before_revision,
+                                 &item.issue_after_revision}) {
+          if (text->capacity() > 16U * 1024U * 1024U ||
+              payload > 16U * 1024U * 1024U - text->capacity())
+            return HSS_RESOURCE_LIMIT;
+          payload += text->capacity();
+          serialized += text->size();
+        }
+        if (item.protection_constraints_json.size() > scene_editing::kMaxRetainedUnknowns)
+          return HSS_RESOURCE_LIMIT;
+        for (const auto &constraint : item.protection_constraints_json) {
+          if (constraint.capacity() > 16U * 1024U * 1024U ||
+              payload > 16U * 1024U * 1024U - constraint.capacity())
+            return HSS_RESOURCE_LIMIT;
+          payload += constraint.capacity();
+          serialized += constraint.size() + 1U;
+        }
+        payload += item.protection_constraints_json.capacity() * sizeof(std::string);
+        serialized += 24U; // Canonical quoted uint64 revision and separators.
+      }
+      auto overlay_lease = reserve(x.budget, 1024U + payload +
+          retained_unknowns->capacity() * sizeof(scene_editing::RetainedUnknown));
+      if (!overlay_lease)
+        return HSS_RESOURCE_LIMIT;
+      overlay = std::make_shared<UnknownOverlay>();
+      overlay->lease = std::move(overlay_lease);
+      overlay->records = std::move(retained_unknowns);
+      overlay->serialized_bytes = serialized;
+    }
     auto next = std::make_shared<Snapshot>();
+    next->retained_unknowns = std::move(overlay);
     next->lease = std::move(lease);
     next->revision = expected_revision;
     next->node_count = node_count;
@@ -734,6 +978,10 @@ HSSStatus Reconstruction::Impl::start_build(State candidate) {
                     std::min(triangles, kMaxMetric) * 8192 +
                     candidate.epochs.size() * 2048 +
                     candidate.anchors.size() * 4096;
+  // Existing retained bytes already own their lease. Charge the additional
+  // serialized copy/growth needed by this new immutable source snapshot.
+  if (x.accepted->retained_unknowns)
+    charge += 2U * x.accepted->retained_unknowns->serialized_bytes;
   auto lease = reserve(x.budget, charge);
   if (!lease)
     return x.last = HSS_RESOURCE_LIMIT;
@@ -742,6 +990,7 @@ HSSStatus Reconstruction::Impl::start_build(State candidate) {
   b->out = std::make_shared<Snapshot>();
   b->out->lease = std::move(lease);
   b->out->revision = x.accepted->revision + 1;
+  b->out->retained_unknowns = x.accepted->retained_unknowns;
   b->out->vertices.reserve(vertices);
   b->out->triangles.reserve(triangles * 3);
   for (const auto &[key, a] : b->state.anchors) {
@@ -813,28 +1062,224 @@ bool Reconstruction::advance() {
     }
     const auto &[key, a] = b.anchors[b.anchor];
     const auto &e = a.source->event;
-    if (b.vertex < e.mesh.vertex_count) {
-      float v[3];
-      std::memcpy(v, e.payload.data() + b.vertex * 12, 12);
-      auto p = coordinate::transform_point(e.mesh.T_world_anchor,
-                                           {v[0], v[1], v[2]});
-      p = coordinate::transform_point(
-          b.state.epochs.at(epoch_key(e))->event.epoch.T_project_world, p);
-      if (!bounded(p)) {
-        cancel(HSS_INVALID_COORDINATE_FRAME);
-        return true;
+    const auto sup = x.support(key, a);
+
+    if (b.anchor_stage == 7) {
+      if (x.retire_anchor_unit()) {
+        b.base = b.out->vertices.size();
+        ++b.anchor;
       }
-      b.out->vertices.push_back(p);
-      ++b.vertex;
       return false;
     }
-    if (b.triangle < e.mesh.triangle_count) {
-      x.triangle_unit();
+
+    if (b.anchor_stage == 0) {
+      if (b.vertex < e.mesh.vertex_count) {
+        float v[3];
+        std::memcpy(v, e.payload.data() + b.vertex * 12, 12);
+        auto p = coordinate::transform_point(e.mesh.T_world_anchor,
+                                             {v[0], v[1], v[2]});
+        p = coordinate::transform_point(
+            b.state.epochs.at(epoch_key(e))->event.epoch.T_project_world, p);
+        if (!bounded(p)) {
+          cancel(HSS_INVALID_COORDINATE_FRAME);
+          return true;
+        }
+        b.out->vertices.push_back(p);
+        ++b.vertex;
+        return false;
+      }
+      if (b.triangle < e.mesh.triangle_count) {
+        x.triangle_unit();
+        return false;
+      }
+      b.edge_it = b.edge_incidence.begin();
+      b.anchor_stage = 1;
       return false;
     }
-    auto sup = x.support(key, a);
+
+    if (b.anchor_stage == 1) {
+      if (b.edge_it != b.edge_incidence.end()) {
+        const auto edge = b.edge_it->first;
+        const auto incidence = b.edge_it->second;
+        if (incidence.count > 2U) {
+          ++b.non_manifold_edges;
+        } else if (incidence.count == 2U &&
+                   x.compatible_faces(incidence.faces[0], incidence.faces[1],
+                                      edge.first, edge.second)) {
+          x.dsu_unite(incidence.faces[0], incidence.faces[1]);
+        }
+        ++b.edge_it;
+        return false;
+      }
+      b.face_index = 0U;
+      b.anchor_stage = 2;
+      return false;
+    }
+
+    if (b.anchor_stage == 2) {
+      if (b.face_index < b.faces.size()) {
+        const size_t index = b.face_index++;
+        const auto &face = b.faces[index];
+        if (!face.valid)
+          return false;
+        const size_t root = x.dsu_find(index);
+        auto &component = b.components[root];
+        ++component.triangle_count;
+        if (face.canonical < component.canonical) {
+          component.canonical = face.canonical;
+          component.representative = index;
+        }
+        for (uint32_t vertex : face.triangle)
+          x.consider_sample(component, vertex);
+        return false;
+      }
+      b.component_it = b.components.begin();
+      b.anchor_stage = 3;
+      return false;
+    }
+
+    if (b.anchor_stage == 3) {
+      if (b.component_it != b.components.end()) {
+        b.canonical_roots[b.component_it->second.canonical].push_back(
+            b.component_it->first);
+        ++b.component_it;
+        return false;
+      }
+      b.canonical_it = b.canonical_roots.begin();
+      b.anchor_stage = 4;
+      return false;
+    }
+
+    if (b.anchor_stage == 4) {
+      if (b.canonical_it != b.canonical_roots.end()) {
+        auto &roots = b.canonical_it->second;
+        if (roots.size() != 1U) {
+          if (b.canonical_subindex == 0U)
+            b.ambiguous_components += roots.size();
+          b.components.at(roots[b.canonical_subindex++]).ambiguous = true;
+          if (b.canonical_subindex < roots.size())
+            return false;
+          b.canonical_subindex = 0U;
+        } else {
+          auto &component = b.components.at(roots.front());
+          if (b.patches.size() >= kMaxMetric) {
+            component.metric_skipped = true;
+            b.metric_limit = true;
+          } else {
+            Patch patch;
+            patch.identity =
+                id(sup + ":patch:" + triangle_suffix(component.canonical));
+            patch.support = sup;
+            patch.source_sequence = e.event_sequence;
+            patch.expected_triangles = component.triangle_count;
+            patch.samples.reserve(component.sample_ranks.size());
+            for (const auto &[vertex, rank] : component.sample_ranks) {
+              (void)rank;
+              const auto &point = b.out->vertices[b.base + vertex];
+              patch.samples.push_back(
+                  {{point.x, point.y, point.z}, 1.0, e.event_sequence});
+            }
+            component.surface = patch.identity;
+            component.patch_index = b.patches.size();
+            b.patches.push_back(std::move(patch));
+          }
+        }
+        ++b.canonical_it;
+        return false;
+      }
+      b.anchor_stage = 8;
+      return false;
+    }
+
+    // Fit one bounded sample set per quantum before the existing face walk.
+    // Neighbour compatibility is transitive, while planarity is not: a robust
+    // inlier subset alone cannot label the entire connected component planar.
+    if (b.anchor_stage == 8) {
+      if (b.anchor_fit_index < b.patches.size()) {
+        auto &p = b.patches[b.anchor_fit_index++];
+        plane_fit::Options o;
+        o.inlier_threshold_m = kPlaneSupportM;
+        o.seed = x.config.deterministic_seed;
+        o.max_input_samples = 96;
+        o.candidate_iterations = 24;
+        o.max_refinement_iterations = 4;
+        o.max_residual_evaluations = 4096;
+        o.min_support_samples = 3;
+        o.min_distinct_support_points = 3;
+        p.plane = plane_fit::fit(p.samples, o).plane;
+        return false;
+      }
+      b.slice_it = b.face_order.begin();
+      b.slice_subindex = 0U;
+      b.anchor_stage = 5;
+      return false;
+    }
+
+    if (b.anchor_stage == 5) {
+      if (b.slice_it == b.face_order.end()) {
+        b.anchor_stage = 6;
+        return false;
+      }
+      if (b.slice_subindex >= b.slice_it->second.size()) {
+        ++b.slice_it;
+        b.slice_subindex = 0U;
+        return false;
+      }
+
+      const size_t face_index = b.slice_it->second[b.slice_subindex++];
+      const size_t root = x.dsu_find(face_index);
+      auto found = b.components.find(root);
+      if (found == b.components.end() || found->second.ambiguous ||
+          found->second.metric_skipped || found->second.surface.empty())
+        return false;
+
+      const auto &face = b.faces[face_index];
+      std::array<HSSVec3d, 3> points{};
+      for (size_t i = 0; i < 3; ++i)
+        points[i] = b.out->vertices[b.base + face.triangle[i]];
+      auto &patch = b.patches.at(found->second.patch_index);
+      ++patch.checked_triangles;
+      if (patch.plane) {
+        const auto &plane = *patch.plane;
+        // Check all original support, including vertices omitted by the
+        // deterministic 96-sample cap. Only three points are checked in this
+        // quantum; no second anchor-sized pass or unbounded replay is added.
+        for (const auto &point : points) {
+          const double distance = std::abs(std::fma(
+              plane.normal.x, point.x,
+              std::fma(plane.normal.y, point.y,
+                       std::fma(plane.normal.z, point.z, plane.offset_m))));
+          patch.support_failed |=
+              !std::isfinite(distance) || distance > kPlaneSupportM;
+        }
+      }
+      x.slice(points, sup, found->second.surface);
+      return false;
+    }
+
+    const std::string mesh_id = id(sup + ":mesh");
+    if (b.non_manifold_edges != 0U)
+      x.issue("non_manifold_mesh",
+              "Non-manifold indexed mesh edges=" +
+                  std::to_string(b.non_manifold_edges) +
+                  "; bridge excluded; support=" + sup,
+              e.event_sequence, mesh_id);
+    if (b.ambiguous_components != 0U)
+      x.issue("ambiguous_mesh_component",
+              "Ambiguous canonical mesh components=" +
+                  std::to_string(b.ambiguous_components) +
+                  "; fitting and slicing excluded; support=" + sup,
+              e.event_sequence, mesh_id);
+    if (b.degenerate_triangles != 0U)
+      x.issue("degenerate_mesh_triangle",
+              "Degenerate mesh triangles=" +
+                  std::to_string(b.degenerate_triangles) +
+                  "; raw evidence retained; fitting and slicing excluded; support=" +
+                  sup,
+              e.event_sequence, mesh_id);
+
     b.surfaces.push_back(
-        "{\"id\":" + quote(id(sup + ":mesh")) +
+        "{\"id\":" + quote(mesh_id) +
         ",\"kind\":\"mesh_patch\",\"normal_unit\":null,\"offset_m\":null,"
         "\"boundary_node_ids\":[],\"mesh_asset\":null,\"fit_residual_m\":null,"
         "\"provenance\":" +
@@ -847,12 +1292,9 @@ bool Reconstruction::advance() {
                 " anchor_revision=" + std::to_string(e.anchor_revision) +
                 " vertices=" + std::to_string(b.base) + "+" +
                 std::to_string(e.mesh.vertex_count),
-            e.event_sequence, id(sup + ":mesh"));
-    b.base = b.out->vertices.size();
-    b.vertex = 0;
-    b.triangle = 0;
-    ++b.anchor;
-    b.adjacency.clear();
+            e.event_sequence, mesh_id);
+
+    b.anchor_stage = 7;
     return false;
   }
   case 2: {
@@ -862,19 +1304,17 @@ bool Reconstruction::advance() {
       return false;
     }
     const auto &p = b.patches[b.patch_index++];
-    plane_fit::Options o;
-    o.inlier_threshold_m = 0.002;
-    o.seed = x.config.deterministic_seed;
-    o.max_input_samples = 96;
-    o.candidate_iterations = 24;
-    o.max_refinement_iterations = 4;
-    o.max_residual_evaluations = 4096;
-    o.min_support_samples = 3;
-    o.min_distinct_support_points = 3;
-    auto fit = plane_fit::fit(p.samples, o);
+    const bool supported = p.plane && !p.support_failed &&
+                           p.checked_triangles == p.expected_triangles;
+    if (p.plane && !supported)
+      x.issue("partial_plane_support",
+              "Plane hypothesis does not cover original mesh component; "
+              "captured shape retained; surface=" + p.identity +
+              " support=" + p.support,
+              p.source_sequence, p.identity);
     std::string s = "{\"id\":" + quote(p.identity);
-    if (fit.plane) {
-      const auto &plane = *fit.plane;
+    if (supported) {
+      const auto &plane = *p.plane;
       s += ",\"kind\":\"plane\",\"normal_unit\":" +
            vec({plane.normal.x, plane.normal.y, plane.normal.z}) +
            ",\"offset_m\":" + num(plane.offset_m) +
@@ -883,7 +1323,7 @@ bool Reconstruction::advance() {
       s += ",\"kind\":\"mesh_patch\",\"normal_unit\":null,\"offset_m\":null,"
            "\"fit_residual_m\":null";
     s += ",\"boundary_node_ids\":[],\"mesh_asset\":null,\"provenance\":" +
-         provenance({p.support}, fit.plane ? "fitted" : "observed") + "}";
+         provenance({p.support}, supported ? "fitted" : "observed") + "}";
     b.surfaces.push_back(std::move(s));
     return false;
   }
@@ -963,11 +1403,22 @@ bool Reconstruction::advance() {
       b.out->json += b.surfaces[b.item++];
       return false;
     }
-    b.out->json += "],\"features\":[],\"regions\":[";
+    b.out->json += "],\"features\":[";
     b.phase = 7;
     b.item = 0;
     return false;
   case 7:
+    if (b.out->retained_unknowns &&
+        b.item < b.out->retained_unknowns->records->size()) {
+      if (b.item) b.out->json += ',';
+      b.out->json += (*b.out->retained_unknowns->records)[b.item++].feature_json;
+      return false;
+    }
+    b.out->json += "],\"regions\":[";
+    b.phase = 8;
+    b.item = 0;
+    return false;
+  case 8:
     if (b.item < b.regions.size()) {
       const auto &r = b.regions[b.item];
       if (b.item++)
@@ -993,19 +1444,44 @@ bool Reconstruction::advance() {
           num(x.cut) + ",\"provenance\":" + provenance(r.supports) + "}";
       return false;
     }
-    b.out->json += "],\"objects\":[],\"constraints\":[],\"issues\":[";
-    b.phase = 8;
+    b.out->json += "],\"objects\":[],\"constraints\":[";
+    b.phase = 10;
     b.item = 0;
     return false;
-  case 8:
+  case 10:
+    if (b.out->retained_unknowns && b.item < b.out->retained_unknowns->records->size()) {
+      const auto &constraints = (*b.out->retained_unknowns->records)[b.item].protection_constraints_json;
+      if (b.retained_constraint_index < constraints.size()) {
+        if (b.retained_constraint_count++) b.out->json += ',';
+        b.out->json += constraints[b.retained_constraint_index++];
+      } else {
+        ++b.item;
+        b.retained_constraint_index = 0;
+      }
+      return false;
+    }
+    b.out->json += "],\"issues\":[";
+    b.phase = 9;
+    b.item = 0;
+    return false;
+  case 9:
     if (b.item < b.issues.size()) {
       if (b.item)
         b.out->json += ',';
       b.out->json += b.issues[b.item++];
       return false;
     }
+    if (b.out->retained_unknowns &&
+        b.item - b.issues.size() < b.out->retained_unknowns->records->size()) {
+      const auto &record = (*b.out->retained_unknowns->records)[b.item - b.issues.size()];
+      if (b.item++) b.out->json += ',';
+      b.out->json += record.issue_before_revision +
+                     quote(std::to_string(b.out->revision)) + record.issue_after_revision;
+      return false;
+    }
     b.out->json += "],\"quality_state\":\"provisional\"}";
-    b.out->issue_count = b.issues.size();
+    b.out->issue_count = b.issues.size() +
+        (b.out->retained_unknowns ? b.out->retained_unknowns->records->size() : 0U);
     if (b.out->json.size() > 16 * 1024 * 1024) {
       cancel(HSS_RESOURCE_LIMIT);
       return true;

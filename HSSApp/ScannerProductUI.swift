@@ -37,6 +37,7 @@ struct ScannerWorkspacePresentation: Equatable {
         let revision: String?
         let savedDescription: String?
         let quality: Quality
+        var canRestore: Bool = true
 
         enum Quality: Equatable {
             case draft
@@ -51,13 +52,25 @@ struct ScannerWorkspacePresentation: Equatable {
             case important
             case optional
             case notice
+
+            var rank: Int {
+                switch self {
+                case .blocking: 0
+                case .important: 1
+                case .optional: 2
+                case .notice: 3
+                }
+            }
         }
 
         let id: UUID
         let title: String
         let detail: String
         let priority: Priority
-        let recoveryTitle: String?
+        var recoveryTitle: String?
+        var nativeCode: String? = nil
+        var nativeSceneRevision: UInt64? = nil
+        var guidance: String? = nil
     }
 
     struct Measurement: Equatable, Identifiable {
@@ -128,6 +141,8 @@ struct ScannerWorkspacePresentation: Equatable {
     let statusDetail: String?
     let project: Project?
     let projects: [Project]
+    let deletedProjects: [Project]
+    let isManagingLibrary: Bool
     let issues: [Issue]
     let measurements: [Measurement]
     let provenanceFields: [ProvenanceFieldPresentation]
@@ -136,6 +151,7 @@ struct ScannerWorkspacePresentation: Equatable {
     let plan: Plan?
     let hasCapturedScene: Bool
     let isReferenceScene: Bool
+    let assessment: ScannerSceneAssessment?
     let objectDetailDescription: String?
     let exportStatus: String?
     let projectArchiveExportStatus: String?
@@ -143,6 +159,7 @@ struct ScannerWorkspacePresentation: Equatable {
     let canFinishCapture: Bool
     let canAssist: Bool
     let canUndo: Bool
+    let canRecordMissingEvidence: Bool
     let canSave: Bool
     let canExport: Bool
     let isExporting: Bool
@@ -150,6 +167,7 @@ struct ScannerWorkspacePresentation: Equatable {
     let isExportingProjectArchive: Bool
     let canOpenLibrary: Bool
     let canCaptureObject: Bool
+    var canConfirmPlanReference: Bool = false
 }
 
 struct ScannerWorkspaceActions {
@@ -158,13 +176,19 @@ struct ScannerWorkspaceActions {
     let finishCapture: () -> Void
     let assist: () -> Void
     let undo: () -> Void
+    let recordMissingEvidence: () -> Void
     let save: () -> Void
     let export: () -> Void
     let exportProjectArchive: () -> Void
     let openLibrary: () -> Void
     let openProject: (UUID) -> Void
+    let renameProject: (UUID, String) -> Void
+    let trashProject: (UUID) -> Void
+    let restoreProject: (UUID) -> Void
+    let permanentlyDeleteProject: (UUID) -> Void
     let captureObject: () -> Void
     let recover: (ScannerWorkspacePresentation.Issue) -> Void
+    var confirmPlanReference: () -> Void = {}
 }
 
 enum ScannerProductTheme {
@@ -208,14 +232,24 @@ struct ScannerWorkspaceView<CameraContent: View, SceneContent: View>: View {
             }
         }
         .preferredColorScheme(.dark)
+        .tint(ScannerProductTheme.accent)
     }
 }
 
 private struct ScannerReadinessScreen: View {
     let presentation: ScannerWorkspacePresentation
     let actions: ScannerWorkspaceActions
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            ScrollView { content }
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 24) {
             HStack {
                 VStack(alignment: .leading, spacing: 6) {
@@ -233,6 +267,7 @@ private struct ScannerReadinessScreen: View {
                             .frame(width: 48, height: 48)
                     }
                     .accessibilityLabel("Open projects")
+                    .accessibilityIdentifier("readiness.open-library")
                 }
             }
 
@@ -256,6 +291,7 @@ private struct ScannerReadinessScreen: View {
             .buttonStyle(ScannerPrimaryButtonStyle())
             .disabled(!presentation.canStartCapture)
             .accessibilityHint("Starts the camera only when the device is ready")
+            .accessibilityIdentifier("readiness.start")
         }
         .padding(24)
     }
@@ -361,6 +397,37 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
 
                 if let project = presentation.project { ScannerProjectIdentity(project: project) }
 
+                if let assessment = presentation.assessment {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Label("Scan insight", systemImage: "waveform.path.ecg")
+                            .font(.headline).foregroundStyle(ScannerProductTheme.accent)
+                        ScannerAssessmentRow(label: "Captured geometry", value: assessment.geometryDescription)
+                        ScannerAssessmentRow(label: "Plan reference", value: assessment.referenceDescription)
+                        ScannerAssessmentRow(label: "Boundary", value: assessment.boundaryDescription)
+                        Text("Visual detail is not a guarantee of measurement accuracy. Missing evidence stays unknown.")
+                            .font(.caption).foregroundStyle(ScannerProductTheme.muted)
+                    }
+                    .padding(18)
+                    .background(ScannerProductTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 22))
+                }
+
+                if !presentation.issues.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Needs review").font(.headline)
+                        ForEach(presentation.issues) { issue in
+                            ScannerIssueCard(issue: issue, action: { actions.recover(issue) })
+                        }
+                    }
+                }
+
+                if presentation.canConfirmPlanReference {
+                    Button(action: actions.confirmPlanReference) {
+                        Label("Set observed floor reference", systemImage: "square.3.layers.3d.down.right")
+                    }
+                    .buttonStyle(ScannerSecondaryButtonStyle())
+                    .accessibilityHint("Choose retained floor support; measurement precision remains unverified")
+                }
+
                 if let plan = presentation.plan {
                     if presentation.isReferenceScene {
                         Label("Reference geometry — not a captured room", systemImage: "testtube.2")
@@ -391,14 +458,16 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
                         .background(ScannerProductTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
 
-                if !presentation.issues.isEmpty {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Needs review")
-                            .font(.headline)
-                        ForEach(presentation.issues) { issue in
-                            ScannerIssueCard(issue: issue, action: { actions.recover(issue) })
-                        }
-                    }
+                if presentation.canAssist {
+                    Button(action: actions.assist) {
+                        Label("Review boundary corrections", systemImage: "slider.horizontal.3")
+                    }.buttonStyle(ScannerSecondaryButtonStyle())
+                        .accessibilityIdentifier("boundary-review.open")
+                }
+                if presentation.canUndo {
+                    Button(action: actions.undo) { Label("Undo last review correction", systemImage: "arrow.uturn.backward") }
+                        .buttonStyle(ScannerSecondaryButtonStyle())
+                        .accessibilityIdentifier("boundary-review.undo")
                 }
 
                 if !presentation.measurements.isEmpty {
@@ -425,6 +494,13 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
                     }
                 }
 
+                if presentation.canRecordMissingEvidence {
+                    Button(action: actions.recordMissingEvidence) {
+                        Label("Record missing evidence", systemImage: "exclamationmark.bubble")
+                    }
+                    .buttonStyle(ScannerSecondaryButtonStyle())
+                    .accessibilityHint("Records an unknown-evidence note without modifying captured geometry")
+                }
                 if presentation.canSave {
                     Button("Save draft", action: actions.save)
                         .buttonStyle(ScannerPrimaryButtonStyle())
@@ -437,6 +513,7 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
                 }
                 .buttonStyle(ScannerSecondaryButtonStyle())
                 .disabled(!presentation.canExport || presentation.isExporting)
+                .accessibilityIdentifier("review.export")
                 if let exportStatus = presentation.exportStatus {
                     Label(exportStatus, systemImage: presentation.isExporting ? "hourglass" : "externaldrive.fill")
                         .font(.subheadline)
@@ -468,61 +545,360 @@ private struct ScannerReviewScreen<SceneContent: View>: View {
     }
 }
 
+private struct ScannerAssessmentRow: View {
+    let label: LocalizedStringKey
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(.caption).foregroundStyle(ScannerProductTheme.muted)
+            Text(value).font(.subheadline.weight(.medium))
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
 private struct ScannerLibraryScreen: View {
     let presentation: ScannerWorkspacePresentation
     let actions: ScannerWorkspaceActions
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var search = ""
+    @State private var sortByName = false
+    @State private var showingTrash = false
+    @State private var showingPrivacy = false
+    @State private var showingSupport = false
+    @State private var renaming: ScannerWorkspacePresentation.Project?
+    @State private var newName = ""
+    @State private var removing: ScannerWorkspacePresentation.Project?
+
+    private var visibleProjects: [ScannerWorkspacePresentation.Project] {
+        let source = showingTrash ? presentation.deletedProjects : presentation.projects
+        let filtered = source.filter { search.isEmpty || $0.name.localizedStandardContains(search) }
+        return sortByName ? filtered.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } : filtered
+    }
+
+    private var headingLayout: AnyLayout {
+        dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 14))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 8))
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("Projects")
-                .font(.largeTitle.weight(.semibold))
-            if presentation.projects.isEmpty {
-                Spacer(minLength: 8)
-                ContentUnavailableView(
-                    "No saved projects",
-                    systemImage: "square.stack.3d.up",
-                    description: Text("Import an HSSCAN archive or start a room scan. Imported projects stay local to this device."))
-                    .frame(maxWidth: .infinity)
-                VStack(spacing: 12) {
-                    Button(action: actions.startCapture) {
-                        Text("Start a new room scan")
-                            .frame(maxWidth: .infinity, minHeight: 56)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                headingLayout {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("HSS · ON DEVICE")
+                            .font(.caption.weight(.bold)).tracking(2)
+                            .foregroundStyle(ScannerProductTheme.accent)
+                        Text(showingTrash ? String(localized: "Trash") : String(localized: "Your spaces"))
+                            .font(.largeTitle.weight(.bold))
                     }
-                        .buttonStyle(ScannerPrimaryButtonStyle())
-                        .accessibilityHint("Creates a local room project and prepares the camera.")
-                    Button("Import HSSCAN archive", action: actions.importProject)
-                        .buttonStyle(ScannerSecondaryButtonStyle())
-                        .frame(maxWidth: .infinity, minHeight: 48)
-                        .accessibilityHint("Selects a local archive and verifies it before adding it to projects.")
+                    if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 8) }
+                    HStack {
+                    Button { showingSupport = true } label: {
+                        Image(systemName: "questionmark.circle").font(.system(size: 20)).frame(width: 48, height: 48)
+                    }
+                    .buttonStyle(ScannerGlassButtonStyle())
+                    .accessibilityLabel("Help and support")
+                    .accessibilityIdentifier("support.open")
+                    Button { showingPrivacy = true } label: {
+                        Image(systemName: "lock.shield").font(.system(size: 20)).frame(width: 48, height: 48)
+                    }
+                    .buttonStyle(ScannerGlassButtonStyle())
+                    .accessibilityLabel("Privacy and local data")
+                    .accessibilityIdentifier("privacy.open")
+                    }
                 }
-                .padding(.horizontal, 8)
-                Spacer(minLength: 12)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        ForEach(presentation.projects) { project in
-                            Button(action: { actions.openProject(project.id) }) {
-                                ScannerProjectIdentity(project: project)
+
+                if !showingTrash {
+                    VStack(alignment: .leading, spacing: 18) {
+                        HStack(alignment: .top, spacing: 16) {
+                            Image(systemName: "viewfinder")
+                                .font(.system(size: 42, weight: .ultraLight))
+                                .foregroundStyle(ScannerProductTheme.accent)
+                                .accessibilityHidden(true)
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Capture. Understand. Keep.").font(.title2.weight(.semibold))
+                                Text("Room geometry, its evidence, and your files. Together on your device.")
+                                    .font(.subheadline).foregroundStyle(ScannerProductTheme.muted)
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityHint("Opens \(project.name)")
+                        }
+                        Button(action: actions.startCapture) {
+                            Label("New room scan", systemImage: "plus")
+                                .frame(maxWidth: .infinity, minHeight: 52)
+                        }
+                        .buttonStyle(ScannerPrimaryButtonStyle())
+                        .disabled(!presentation.canStartCapture)
+                        .accessibilityIdentifier("library.create")
+                        Text("Depth and mesh capture requires a supported LiDAR device.")
+                            .font(.caption).foregroundStyle(ScannerProductTheme.muted)
+                    }
+                    .padding(22)
+                    .background(ScannerProductTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 26))
+                }
+
+                headingLayout {
+                    Text(showingTrash ? String(localized: "Retained until you delete") : String(localized: "Local library")).font(.headline)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !dynamicTypeSize.isAccessibilitySize { Spacer() }
+                    Button {
+                        showingTrash.toggle()
+                        search = ""
+                    } label: {
+                        Label(showingTrash ? String(localized: "Projects") : String(localized: "Trash"), systemImage: showingTrash ? "square.stack.3d.up" : "trash")
+                            .font(.subheadline).frame(minHeight: 44)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if !presentation.projects.isEmpty || showingTrash {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if dynamicTypeSize.isAccessibilitySize {
+                            Text("Search projects").font(.headline)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        HStack(spacing: 12) {
+                        Image(systemName: "magnifyingglass").font(.system(size: 20))
+                            .foregroundStyle(ScannerProductTheme.muted).accessibilityHidden(true)
+                        TextField("", text: $search, prompt: dynamicTypeSize.isAccessibilitySize ? Text("") : Text("Search projects"))
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .accessibilityLabel("Search projects")
+                            .frame(minHeight: 44)
+                        Menu {
+                            Button("Recently updated") { sortByName = false }
+                            Button("Name") { sortByName = true }
+                        } label: {
+                            Image(systemName: "arrow.up.arrow.down").font(.system(size: 20)).frame(width: 44, height: 44)
+                        }
+                        .accessibilityLabel("Sort projects")
+                        }
+                    }
+                    .padding(.leading, 16)
+                    .padding(.vertical, dynamicTypeSize.isAccessibilitySize ? 12 : 0)
+                    .background(ScannerProductTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+                }
+                if presentation.isManagingLibrary {
+                    ProgressView("Removing local project data…").frame(maxWidth: .infinity)
+                }
+                ForEach(presentation.issues) { issue in
+                    ScannerIssueCard(issue: issue, action: { actions.recover(issue) })
+                }
+                if visibleProjects.isEmpty {
+                    ContentUnavailableView(
+                        search.isEmpty ? (showingTrash ? String(localized: "Trash is empty") : String(localized: "A place for every space")) : String(localized: "No matching projects"),
+                        systemImage: search.isEmpty ? "square.stack.3d.up" : "magnifyingglass",
+                        description: Text(showingTrash ? String(localized: "Moved projects remain on this device until you permanently delete them.") : String(localized: "Start a scan or import an HSSCAN archive. No account required."))
+                    )
+                } else {
+                    LazyVStack(spacing: 12) {
+                        ForEach(visibleProjects) { project in
+                            HStack(spacing: 4) {
+                                Button { if !showingTrash { actions.openProject(project.id) } } label: {
+                                    ScannerProjectIdentity(project: project)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("project.open.\(project.id.uuidString)")
+                                .disabled(showingTrash)
+                                Menu {
+                                    if showingTrash {
+                                        if project.canRestore {
+                                            Button("Restore project", systemImage: "arrow.uturn.backward") { actions.restoreProject(project.id) }
+                                        } else {
+                                            Text("Deletion started — retry to finish")
+                                        }
+                                        Button("Delete permanently", systemImage: "trash", role: .destructive) { removing = project }
+                                    } else {
+                                        Button("Rename", systemImage: "pencil") {
+                                            newName = project.name
+                                            renaming = project
+                                        }
+                                        Button("Move to Trash", systemImage: "trash", role: .destructive) { actions.trashProject(project.id) }
+                                    }
+                                } label: {
+                                    Image(systemName: "ellipsis").frame(width: 48, height: 48)
+                                }
+                                .accessibilityLabel(String(localized: "Project actions: \(project.name)"))
+                            }
+                            .background(ScannerProductTheme.surface, in: RoundedRectangle(cornerRadius: 20))
                         }
                     }
                 }
-                Button("Import HSSCAN archive", action: actions.importProject)
-                    .buttonStyle(ScannerSecondaryButtonStyle())
-                    .frame(maxWidth: .infinity, minHeight: 48)
-                    .accessibilityHint("Selects a local archive and verifies it before adding it to projects.")
-                if presentation.canStartCapture {
-                    Button(action: actions.startCapture) {
-                        Text("Start a new room scan")
-                            .frame(maxWidth: .infinity, minHeight: 56)
+                if !showingTrash {
+                    if presentation.canCaptureObject {
+                        Button(action: actions.captureObject) {
+                            Label("Object library", systemImage: "cube.transparent")
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                        }.buttonStyle(ScannerSecondaryButtonStyle())
+                        .accessibilityIdentifier("object-library.open")
                     }
-                        .buttonStyle(ScannerPrimaryButtonStyle())
+                    Button(action: actions.importProject) {
+                        Label("Import HSSCAN archive", systemImage: "square.and.arrow.down")
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                    }
+                    .buttonStyle(ScannerSecondaryButtonStyle())
                 }
             }
+            .padding(24)
+            .frame(maxWidth: 740)
+            .frame(maxWidth: .infinity)
         }
-        .padding(24)
+        .disabled(presentation.isManagingLibrary)
+        .alert("Rename project", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Project name", text: $newName)
+            Button("Save") {
+                if let renaming { actions.renameProject(renaming.id, newName) }
+                renaming = nil
+            }.disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || newName.count > 160)
+            Button("Cancel", role: .cancel) { renaming = nil }
+        }
+        .alert("Delete this project permanently?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
+            Button("Delete permanently", role: .destructive) {
+                if let removing { actions.permanentlyDeleteProject(removing.id) }
+                removing = nil
+            }
+            Button("Cancel", role: .cancel) { removing = nil }
+        } message: {
+            Text("This removes this project's source observations, local exports and local HSSCAN archives. Copies you shared elsewhere and separate object captures are not removed. This cannot be undone.")
+        }
+        .sheet(isPresented: $showingPrivacy) {
+            NavigationStack {
+                List {
+                    Section {
+                        Text("Privacy and local data")
+                            .font(.title2.weight(.semibold))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("privacy.heading")
+                    }
+                    Section("On-device by design") {
+                        Label("Capture, processing and exports work offline.", systemImage: "iphone")
+                        Label("No account, analytics SDK or cloud reconstruction.", systemImage: "lock.shield")
+                    }
+                    Section("You control your projects") {
+                        Text("Move to Trash to keep a recoverable project. Delete permanently from Trash to remove its local source observations and exports.")
+                        Text("Sharing opens a system sheet. Only you choose a destination. Shared copies, file providers and device backups have their own retention policies.")
+                    }
+                    Section("Separate object captures") {
+                        Text("Object Capture photos and models are stored separately from room projects. Deleting a room does not delete these sessions.")
+                        Text("Deleting an object session removes its local photos, checkpoint and model. Models you shared elsewhere are not removed.")
+                    }
+                    Section("Before you share") {
+                        Text("Room source images stay on this device. Offline 3D export includes used images only when you enable that option. Room archives currently do not include source color images.")
+                        Text("Room archives contain calibrated source observations, geometry and your review notes. They can reveal a private space. Share only with people you trust.")
+                        Text("Portable room archives remove the original device clock origin. Original local sources stay unchanged. Object model sharing does not include the retained source photos.")
+                        Text("Device backups and destinations you select may keep copies. Deleting local data cannot erase those copies.")
+                    }
+                    Section("Publisher and policy") {
+                        Text(ScannerPublicSupport.publisher)
+                        Link(destination: ScannerPublicSupport.privacyURL) {
+                            Label("Full privacy policy", systemImage: "arrow.up.right.square")
+                        }
+                        .accessibilityIdentifier("privacy.policy-link")
+                        NavigationLink {
+                            ScannerSupportContent()
+                        } label: {
+                            Label("Help and support", systemImage: "questionmark.circle")
+                        }
+                        Text("Opening a website, email or phone link uses the service you choose. No scan or diagnostic file is attached automatically.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                .accessibilityIdentifier("privacy.content")
+                // The complete localized heading remains multiline in the
+                // scrolling content; a long Arabic bar title otherwise clips
+                // even at the standard text size on the supported iPhone UI.
+                .navigationTitle("Privacy")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) {
+                    Button { showingPrivacy = false } label: {
+                        Label("Done", systemImage: "xmark").labelStyle(.iconOnly)
+                            .font(.body.weight(.semibold)).frame(minWidth: 44, minHeight: 44)
+                    }.accessibilityIdentifier("privacy.done")
+                } }
+            }
+        }
+        .sheet(isPresented: $showingSupport) {
+            NavigationStack {
+                ScannerSupportContent()
+                    .toolbar { ToolbarItem(placement: .confirmationAction) {
+                        Button { showingSupport = false } label: {
+                            Label("Done", systemImage: "xmark").labelStyle(.iconOnly)
+                                .font(.body.weight(.semibold)).frame(minWidth: 44, minHeight: 44)
+                        }.accessibilityIdentifier("support.done")
+                    } }
+            }
+        }
+    }
+}
+
+/// Public, owner-approved destinations only. Opening one is an explicit user
+/// action handled by the system; no networking, scan upload or attachment here.
+enum ScannerPublicSupport {
+    static let publisher = "THE THIRD ACT LLC"
+    static let email = "Hello@the-3rdact.com"
+    static let phone = "+1 (719) 286-7476"
+    static let privacyURL = URL(string: "https://hybrid-spatial-scanner.azoz96.chatgpt.site/privacy/")!
+    static let supportURL = URL(string: "https://hybrid-spatial-scanner.azoz96.chatgpt.site/support/")!
+    static let emailURL = URL(string: "mailto:Hello@the-3rdact.com?subject=Hybrid%20Spatial%20Scanner%20support")!
+    static let phoneURL = URL(string: "tel:+17192867476")!
+}
+
+/// Bundled help remains readable offline and on devices without capture support.
+/// It never creates another workspace, geometry or capture-session owner.
+private struct ScannerSupportContent: View {
+    var body: some View {
+        List {
+            Section("Start with your device") {
+                DisclosureGroup("Why is capture unavailable?") {
+                    Text("Room capture needs supported LiDAR depth and mesh reconstruction, camera permission, usable storage and tracking. Read the blocked condition before retrying. Object Capture has separate hardware requirements.")
+                }
+                DisclosureGroup("Save before you close") {
+                    Text("Finish or pause to review, then save the accepted revision. An unsaved preview is not a saved project. Reopen from the local library and read any recovery warning before continuing.")
+                }
+            }
+            Section("Understand your result") {
+                DisclosureGroup("Missing evidence and measurements") {
+                    Text("A floor reference and supported closed boundaries are needed for a usable plan. Covered or reflective regions can stay unknown. Review the issue or add a supported physical reference measurement. Verify critical dimensions independently; this is not a certified surveying or safety tool.")
+                }
+                DisclosureGroup("Corrections and undo") {
+                    Text("Corrections require the current supported target. Protecting topology and locking a position are different actions. If new source data changes a target, keep the unresolved note instead of forcing a correction or undo onto another edge.")
+                }
+                DisclosureGroup("Source color and sharing") {
+                    Text("Unsupported or stale source images leave a neutral measured mesh. Color does not prove precision. Including used source images in 3D export is off by default. Room archives do not include source color images. Keep companion files together when sharing a 3D bundle.")
+                }
+            }
+            Section("Keep control of your data") {
+                DisclosureGroup("Interruptions and resource pauses") {
+                    Text("Reopen your saved project after an interruption. If storage or device pressure pauses capture, save and make safe space or let the device cool. Do not delete your only project copy to troubleshoot. Move safely; never climb or walk backward to complete a scan.")
+                }
+                DisclosureGroup("Delete local scans") {
+                    Text("Move a room to Trash, then delete it permanently to remove its local data and exports. Delete object sessions separately. Shared copies and device backups remain at their destinations. There is no app account to delete.")
+                }
+            }
+            Section("Contact the team") {
+                Text(ScannerPublicSupport.publisher)
+                Link(destination: ScannerPublicSupport.emailURL) {
+                    Label("Email support", systemImage: "envelope")
+                }.accessibilityIdentifier("support.email")
+                Text(verbatim: ScannerPublicSupport.email).font(.footnote).textSelection(.enabled)
+                Link(destination: ScannerPublicSupport.phoneURL) {
+                    Label("Call US support", systemImage: "phone")
+                }.accessibilityIdentifier("support.phone")
+                Text(verbatim: ScannerPublicSupport.phone).font(.footnote).textSelection(.enabled)
+                Text("Include the app name, device model, iOS version and a short description. Screenshots are optional; remove private details. Never send a password or verification code.")
+                Text("Opening a website, email or phone link uses the service you choose. No scan or diagnostic file is attached automatically.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Link("Support website", destination: ScannerPublicSupport.supportURL)
+                    .accessibilityIdentifier("support.website")
+                Link("Full privacy policy", destination: ScannerPublicSupport.privacyURL)
+                    .accessibilityIdentifier("support.policy-link")
+            }
+            Section("App version") {
+                Text(verbatim: (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
+                     + " (" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—") + ")")
+            }
+        }
+        .accessibilityIdentifier("support.content")
+        .navigationTitle("Help and support")
     }
 }
 
@@ -696,18 +1072,25 @@ enum ScannerTargetOverlayProjection {
 
 private struct ScannerProjectIdentity: View {
     let project: ScannerWorkspacePresentation.Project
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        HStack(spacing: 14) {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 14))
+            : AnyLayout(HStackLayout(spacing: 14))
+        layout {
             Image(systemName: "cube.transparent")
                 .font(.title2)
                 .foregroundStyle(ScannerProductTheme.accent)
                 .frame(width: 38, height: 38)
                 .background(ScannerProductTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             VStack(alignment: .leading, spacing: 3) {
-                Text(project.name).font(.headline).lineLimit(2)
+                ScannerDynamicText(project.name, style: .headline,
+                    identifier: "project.name.\(project.id.uuidString)")
                 if let savedDescription = project.savedDescription {
-                    Text(savedDescription).font(.caption).foregroundStyle(ScannerProductTheme.muted)
+                    ScannerDynamicText(savedDescription, style: .caption1,
+                        color: UIColor(ScannerProductTheme.muted),
+                        identifier: "project.saved-date.\(project.id.uuidString)")
                 }
             }
             Spacer()
@@ -715,6 +1098,76 @@ private struct ScannerProjectIdentity: View {
         }
         .padding(16)
         .background(ScannerProductTheme.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
+/// These multiline identity/header labels expose UIKit's preferred-font and
+/// automatic content-size behavior directly to accessibility. The surrounding
+/// SwiftUI layout still owns available width and expands vertically; no font
+/// size cap, audit exception, or replacement accessibility-only text is used.
+struct ScannerDynamicText: UIViewRepresentable {
+    let text: String
+    let style: UIFont.TextStyle
+    var color: UIColor = .label
+    let identifier: String
+    var isHeader = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    init(_ text: String, style: UIFont.TextStyle, color: UIColor = .label,
+         identifier: String, isHeader: Bool = false) {
+        self.text = text
+        self.style = style
+        self.color = color
+        self.identifier = identifier
+        self.isHeader = isHeader
+    }
+
+    func makeUIView(context: Context) -> UILabel {
+        let label = UILabel()
+        label.numberOfLines = 0
+        label.lineBreakMode = .byWordWrapping
+        label.textAlignment = .natural
+        label.adjustsFontForContentSizeCategory = true
+        label.setContentCompressionResistancePriority(.required, for: .vertical)
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return label
+    }
+
+    func updateUIView(_ label: UILabel, context: Context) {
+        label.text = text
+        label.font = UIFont.preferredFont(forTextStyle: style,
+            compatibleWith: UITraitCollection(preferredContentSizeCategory: dynamicTypeSize.scannerContentSizeCategory))
+        label.textColor = color
+        label.accessibilityIdentifier = identifier
+        label.accessibilityTraits = isHeader ? [.staticText, .header] : .staticText
+        label.invalidateIntrinsicContentSize()
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UILabel, context: Context) -> CGSize? {
+        let width = proposal.width ?? uiView.intrinsicContentSize.width
+        let size = uiView.sizeThatFits(CGSize(width: max(1, width), height: .greatestFiniteMagnitude))
+        return CGSize(width: min(width, size.width), height: size.height)
+    }
+
+}
+
+extension DynamicTypeSize {
+    var scannerContentSizeCategory: UIContentSizeCategory {
+        switch self {
+        case .xSmall: .extraSmall
+        case .small: .small
+        case .medium: .medium
+        case .large: .large
+        case .xLarge: .extraLarge
+        case .xxLarge: .extraExtraLarge
+        case .xxxLarge: .extraExtraExtraLarge
+        case .accessibility1: .accessibilityMedium
+        case .accessibility2: .accessibilityLarge
+        case .accessibility3: .accessibilityExtraLarge
+        case .accessibility4: .accessibilityExtraExtraLarge
+        case .accessibility5: .accessibilityExtraExtraExtraLarge
+        @unknown default: .large
+        }
     }
 }
 
@@ -759,17 +1212,28 @@ private struct ScannerIssueCard: View {
                 Spacer()
                 Text(priorityLabel).font(.caption.weight(.semibold)).foregroundStyle(priorityColor)
             }
-            Text(issue.detail).font(.subheadline).foregroundStyle(ScannerProductTheme.muted)
+            if let guidance = issue.guidance {
+                Text(guidance).font(.subheadline).foregroundStyle(ScannerProductTheme.muted)
+                DisclosureGroup("Engine details") {
+                    Text(issue.detail).font(.caption).textSelection(.enabled)
+                        .foregroundStyle(ScannerProductTheme.muted)
+                }
+                .font(.caption)
+            } else {
+                Text(issue.detail).font(.subheadline).foregroundStyle(ScannerProductTheme.muted)
+            }
             if let recoveryTitle = issue.recoveryTitle {
                 Button(recoveryTitle, action: action)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(ScannerProductTheme.accent)
                     .frame(minHeight: 44, alignment: .leading)
+                    .accessibilityIdentifier("quality-issue.action." + issue.id.uuidString)
             }
         }
         .padding(16)
         .background(ScannerProductTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("quality-issue." + issue.id.uuidString)
     }
 
     private var priorityLabel: LocalizedStringKey {

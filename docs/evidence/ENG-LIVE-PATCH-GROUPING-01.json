@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "task": "ENG-LIVE-PATCH-GROUPING-01",
+  "date": "2026-09-23",
+  "stack_base_commit": "23c812f7acbc28e3913dfc86c91a192f8084a798",
+  "production_source": {
+    "path": "SpatialCore/src/live_reconstruction.cpp",
+    "blob_sha": "883465c0b83f6a37f7402daf625c981c11c685ca",
+    "policy_excerpt_sha256": "cc50844772c38c8b5839276edb0efa7eaaf5e59c96006d0623304a8128c5ef03"
+  },
+  "execution": {
+    "environment": "Linux 6.18.44 x86_64",
+    "python": "3.13.5",
+    "command": "python3 tools/analyze_live_patch_grouping.py --source <exact-policy-excerpt> --output patch_grouping_report.json",
+    "exit_code": 0,
+    "scope": "The connected container could not materialize or clone the private repository. The hosted production source was read through the authenticated GitHub connector and the exact three-condition grouping policy excerpt was supplied to the harness. This validates the policy model and deterministic fixtures, not a compiled SpatialCore binary."
+  },
+  "policy": {
+    "max_prior_samples": 93,
+    "normal_dot_min": 0.99999,
+    "normal_angle_max_deg": 0.25623472915884415,
+    "plane_offset_max_m": 0.002
+  },
+  "characterization": {
+    "perfect_grid": {
+      "triangles": 400,
+      "patch_count": 20,
+      "triangle_counts_per_patch": [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20]
+    },
+    "coplanar_0_05mm_jitter": {
+      "patch_count": 20
+    },
+    "coplanar_0_10mm_jitter": {
+      "patch_count": 39
+    },
+    "shallow_crease": {
+      "0.20": {
+        "natural_order_patch_count": 2,
+        "bridge_first_patch_count": 1,
+        "natural_assignment": [0, 0, 1, 1],
+        "bridge_first_assignment": [0, 0, 0, 0],
+        "order_sensitive": true
+      },
+      "0.25": {
+        "natural_order_patch_count": 2,
+        "bridge_first_patch_count": 1,
+        "natural_assignment": [0, 0, 1, 1],
+        "bridge_first_assignment": [0, 0, 0, 0],
+        "order_sensitive": true
+      },
+      "0.30": {
+        "natural_order_patch_count": 2,
+        "bridge_first_patch_count": 2,
+        "natural_assignment": [0, 0, 1, 1],
+        "bridge_first_assignment": [0, 0, 1, 1],
+        "order_sensitive": false
+      },
+      "1.00": {
+        "natural_order_patch_count": 2,
+        "bridge_first_patch_count": 2,
+        "natural_assignment": [0, 0, 1, 1],
+        "bridge_first_assignment": [0, 0, 1, 1],
+        "order_sensitive": false
+      }
+    },
+    "protected_protrusion_chain": {
+      "description": "synthetic approach / 0.50 m return / 0.15 m front / 0.50 m return / continuation",
+      "expected_plan_segments": 5,
+      "patch_count": 5,
+      "assignment": [0, 0, 1, 1, 2, 2, 3, 3, 4, 4]
+    }
+  },
+  "threshold_sweep": [
+    {
+      "normal_angle_max_deg": 0.25623472915884415,
+      "noisy_0_10mm_patch_count": 39,
+      "half_degree_bridge_first_patch_count": 2
+    },
+    {
+      "normal_angle_max_deg": 0.5,
+      "noisy_0_10mm_patch_count": 20,
+      "half_degree_bridge_first_patch_count": 2
+    },
+    {
+      "normal_angle_max_deg": 1.0,
+      "noisy_0_10mm_patch_count": 20,
+      "half_degree_bridge_first_patch_count": 1
+    },
+    {
+      "normal_angle_max_deg": 2.0,
+      "noisy_0_10mm_patch_count": 20,
+      "half_degree_bridge_first_patch_count": 1
+    }
+  ],
+  "findings": {
+    "triangle_order_sensitivity_detected": true,
+    "order_sensitive_angles_deg": [0.2, 0.25],
+    "coplanar_fragmentation_detected": true,
+    "threshold_relaxation_is_not_safe_by_itself": true,
+    "production_threshold_changed": false
+  },
+  "research": [
+    {
+      "source": "Apple ARMeshGeometry",
+      "url": "https://developer.apple.com/documentation/arkit/armeshgeometry",
+      "used_for": "ARKit mesh anchors expose indexed triangle faces and face normals; triangle order is representation detail, not architectural topology."
+    },
+    {
+      "source": "Open3D planar patch detection",
+      "url": "https://www.open3d.org/docs/latest/tutorial/geometry/pointcloud.html#planar-patch-detection",
+      "used_for": "Reference for evaluating both normal-angle distribution and point-to-plane coplanarity before iterative growth/merge. No code copied."
+    },
+    {
+      "source": "PCL RegionGrowing",
+      "url": "https://pointclouds.org/documentation/classpcl_1_1_region_growing.html",
+      "used_for": "Reference for neighborhood smoothness plus optional residual/curvature criteria. No code copied."
+    }
+  ],
+  "not_run": [
+    "full CMake/CTest suite",
+    "compiled SpatialCore live reconstruction test",
+    "Xcode or iOS simulator build",
+    "physical iPhone LiDAR/ARKit capture",
+    "real-room metrology",
+    "thermal or memory profiling"
+  ]
+}

@@ -215,10 +215,12 @@ protocol CaptureSessionRunning: AnyObject {
     ) -> CaptureTargetSelectionSource?
     func run(configuration: CaptureSessionRunConfiguration) throws -> CaptureSessionRunConfiguration
     func setCaptureEpoch(_ epoch: UInt64)
+    func setOptionalAppearanceEnabled(_ enabled: Bool)
     func stop()
 }
 
 extension CaptureSessionRunning {
+    func setOptionalAppearanceEnabled(_ enabled: Bool) { _ = enabled }
     var captureSession: ARSession? { nil }
     var deliversStopAfterFlush: Bool { false }
 
@@ -337,6 +339,7 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
     nonisolated private let deliveryMailbox = CaptureDriverDeliveryMailbox()
     nonisolated private let meshAnchorStore = MeshAnchorLifecycleStore()
     nonisolated private let targetSelectionFrameStore = RetainedTargetSelectionFrameStore()
+    nonisolated private let appearancePhotoSampler = ScannerAppearancePhotoSampler()
     var eventHandler: ((CaptureSessionEvent) -> Void)?
     var sceneDepthIngestionHandler: ((SceneDepthIngestionResult) -> Void)?
     var meshAnchorLifecycleHandler: ((MeshAnchorLifecycleResult) -> Void)?
@@ -358,8 +361,11 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
 
     func setCaptureEpoch(_ epoch: UInt64) {
         targetSelectionFrameStore.clear()
+        appearancePhotoSampler.reset()
         frameIdentity.transition(to: epoch)
     }
+
+    func setOptionalAppearanceEnabled(_ enabled: Bool) { appearancePhotoSampler.setEnabled(enabled) }
 
     func targetSelectionSource(
         matching identity: SceneDepthFrameIdentity,
@@ -440,8 +446,10 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
             sessionEpoch: identity.epoch,
             sequence: identity.sequence
         )
-        let result = sceneDepthNormalizer.normalize(input)
-        if case .accepted(let normalizedFrame, _) = result {
+        var result = sceneDepthNormalizer.normalize(input)
+        if case .accepted(var normalizedFrame, let counters) = result {
+            normalizedFrame.appearancePhoto = appearancePhotoSampler.photo(arFrame: frame, normalized: normalizedFrame)
+            result = .accepted(normalizedFrame, counters)
             targetSelectionFrameStore.replace(arFrame: frame, normalizedFrame: normalizedFrame)
         }
         enqueue(.sceneDepth(result))
@@ -553,6 +561,7 @@ final class SystemARSessionDriver: NSObject, CaptureSessionRunning, ARSessionDel
 /// until the shared-session combination is physically verified.
 @MainActor
 final class ARSessionCoordinator: ObservableObject {
+    func setOptionalAppearanceEnabled(_ enabled: Bool) { sessionDriver.setOptionalAppearanceEnabled(enabled) }
     @Published private(set) var phase: CaptureSessionPhase
     @Published private(set) var readiness: CaptureReadiness
     @Published private(set) var trackingState: CaptureTrackingState
@@ -569,6 +578,7 @@ final class ARSessionCoordinator: ObservableObject {
     private let supportProvider: any CaptureFeatureSupportProviding
     private let sessionDriver: any CaptureSessionRunning
     private let normalizedFrameSink: (NormalizedSceneDepthFrame) -> Void
+    private let depthRejectionSink: (SceneDepthFrameRejection) -> Void
     private let meshAnchorSink: (OwnedMeshAnchorEvent) -> Void
     private let epochControlSink: (CaptureEpochControl) -> Void
     private let epochPolicy: EpochRelocalizationPolicy
@@ -587,6 +597,7 @@ final class ARSessionCoordinator: ObservableObject {
         sessionDriver: any CaptureSessionRunning = SystemARSessionDriver(),
         epochPolicy: EpochRelocalizationPolicy = EpochRelocalizationPolicy(),
         normalizedFrameSink: @escaping (NormalizedSceneDepthFrame) -> Void = { _ in },
+        depthRejectionSink: @escaping (SceneDepthFrameRejection) -> Void = { _ in },
         meshAnchorSink: @escaping (OwnedMeshAnchorEvent) -> Void = { _ in },
         epochControlSink: @escaping (CaptureEpochControl) -> Void = { _ in }
     ) {
@@ -596,6 +607,7 @@ final class ARSessionCoordinator: ObservableObject {
         self.sessionDriver = sessionDriver
         self.epochPolicy = epochPolicy
         self.normalizedFrameSink = normalizedFrameSink
+        self.depthRejectionSink = depthRejectionSink
         self.meshAnchorSink = meshAnchorSink
         self.epochControlSink = epochControlSink
         let baseline = readinessProvider.currentReadiness()
@@ -817,6 +829,7 @@ final class ARSessionCoordinator: ObservableObject {
         case .rejected(let reason, let counters):
             sceneDepthIngestionCounters = counters
             lastSceneDepthRejection = reason
+            depthRejectionSink(reason)
         }
     }
 

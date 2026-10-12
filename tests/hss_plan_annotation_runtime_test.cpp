@@ -95,7 +95,7 @@ Mesh room(bool closed) {
   const std::vector<std::pair<float, float>> outline{
       {0.0F, 0.0F}, {4.0F, 0.0F}, {4.0F, 3.0F}, {0.0F, 3.0F}};
   Mesh result;
-  for (const auto [x, z] : outline)
+  for (const auto &[x, z] : outline)
     result.vertices.insert(result.vertices.end(), {x, 0.0F, -z, x, 3.0F, -z});
   const size_t edge_count = closed ? outline.size() : outline.size() - 1U;
   for (size_t edge = 0U; edge < edge_count; ++edge) {

@@ -1,6 +1,7 @@
 #pragma once
 #include "hss/annotation_geometry.hpp"
 #include "hss/bounded_ingress.hpp"
+#include "hss/scene_editing.hpp"
 #include <memory>
 #include <string>
 #include <vector>
@@ -26,7 +27,15 @@ struct Evidence {
   std::shared_ptr<Lease> lease;
   ingress::Event event;
 };
+// The retained immutable payload owns its reservation across source rebuilds
+// and pinned snapshots; an unchanged rebuild copies only this shared handle.
+struct UnknownOverlay {
+  std::shared_ptr<Lease> lease;
+  std::shared_ptr<const scene_editing::RetainedUnknowns> records;
+  uint64_t serialized_bytes{};
+};
 struct Snapshot {
+  std::shared_ptr<const UnknownOverlay> retained_unknowns;
   std::shared_ptr<Lease> lease;
   uint64_t revision{}, node_count{}, edge_count{}, issue_count{};
   std::vector<HSSVec3d> vertices;
@@ -57,7 +66,9 @@ public:
   HSSStatus publish_edited_scene(std::string candidate_scene_json,
                                  uint64_t expected_revision,
                                  uint64_t node_count, uint64_t edge_count,
-                                 uint64_t issue_count);
+                                 uint64_t issue_count,
+                                 std::shared_ptr<const scene_editing::RetainedUnknowns>
+                                     retained_unknowns = {});
   void seal_configuration();
   void cancel(HSSStatus);
 

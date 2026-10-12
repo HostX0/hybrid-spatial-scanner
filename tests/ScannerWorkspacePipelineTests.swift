@@ -1,8 +1,587 @@
 import XCTest
 import UniformTypeIdentifiers
+import simd
 @testable import HybridSpatialScanner
 
 final class ScannerWorkspacePipelineTests: XCTestCase {
+#if DEBUG && targetEnvironment(simulator)
+    @MainActor
+    func testUITestNamespaceIsCanonicalAndSeparateFromInstalledLibrary() throws {
+        let documents = URL(fileURLWithPath: "/owned-app/Documents", isDirectory: true)
+        let id = UUID()
+        let root = try XCTUnwrap(ScannerWorkspaceModel.uiTestingRoot(documentsRoot: documents,
+            environment: ["HSS_UI_TEST_RUN_ID": id.uuidString.lowercased()]))
+        XCTAssertEqual(root.path, documents.appendingPathComponent("HSSUITestProjects")
+            .appendingPathComponent(id.uuidString).path)
+        XCTAssertNotEqual(root, documents.appendingPathComponent("HSSProjects"))
+        let other = ScannerWorkspaceModel.uiTestingRoot(documentsRoot: documents,
+            environment: ["HSS_UI_TEST_RUN_ID": UUID().uuidString])
+        XCTAssertNotEqual(root, other)
+    }
+
+    @MainActor
+    func testUITestNamespaceRejectsMissingMalformedAndPathIdentifiers() {
+        let documents = URL(fileURLWithPath: "/owned-app/Documents", isDirectory: true)
+        XCTAssertNil(ScannerWorkspaceModel.uiTestingRoot(documentsRoot: documents, environment: [:]))
+        for value in ["", "../../HSSProjects", "/private", "not-a-uuid", UUID().uuidString + "/child"] {
+            XCTAssertNil(ScannerWorkspaceModel.uiTestingRoot(documentsRoot: documents,
+                environment: ["HSS_UI_TEST_RUN_ID": value]), value)
+        }
+    }
+#endif
+
+    func testFreshProjectClockRecordsElapsedEventsNotSystemBootOrigin() throws {
+        var clock = ProjectCaptureClock(lastDurableTime: 0)
+        XCTAssertEqual(clock.projectTime(for: 1_000_000), 0)
+        XCTAssertEqual(clock.projectTime(for: 1_000_000.25), 0.25)
+        XCTAssertEqual(clock.projectTime(for: 1_000_000.5), 0.5)
+        var laterSession = ProjectCaptureClock(lastDurableTime: clock.lastTime)
+        XCTAssertEqual(laterSession.projectTime(for: 2_000_000), 0.5)
+        XCTAssertEqual(laterSession.projectTime(for: 2_000_000.5), 1)
+    }
+
+    func testReopenedReviewNoteRetainsDurableOrderingWithoutDeviceUptime() async throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID(), captureID = UUID()
+        let before = try await createSyntheticProject(root: root, projectID: projectID, captureID: captureID)
+        let original = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        let cursorBefore = try await original.replayCommittedSource()
+        let catalog = try JSONSerialization.data(withJSONObject: ["projects": [[
+            "id": projectID.uuidString, "captureID": captureID.uuidString, "name": "Clock fixture",
+            "updatedAt": 0, "sceneRevision": before.revision, "state": "frozen", "sourceIsSynthetic": true
+        ]]])
+        try catalog.write(to: root.appendingPathComponent("workspace-catalog.json"))
+        let workspace = await MainActor.run { ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true) }
+        await MainActor.run { workspace.openProject(id: projectID) }
+        for _ in 0..<100 {
+            if await MainActor.run(body: { workspace.canRecordMissingEvidence }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await MainActor.run { workspace.recordMissingEvidence(reason: "Unobserved doorway; no geometry invented") }
+        for _ in 0..<200 {
+            if await MainActor.run(body: { workspace.latestSnapshot?.revision == before.revision + 1 }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let after = await MainActor.run { workspace.latestSnapshot }
+        XCTAssertEqual(after?.revision, before.revision + 1)
+        XCTAssertEqual(after?.verticesMetres, before.verticesMetres)
+        await MainActor.run { workspace.saveSelectedProject() }
+        for _ in 0..<200 {
+            if await MainActor.run(body: { if case .saved = workspace.saveState { return true }; return false }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let reopened = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        let cursorAfter = try await reopened.replayCommittedSource()
+        XCTAssertEqual(cursorAfter.lastMonotonicTime, cursorBefore.lastMonotonicTime,
+            "Review-only controls use event sequence, not device boot time or a physical elapsed-time claim.")
+        XCTAssertEqual(cursorAfter.lastEventSequence, cursorBefore.lastEventSequence + 1)
+    }
+
+    func testTypedFloorIssueOffersOnlyCurrentSupportedRecovery() throws {
+        let id = UUID()
+        let snapshot = try assessmentSnapshot(issues: [assessmentIssue(id: id, code: "floor_reference_unknown")])
+        let assessment = ScannerSceneAssessment.decode(snapshot)
+        let issue = try XCTUnwrap(assessment.issues.first)
+        XCTAssertEqual(issue.nativeCode, "floor_reference_unknown")
+        XCTAssertEqual(issue.nativeSceneRevision, 7)
+        XCTAssertNotNil(issue.guidance)
+        XCTAssertNil(issue.recoveryTitle, "Decoding alone must not promise executable UI.")
+        XCTAssertTrue(ScannerQualityActions.offersFloorReference(issue, assessment: assessment, revision: 7, canConfirm: true))
+        XCTAssertFalse(ScannerQualityActions.offersFloorReference(issue, assessment: assessment, revision: 8, canConfirm: true))
+        XCTAssertFalse(ScannerQualityActions.offersFloorReference(issue, assessment: assessment, revision: 7, canConfirm: false))
+    }
+
+    func testFloorIssueActionRejectsSyntheticResolvedAndUnrelatedCards() throws {
+        let id = UUID()
+        let active = assessmentIssue(id: id, code: "floor_reference_unknown")
+        let original = ScannerSceneAssessment.decode(try assessmentSnapshot(issues: [active]))
+        let issue = try XCTUnwrap(original.issues.first)
+        for assessment in [
+            ScannerSceneAssessment.decode(try assessmentSnapshot(synthetic: true, issues: [active])),
+            ScannerSceneAssessment.decode(try assessmentSnapshot(issues: [assessmentIssue(id: id, code: "floor_reference_unknown", state: "resolved")])),
+            ScannerSceneAssessment.decode(try assessmentSnapshot(issues: [assessmentIssue(id: UUID(), code: "floor_reference_unknown")])),
+            ScannerSceneAssessment.decode(try assessmentSnapshot(revision: "6", issues: [active]))
+        ] {
+            XCTAssertFalse(ScannerQualityActions.offersFloorReference(issue, assessment: assessment, revision: 7, canConfirm: true))
+        }
+    }
+
+    func testNativeActionTextCannotCreateAnExecutableCorrection() throws {
+        var record = assessmentIssue(id: UUID(), code: "future_custom_code")
+        record["action"] = "Set observed floor reference; execute arbitrary command"
+        let assessment = ScannerSceneAssessment.decode(try assessmentSnapshot(issues: [record]))
+        let issue = try XCTUnwrap(assessment.issues.first)
+        XCTAssertTrue(issue.detail.contains("execute arbitrary command"), "Original diagnostic text is preserved, not interpreted.")
+        XCTAssertNil(issue.guidance)
+        XCTAssertNil(issue.recoveryTitle)
+        XCTAssertFalse(ScannerQualityActions.offersFloorReference(issue, assessment: assessment, revision: 7, canConfirm: true))
+    }
+
+    func testKnownIssueCoachingPreservesNativeReasonAndSourceIdentity() throws {
+        for code in ["floor_reference_unknown", "unresolved_epoch", "provisional_capture",
+                     "open_or_ambiguous_slice", "unclassified_slice_loops",
+                     "plan_semantics_unavailable", "partial_plane_support"] {
+            let id = UUID()
+            let assessment = ScannerSceneAssessment.decode(try assessmentSnapshot(issues: [assessmentIssue(id: id, code: code)]))
+            let issue = try XCTUnwrap(assessment.issues.first)
+            XCTAssertEqual(issue.id, id)
+            XCTAssertEqual(issue.nativeSceneRevision, 7)
+            XCTAssertNotNil(issue.guidance)
+            XCTAssertTrue(issue.detail.contains("Retained support requires review"))
+            XCTAssertTrue(issue.detail.contains("Capture another useful view"))
+        }
+    }
+
+    func testDriverFailurePriorityAndBuiltInIssueIdentityRemainStable() {
+        XCTAssertEqual(ScannerQualityActions.driverPriority(phase: .failed("failure"), recoveryAction: nil), .blocking)
+        XCTAssertEqual(ScannerQualityActions.driverPriority(phase: .frozen, recoveryAction: .retrySave), .important)
+        XCTAssertEqual(ScannerQualityActions.driverPriority(phase: .frozen, recoveryAction: nil), .notice)
+        XCTAssertNotEqual(ScannerQualityActions.saveFailureID, ScannerQualityActions.referenceSceneID)
+        XCTAssertEqual(ScannerQualityActions.saveFailureID.uuidString, "00000000-0000-4000-8000-000000000013")
+    }
+
+    func testFloorTapMapsVisibleFaceToRawRetainedVerticesWithoutRetargetingHiddenMesh() {
+        let points: [SIMD3<Double>] = [SIMD3(0, 2, 0), SIMD3(1, 2, 0), SIMD3(0, 2, -1),
+            SIMD3(5, 2, 0), SIMD3(6, 2, 0), SIMD3(5, 2, -1)]
+        let snapshot = ScannerSceneSnapshot(revision: 9, verticesMetres: points, triangleIndices: [0, 1, 2, 3, 4, 5],
+            reviewTriangleInclusion: [0, 1], sceneJSON: Data(), provenance: [.syntheticTest], isFrozen: true)
+        XCTAssertEqual(ScannerFloorReferenceProposal.nearestVisibleVertex(snapshot: snapshot, faceIndex: 0, localPoint: SIMD3(5.1, 2, -0.1)), 3)
+        XCTAssertNil(ScannerFloorReferenceProposal.nearestVisibleVertex(snapshot: snapshot, faceIndex: 1, localPoint: SIMD3(5, 2, 0)))
+        XCTAssertNil(ScannerFloorReferenceProposal.nearestVisibleVertex(snapshot: snapshot, faceIndex: 0, localPoint: SIMD3(.nan, 2, 0)))
+        XCTAssertNil(ScannerFloorReferenceProposal.make(snapshot: snapshot, vertexIndices: [0, 1, 2]))
+        XCTAssertNotNil(ScannerFloorReferenceProposal.make(snapshot: snapshot, vertexIndices: [3, 4, 5]))
+        XCTAssertEqual(snapshot.triangleIndices, [0, 1, 2, 3, 4, 5])
+    }
+
+    func testFloorProposalUsesRetainedPointsAndRightHandedArbitrarySlope() throws {
+        let points: [SIMD3<Double>] = [SIMD3(10, 2, -5), SIMD3(11, 2.3, -5), SIMD3(10, 2.1, -6)]
+        let snapshot = floorProposalFixture(points: points)
+        let proposal = try XCTUnwrap(ScannerFloorReferenceProposal.make(snapshot: snapshot, vertexIndices: [0, 1, 2]))
+        XCTAssertEqual(proposal.sceneRevision, snapshot.revision)
+        XCTAssertEqual(proposal.projectFromFloor.columns.3.y, 2, "Physical floor is not the arbitrary world Y=0.")
+        let transform = proposal.projectFromFloor
+        let rotation = simd_double3x3(columns: (SIMD3(transform.columns.0.x, transform.columns.0.y, transform.columns.0.z),
+            SIMD3(transform.columns.1.x, transform.columns.1.y, transform.columns.1.z),
+            SIMD3(transform.columns.2.x, transform.columns.2.y, transform.columns.2.z)))
+        XCTAssertEqual(simd_determinant(rotation), 1, accuracy: 1e-12)
+        XCTAssertGreaterThan(transform.columns.1.y, 0)
+        for point in points {
+            let floor = transform.inverse * SIMD4(point.x, point.y, point.z, 1)
+            XCTAssertEqual(floor.y, 0, accuracy: 1e-12, "Numerical plane fit, not a physical precision claim.")
+        }
+        XCTAssertEqual(snapshot.verticesMetres, points, "The proposal never edits retained observations.")
+    }
+
+    func testFloorProposalRejectsDegenerateUnretainedAndVerticalSelection() {
+        let ordinary = floorProposalFixture(points: [SIMD3(0, 2, 0), SIMD3(1, 2, 0), SIMD3(0, 2, -1)])
+        for selection in [[0, 0, 2], [0, 1], [0, 1, 3], [-1, 1, 2]] {
+            XCTAssertNil(ScannerFloorReferenceProposal.make(snapshot: ordinary, vertexIndices: selection))
+        }
+        for points: [SIMD3<Double>] in [
+            [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(2, 0, 0)],
+            [SIMD3(0, 0, 0), SIMD3(0, 1, 0), SIMD3(0, 0, 1)],
+            [SIMD3(.nan, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 0, -1)]
+        ] {
+            XCTAssertNil(ScannerFloorReferenceProposal.make(snapshot: floorProposalFixture(points: points), vertexIndices: [0, 1, 2]))
+        }
+    }
+
+    private func floorProposalFixture(points: [SIMD3<Double>]) -> ScannerSceneSnapshot {
+        ScannerSceneSnapshot(revision: 9, verticesMetres: points, triangleIndices: [0, 1, 2],
+            sceneJSON: Data(), provenance: [.syntheticTest], isFrozen: true)
+    }
+
+    func testReopenedProjectAcceptsExplicitPlanReferenceWithoutStartingCamera() async throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID(), captureID = UUID()
+        let before = try await createSyntheticProject(root: root, projectID: projectID, captureID: captureID)
+        let catalog = try JSONSerialization.data(withJSONObject: ["projects": [[
+            "id": projectID.uuidString, "captureID": captureID.uuidString, "name": "Retained reference fixture",
+            "updatedAt": 0, "sceneRevision": before.revision, "state": "frozen", "sourceIsSynthetic": true
+        ]]])
+        try catalog.write(to: root.appendingPathComponent("workspace-catalog.json"))
+        let workspace = await MainActor.run { ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true) }
+        await MainActor.run { workspace.openProject(id: projectID) }
+        for _ in 0..<100 {
+            if await MainActor.run(body: { workspace.phase == .frozen }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let mayConfirm = await MainActor.run { workspace.canConfirmPlanReference }
+        let initialPhase = await MainActor.run { workspace.phase }
+        XCTAssertEqual(initialPhase, .frozen)
+        XCTAssertTrue(mayConfirm, "Retained accepted epochs must not require a running camera.")
+        guard mayConfirm else { return }
+        await MainActor.run { workspace.confirmPlanReference(projectFromFloor: matrix_identity_double4x4, cutHeightMetres: 1.2) }
+        for _ in 0..<200 {
+            if await MainActor.run(body: { workspace.latestSnapshot?.revision == before.revision + 1 && workspace.latestSnapshot?.isFrozen == true }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let capturedAfter = await MainActor.run { workspace.latestSnapshot }
+        let after = try XCTUnwrap(capturedAfter)
+        XCTAssertEqual(after.revision, before.revision + 1)
+        XCTAssertTrue(after.isFrozen)
+        XCTAssertEqual(after.verticesMetres, before.verticesMetres)
+        XCTAssertEqual(after.triangleIndices, before.triangleIndices)
+        let unsaved = await MainActor.run { workspace.saveState }
+        XCTAssertEqual(unsaved, .hasUnsavedChanges)
+        await MainActor.run { workspace.saveSelectedProject() }
+        for _ in 0..<200 {
+            if await MainActor.run(body: { workspace.phase == .frozen && workspace.saveState != .saving }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let reopened = await MainActor.run { ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true) }
+        await MainActor.run { reopened.openProject(id: projectID) }
+        for _ in 0..<100 {
+            if await MainActor.run(body: { reopened.phase == .frozen }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let reopenedSnapshot = await MainActor.run { reopened.latestSnapshot }
+        let canConfirmAgain = await MainActor.run { reopened.canConfirmPlanReference }
+        XCTAssertEqual(reopenedSnapshot?.revision, after.revision)
+        XCTAssertEqual(reopenedSnapshot?.sceneJSON, after.sceneJSON)
+        XCTAssertTrue(canConfirmAgain)
+    }
+
+    func testRetainedPlanEpochRejectsUnrelatedStaleAndUnresolvedContexts() async throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID(), captureID = UUID()
+        let snapshot = try await createSyntheticProject(root: root, projectID: projectID, captureID: captureID)
+        XCTAssertEqual(ScannerRetainedPlanEpoch.resolve(snapshot: snapshot, projectID: projectID, captureID: captureID), 1)
+        XCTAssertNil(ScannerRetainedPlanEpoch.resolve(snapshot: snapshot, projectID: UUID(), captureID: captureID))
+        XCTAssertNil(ScannerRetainedPlanEpoch.resolve(snapshot: snapshot, projectID: projectID, captureID: UUID()))
+        let original = try XCTUnwrap(JSONSerialization.jsonObject(with: snapshot.sceneJSON) as? [String: Any])
+        for mutation in ["revision", "unresolved", "matrix", "transformRevision"] {
+            var document = original
+            if mutation == "revision" {
+                document["scene_revision"] = String(snapshot.revision + 1)
+            } else {
+                var epochs = try XCTUnwrap(document["epochs"] as? [[String: Any]])
+                if mutation == "unresolved" { epochs[0]["relationship_state"] = "unresolved" }
+                if mutation == "matrix" { epochs[0]["T_project_world"] = NSNull() }
+                if mutation == "transformRevision" { epochs[0]["transform_revision"] = "01" }
+                document["epochs"] = epochs
+            }
+            let changed = ScannerSceneSnapshot(
+                revision: snapshot.revision, verticesMetres: snapshot.verticesMetres,
+                triangleIndices: snapshot.triangleIndices,
+                sceneJSON: try JSONSerialization.data(withJSONObject: document), provenance: [.syntheticTest], isFrozen: true)
+            XCTAssertNil(ScannerRetainedPlanEpoch.resolve(snapshot: changed, projectID: projectID, captureID: captureID), mutation)
+        }
+    }
+
+    func testObjectLibraryDiscoversLegacyPhotosWithoutMetricAuthority() throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Existing ISO8601 records intentionally have second precision.
+        let paths = try ObjectCaptureStorage.createSession(now: Date(timeIntervalSince1970: 1_700_000_000), capturesRootDirectory: root)
+        try Data([1, 2, 3]).write(to: paths.imagesDirectory.appendingPathComponent("sample.HEIC"))
+        try Data([4]).write(to: paths.imagesDirectory.appendingPathComponent("metadata.json"))
+        let entry = try XCTUnwrap(ObjectCaptureStorage.library(capturesRootDirectory: root).first)
+        XCTAssertEqual(entry.id, paths.id)
+        XCTAssertEqual(entry.state, .retainedPhotos)
+        XCTAssertEqual(entry.photoCount, 1)
+        XCTAssertNil(entry.artifact)
+        XCTAssertEqual(try ObjectCaptureStorage.reconstructionPaths(id: paths.id, capturesRootDirectory: root), paths)
+        XCTAssertThrowsError(try ObjectCaptureStorage.createSession(id: paths.id, capturesRootDirectory: root))
+    }
+
+    func testObjectArtifactRebasesUntrustedAbsolutePathsIntoOwnedSession() throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = try ObjectCaptureStorage.createSession(capturesRootDirectory: root)
+        try Data([1, 2, 3]).write(to: paths.modelURL)
+        let artifact = ObjectCaptureArtifact(
+            id: paths.id, sessionDirectory: URL(fileURLWithPath: "/outside/session"),
+            modelURL: URL(fileURLWithPath: "/outside/private.usdz"), imagesDirectory: URL(fileURLWithPath: "/outside/photos"),
+            createdAt: paths.createdAt, completedAt: Date(), capturedImageCount: 8,
+            photoRetentionPolicy: .retainedUntilExplicitSessionDeletion,
+            provenance: .realityKitObjectCapture(), processingWarnings: ["Hidden surfaces remain unknown"])
+        try ObjectCaptureStorage.persistManifest(for: artifact, at: paths.manifestURL)
+        let entry = try XCTUnwrap(ObjectCaptureStorage.library(capturesRootDirectory: root).first)
+        XCTAssertEqual(entry.state, .completed)
+        XCTAssertEqual(entry.artifact?.modelURL, paths.modelURL)
+        XCTAssertEqual(entry.artifact?.imagesDirectory, paths.imagesDirectory)
+        XCTAssertEqual(entry.artifact?.provenance.metricAuthority, false)
+        XCTAssertEqual(entry.artifact?.processingWarnings, artifact.processingWarnings)
+    }
+
+    func testObjectDeletionRemovesOnlyUUIDOwnedFilesAndDoesNotFollowNestedLinks() throws {
+        let root = try objectRoot(), outside = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: outside) }
+        let first = try ObjectCaptureStorage.createSession(capturesRootDirectory: root)
+        let other = try ObjectCaptureStorage.createSession(capturesRootDirectory: root)
+        let external = outside.appendingPathComponent("shared.usdz")
+        try Data([3]).write(to: external)
+        try FileManager.default.createSymbolicLink(at: first.imagesDirectory.appendingPathComponent("redirect"), withDestinationURL: outside)
+        XCTAssertThrowsError(try ObjectCaptureStorage.reconstructionPaths(id: first.id, capturesRootDirectory: root))
+        try ObjectCaptureStorage.deleteSession(id: first.id, capturesRootDirectory: root)
+        try ObjectCaptureStorage.deleteSession(id: first.id, capturesRootDirectory: root)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: external.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: other.sessionDirectory.path))
+        XCTAssertEqual(try ObjectCaptureStorage.library(capturesRootDirectory: root).map(\.id), [other.id])
+    }
+
+    func testObjectDeletionIntentSurvivesPartialCleanupAndBlocksReconstruction() throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = try ObjectCaptureStorage.createSession(capturesRootDirectory: root)
+        try Data([1]).write(to: paths.imagesDirectory.appendingPathComponent("sample.heic"))
+        let intent = root.appendingPathComponent(".deleting-" + paths.id.uuidString)
+        try Data("{}".utf8).write(to: intent)
+        XCTAssertEqual(try ObjectCaptureStorage.library(capturesRootDirectory: root).first?.state, .deleting)
+        XCTAssertThrowsError(try ObjectCaptureStorage.reconstructionPaths(id: paths.id, capturesRootDirectory: root))
+        try FileManager.default.removeItem(at: paths.sessionDirectory)
+        XCTAssertEqual(try ObjectCaptureStorage.library(capturesRootDirectory: root).first?.state, .deleting)
+        try ObjectCaptureStorage.deleteSession(id: paths.id, capturesRootDirectory: root)
+        XCTAssertTrue(try ObjectCaptureStorage.library(capturesRootDirectory: root).isEmpty)
+    }
+
+    func testObjectLibraryRejectsRedirectedRootSessionAndCheckpoint() throws {
+        let root = try objectRoot(), outside = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: outside) }
+        let redirect = root.appendingPathComponent("redirect")
+        try FileManager.default.createSymbolicLink(at: redirect, withDestinationURL: outside)
+        XCTAssertThrowsError(try ObjectCaptureStorage.library(capturesRootDirectory: redirect))
+        XCTAssertThrowsError(try ObjectCaptureStorage.createSession(capturesRootDirectory: redirect))
+        let id = UUID()
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent(id.uuidString), withDestinationURL: outside)
+        XCTAssertEqual(try ObjectCaptureStorage.library(capturesRootDirectory: root).first?.state, .unavailable)
+        XCTAssertThrowsError(try ObjectCaptureStorage.deleteSession(id: id, capturesRootDirectory: root))
+        let paths = try ObjectCaptureStorage.createSession(capturesRootDirectory: root)
+        try Data([1]).write(to: paths.imagesDirectory.appendingPathComponent("sample.heic"))
+        try FileManager.default.removeItem(at: paths.captureCheckpointDirectory)
+        try FileManager.default.createSymbolicLink(at: paths.captureCheckpointDirectory, withDestinationURL: outside)
+        XCTAssertThrowsError(try ObjectCaptureStorage.reconstructionPaths(id: paths.id, capturesRootDirectory: root))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path))
+    }
+
+    func testObjectCorruptRecordIsVisibleButCannotResume() throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = try ObjectCaptureStorage.createSession(capturesRootDirectory: root)
+        try Data("broken".utf8).write(to: paths.sessionRecordURL)
+        let entry = try XCTUnwrap(ObjectCaptureStorage.library(capturesRootDirectory: root).first)
+        XCTAssertEqual(entry.state, .unavailable)
+        XCTAssertThrowsError(try ObjectCaptureStorage.reconstructionPaths(id: paths.id, capturesRootDirectory: root))
+        try ObjectCaptureStorage.deleteSession(id: paths.id, capturesRootDirectory: root)
+        XCTAssertTrue(try ObjectCaptureStorage.library(capturesRootDirectory: root).isEmpty)
+    }
+
+    func testObjectDanglingSessionLinkIsNotReportedAsSuccessfulDeletion() throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID()
+        let session = root.appendingPathComponent(id.uuidString)
+        try FileManager.default.createSymbolicLink(at: session, withDestinationURL: root.appendingPathComponent("missing"))
+        XCTAssertEqual(try ObjectCaptureStorage.library(capturesRootDirectory: root).first?.state, .unavailable)
+        XCTAssertThrowsError(try ObjectCaptureStorage.deleteSession(id: id, capturesRootDirectory: root))
+        XCTAssertThrowsError(try ObjectCaptureStorage.createSession(id: id, capturesRootDirectory: root))
+        XCTAssertNoThrow(try FileManager.default.destinationOfSymbolicLink(atPath: session.path))
+    }
+
+    private func objectRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hss-object-test-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    func testCapturedMeshReviewDoesNotDependOnSemanticPlan() throws {
+        let snapshot = try assessmentSnapshot()
+        XCTAssertNil(ScannerAcceptedPlanDecoder.decode(snapshot))
+        XCTAssertTrue(ScannerSceneAssessment.decode(snapshot).hasCapturedGeometry)
+    }
+
+    func testAssessmentPreservesIssueIdentitySortsAndFiltersSourceAndStaleRecords() throws {
+        let importantID = UUID(), blockingID = UUID()
+        let issues: [[String: Any]] = [
+            assessmentIssue(id: importantID, code: "floor_reference_unknown"),
+            assessmentIssue(id: UUID(), code: "mesh_source"),
+            assessmentIssue(id: UUID(), code: "unresolved_epoch", revision: "6"),
+            assessmentIssue(id: blockingID, code: "unresolved_epoch"),
+            assessmentIssue(id: UUID(), code: "open_or_ambiguous_slice", state: "resolved")
+        ]
+        let result = ScannerSceneAssessment.decode(try assessmentSnapshot(issues: issues))
+        XCTAssertEqual(result.issues.map(\.id), [blockingID, importantID])
+        XCTAssertEqual(result.issues.first?.priority, .blocking)
+        XCTAssertTrue(result.issues.allSatisfy { $0.recoveryTitle == nil }, "Unwired repair tools are not exposed.")
+    }
+
+    func testSyntheticFlagInNativeDocumentSuppressesCapturedClaim() throws {
+        let result = ScannerSceneAssessment.decode(try assessmentSnapshot(synthetic: true))
+        XCTAssertFalse(result.hasCapturedGeometry, "A missing Swift test marker cannot override native synthetic provenance.")
+    }
+
+    func testAssessmentFailsClosedForMismatchedAndMalformedReports() throws {
+        for snapshot in [
+            try assessmentSnapshot(revision: "6"),
+            try assessmentSnapshot(issues: [assessmentIssue(id: UUID(), code: "future", severity: "unexpected")])
+        ] {
+            let result = ScannerSceneAssessment.decode(snapshot)
+            XCTAssertEqual(result.issues.count, 1)
+            XCTAssertEqual(result.issues.first?.priority, .blocking)
+            XCTAssertFalse(result.hasCapturedGeometry)
+        }
+    }
+
+    private func assessmentIssue(id: UUID, code: String, revision: String = "7", severity: String = "warning", state: String = "active") -> [String: Any] {
+        ["id": id.uuidString, "code": code, "scene_revision": revision,
+         "severity": severity, "reason": "Retained support requires review", "action": "Capture another useful view", "state": state]
+    }
+
+    private func assessmentSnapshot(revision: String = "7", synthetic: Bool = false, issues: [[String: Any]] = []) throws -> ScannerSceneSnapshot {
+        ScannerSceneSnapshot(
+            revision: 7, verticesMetres: [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 1, 0)],
+            triangleIndices: [0, 1, 2],
+            sceneJSON: try JSONSerialization.data(withJSONObject: [
+                "scene_revision": revision, "source_is_synthetic": synthetic, "units": "m", "issues": issues
+            ]), provenance: [.capturedARKitMesh], isFrozen: true
+        )
+    }
+
+    @MainActor
+    func testLibraryMigratesLegacyCatalogAndPersistsRenameTrashRestore() throws {
+        let root = try makeLibraryFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true)
+        workspace.reloadProjects()
+        let project = try XCTUnwrap(workspace.localProjects.first)
+        XCTAssertTrue(workspace.deletedProjects.isEmpty)
+        workspace.renameProject(id: project.id, name: "  Workshop / الطابق الثاني  ")
+        XCTAssertEqual(workspace.localProjects.first?.name, "Workshop / الطابق الثاني")
+        XCTAssertEqual(workspace.localProjects.first?.sceneRevision, project.sceneRevision)
+        workspace.moveProjectToTrash(id: project.id)
+        XCTAssertTrue(workspace.localProjects.isEmpty)
+        XCTAssertEqual(workspace.deletedProjects.map(\.id), [project.id])
+        let reopened = ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true)
+        reopened.reloadProjects()
+        XCTAssertTrue(reopened.localProjects.isEmpty)
+        XCTAssertEqual(reopened.deletedProjects.first?.name, "Workshop / الطابق الثاني")
+        reopened.restoreProject(id: project.id)
+        XCTAssertEqual(reopened.localProjects.map(\.id), [project.id])
+        XCTAssertTrue(reopened.deletedProjects.isEmpty)
+        reopened.renameProject(id: project.id, name: " \n ")
+        XCTAssertNotNil(reopened.currentIssue)
+        XCTAssertEqual(reopened.localProjects.first?.name, "Workshop / الطابق الثاني")
+    }
+
+    @MainActor
+    func testLibraryPermanentPurgeRemovesCatalogOnlyAfterSuccessfulCleanup() async throws {
+        let root = try makeLibraryFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true)
+        workspace.reloadProjects()
+        let id = try XCTUnwrap(workspace.localProjects.first?.id)
+        let directory = root.appendingPathComponent(id.hssDirectoryName)
+        let target = root.appendingPathComponent("unrelated")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: directory, withDestinationURL: target)
+        workspace.moveProjectToTrash(id: id)
+        workspace.permanentlyDeleteProject(id: id)
+        for _ in 0..<200 {
+            if !workspace.isManagingLibrary { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(workspace.isManagingLibrary)
+        XCTAssertNotNil(workspace.currentIssue)
+        XCTAssertEqual(workspace.deletedProjects.map(\.id), [id])
+        XCTAssertEqual(workspace.deletedProjects.first?.canRestore, false)
+        workspace.restoreProject(id: id)
+        XCTAssertTrue(workspace.localProjects.isEmpty, "A partial purge cannot restore a plausibly intact project.")
+        let duringFailure = ScannerWorkspaceModel(trustedRoot: root)
+        duringFailure.reloadProjects()
+        XCTAssertEqual(duringFailure.deletedProjects.first?.canRestore, false, "Purge intent survives process restart.")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.path))
+        try FileManager.default.removeItem(at: directory) // remove test symlink only
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        workspace.permanentlyDeleteProject(id: id)
+        for _ in 0..<200 {
+            if !workspace.isManagingLibrary { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(workspace.isManagingLibrary)
+        XCTAssertTrue(workspace.deletedProjects.isEmpty)
+        XCTAssertNil(workspace.currentIssue)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        let reopened = ScannerWorkspaceModel(trustedRoot: root)
+        reopened.reloadProjects()
+        XCTAssertTrue(reopened.localProjects.isEmpty)
+        XCTAssertTrue(reopened.deletedProjects.isEmpty)
+    }
+
+    func testPurgeIsIdempotentAndPreservesOtherProjectsAndSharedCopies() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hss-purge-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID(), otherID = UUID()
+        let project = root.appendingPathComponent(id.hssDirectoryName)
+        let other = root.appendingPathComponent(otherID.hssDirectoryName)
+        let archives = root.appendingPathComponent("archives")
+        for url in [project, other, archives] {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        let owned = archives.appendingPathComponent(ScannerProjectArchiveExportName.make(projectID: id, sceneRevision: 9))
+        let unrelated = archives.appendingPathComponent(ScannerProjectArchiveExportName.make(projectID: otherID, sceneRevision: 9))
+        let invalidName = archives.appendingPathComponent("\(id.hssDirectoryName)-r9-not-an-export.hsscan")
+        let shared = root.appendingPathComponent("owner-shared.hsscan")
+        for url in [owned, unrelated, invalidName, shared] { try Data([42]).write(to: url) }
+        try HSSLocalProjectRemoval.remove(projectID: id, trustedRoot: root)
+        try HSSLocalProjectRemoval.remove(projectID: id, trustedRoot: root)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: project.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: owned.path))
+        for url in [other, unrelated, invalidName, shared] {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        }
+    }
+
+    func testArchiveSymlinkRejectsPurgeBeforeRemovingProject() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hss-purge-link-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID()
+        let project = root.appendingPathComponent(id.hssDirectoryName)
+        let outside = root.appendingPathComponent("unrelated")
+        for url in [project, outside] {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("archives"), withDestinationURL: outside)
+        XCTAssertThrowsError(try HSSLocalProjectRemoval.remove(projectID: id, trustedRoot: root))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: project.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path))
+    }
+
+    func testPurgeDoesNotFollowNestedProjectSymlink() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hss-purge-nested-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID()
+        let project = root.appendingPathComponent(id.hssDirectoryName)
+        let outside = root.appendingPathComponent("unrelated")
+        for url in [project, outside] {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        let retained = outside.appendingPathComponent("retained.bin")
+        try Data([42]).write(to: retained)
+        try FileManager.default.createSymbolicLink(at: project.appendingPathComponent("exports"), withDestinationURL: outside)
+        try HSSLocalProjectRemoval.remove(projectID: id, trustedRoot: root)
+        XCTAssertEqual(try Data(contentsOf: retained), Data([42]))
+    }
+
+    private func makeLibraryFixture() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hss-library-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        // Legacy catalog intentionally has no deletedAt key. This is local UI
+        // metadata, not evidence of a physical capture or reconstructed scene.
+        let data = try JSONSerialization.data(withJSONObject: ["projects": [[
+            "id": UUID().uuidString, "captureID": UUID().uuidString,
+            "name": "Original", "updatedAt": 0, "sceneRevision": 7,
+            "state": "frozen", "sourceIsSynthetic": true
+        ]]])
+        try data.write(to: root.appendingPathComponent("workspace-catalog.json"))
+        return root
+    }
+
     func testRebootedSourceClockPreservesSessionIntervals() throws {
         var clock = ProjectCaptureClock(lastDurableTime: 86_400)
         let epoch = try XCTUnwrap(clock.projectTime(for: 12))
@@ -91,6 +670,179 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
         XCTAssertEqual(replay.highestSessionEpoch, 2)
         XCTAssertEqual(replay.lastEventSequence, 5)
         XCTAssertEqual(replay.lastMonotonicTime, 100_000.2, accuracy: 0.000_001)
+    }
+
+    func testFrozenMissingEvidenceJournalIsExactAndReplayable() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hss-frozen-missing-evidence-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID()
+        let captureID = UUID()
+        let runtime = try HSSProjectRuntime(
+            projectID: projectID,
+            captureID: captureID,
+            sourceIsSynthetic: true,
+            trustedRoot: root,
+            openMode: .create
+        )
+        let transform = matrix().map(Double.init)
+        try await runtime.setEpoch(
+            CaptureEpochControl(
+                sessionEpoch: 7,
+                relationshipState: .unresolved,
+                projectFromWorld: transform,
+                transformRevision: 1
+            ),
+            eventSequence: 1,
+            monotonicTime: 1
+        )
+        try await runtime.setEpoch(
+            CaptureEpochControl(
+                sessionEpoch: 7,
+                relationshipState: .accepted,
+                projectFromWorld: transform,
+                transformRevision: 2
+            ),
+            eventSequence: 2,
+            monotonicTime: 2
+        )
+        let mesh = OwnedMeshAnchorEvent(
+            kind: .add,
+            anchorID: UUID(),
+            anchorRevision: 1,
+            generation: 1,
+            sessionEpoch: 7,
+            sequence: 3,
+            monotonicTimestamp: 3,
+            worldFromAnchor: matrix(),
+            payload: MeshAnchorPayload(
+                vertices: [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 1, 0)],
+                normals: [],
+                triangleIndices: [0, 1, 2],
+                classifications: [],
+                localBoundsMin: SIMD3(0, 0, 0),
+                localBoundsMax: SIMD3(1, 1, 0)
+            )
+        )
+        try await runtime.submitMeshEvent(mesh, eventSequence: 3, projectTime: 3)
+        let before = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+
+        let outcome = try await runtime.recordFrozenMissingEvidence(
+            reason: "North alcove lacks supporting capture.",
+            eventSequence: 4,
+            monotonicTime: 4
+        )
+        let application: HSSFrozenUnknownCommandApplication
+        switch outcome {
+        case .journaled(let value):
+            application = value
+        case .journalRetryRequired(_, let failure):
+            XCTFail("The local project store unexpectedly rejected the command journal: \(failure)")
+            return
+        case .resultRecoveryRequired(let failure):
+            XCTFail("The native command result unexpectedly needed recovery: \(failure)")
+            return
+        }
+        XCTAssertEqual(application.beforeSceneRevision, before.revision)
+        XCTAssertEqual(application.afterSceneRevision, before.revision + 1)
+        XCTAssertEqual(application.sessionEpoch, 7)
+        XCTAssertEqual(application.eventSequence, 4)
+        XCTAssertEqual(application.monotonicTime, 4)
+
+        let command = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: application.commandJSON) as? [String: Any]
+        )
+        XCTAssertEqual(command["schema_version"] as? String, "1.1")
+        XCTAssertEqual(command["project_id"] as? String, projectID.uuidString.lowercased())
+        XCTAssertEqual(command["expected_scene_revision"] as? String, String(before.revision))
+        XCTAssertEqual(command["event_sequence"] as? String, "4")
+        XCTAssertEqual(command["type"] as? String, "mark_unknown")
+        XCTAssertEqual(command["targets"] as? [String], [])
+        XCTAssertEqual((command["payload"] as? [String: Any])?["reason"] as? String,
+                       "North alcove lacks supporting capture.")
+
+        let result = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: application.resultJSON) as? [String: Any]
+        )
+        XCTAssertEqual(result["state"] as? String, "applied")
+        XCTAssertEqual(result["command_id"] as? String, command["command_id"] as? String)
+        XCTAssertEqual(result["durability"] as? String, "not_committed")
+        XCTAssertEqual(result["scene_revision"] as? String, String(application.afterSceneRevision))
+        let issueIDs = try XCTUnwrap(result["issue_ids"] as? [String])
+        XCTAssertEqual(issueIDs.count, 1)
+        XCTAssertNotNil(UUID(uuidString: try XCTUnwrap(issueIDs.first)))
+
+        let after = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(after.revision, application.afterSceneRevision)
+        XCTAssertEqual(after.verticesMetres, before.verticesMetres)
+        XCTAssertEqual(after.triangleIndices, before.triangleIndices)
+        let afterScene = try XCTUnwrap(String(data: after.sceneJSON, encoding: .utf8))
+        XCTAssertTrue(afterScene.contains("HSS_UNKNOWN_REGION"))
+        XCTAssertTrue(afterScene.contains("North alcove lacks supporting capture."))
+
+        let checkpoint = try await runtime.checkpoint()
+        XCTAssertEqual(checkpoint.durableEventCount, 4)
+        XCTAssertEqual(checkpoint.durableRevision, 1,
+                       "Manifest revisions are checkpoint generations, not scene revisions.")
+
+        let reopened = try HSSProjectRuntime(
+            projectID: projectID,
+            captureID: captureID,
+            sourceIsSynthetic: true,
+            trustedRoot: root,
+            openMode: .openExisting
+        )
+        let replay = try await reopened.replayCommittedSource()
+        XCTAssertEqual(replay.highestSessionEpoch, 7)
+        XCTAssertEqual(replay.lastEventSequence, 4)
+        XCTAssertEqual(replay.lastMonotonicTime, 4)
+        XCTAssertEqual(replay.acceptedSceneRevision, application.afterSceneRevision)
+        let restoredResult = try await reopened.latestCommandResultJSON()
+        XCTAssertEqual(restoredResult, application.resultJSON)
+        let replayed = try await reopened.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(replayed.revision, after.revision)
+        XCTAssertEqual(replayed.verticesMetres, after.verticesMetres)
+        XCTAssertEqual(replayed.triangleIndices, after.triangleIndices)
+        XCTAssertEqual(replayed.sceneJSON, after.sceneJSON)
+
+        let next = try await reopened.recordFrozenMissingEvidence(
+            reason: "A second frozen-review note verifies the recovered epoch.",
+            eventSequence: 5,
+            monotonicTime: 5
+        )
+        guard case .journaled(let nextApplication) = next else {
+            return XCTFail("The recovered runtime did not journal its next frozen-review command.")
+        }
+        XCTAssertEqual(nextApplication.sessionEpoch, 7)
+        XCTAssertEqual(nextApplication.beforeSceneRevision, replayed.revision)
+        XCTAssertEqual(nextApplication.afterSceneRevision, replayed.revision + 1)
+    }
+
+    func testFrozenMissingEvidenceRejectsWhitespaceBeforeNativeMutation() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hss-frozen-missing-evidence-whitespace-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtime = try HSSProjectRuntime(
+            projectID: UUID(),
+            captureID: UUID(),
+            sourceIsSynthetic: true,
+            trustedRoot: root,
+            openMode: .create
+        )
+        let before = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        do {
+            _ = try await runtime.recordFrozenMissingEvidence(
+                reason: " \n\t ",
+                eventSequence: 1,
+                monotonicTime: 1
+            )
+            XCTFail("Whitespace-only missing-evidence text must fail before native mutation.")
+        } catch {
+            // Expected: the bridge rejects whitespace before it calls the C ABI.
+        }
+        let after = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(after.revision, before.revision)
+        XCTAssertEqual(after.sceneJSON, before.sceneJSON)
     }
 
     func testEmptyDraftCreatesAndReopensBeforeAnySourceEvent() async throws {
@@ -450,6 +1202,529 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
         ))
     }
 
+    func testBoundaryCorrectionTargetsOnlySupportedCurrentGraphAndCarriesRevision() throws {
+        let projectID = UUID(), nodeA = UUID(), nodeB = UUID(), edgeID = UUID(), supportID = UUID().uuidString.lowercased()
+        let document: [String: Any] = [
+            "schema_version": "1.1", "project_id": projectID.uuidString.lowercased(),
+            "scene_revision": "7", "units": "m",
+            "nodes": [
+                ["id": nodeA.uuidString.lowercased(), "position_m": [0.0, 0.0, 0.0],
+                 "provenance": ["geometry_origin": "observed", "support_ids": [supportID]]],
+                ["id": nodeB.uuidString.lowercased(), "position_m": [1.0, 0.0, 0.0],
+                 "provenance": ["geometry_origin": "fitted", "support_ids": [supportID]]],
+                ["id": UUID().uuidString.lowercased(), "position_m": [2.0, 0.0, 0.0],
+                 "provenance": ["geometry_origin": "inferred", "support_ids": [supportID]]]
+            ],
+            "edges": [
+                ["id": edgeID.uuidString.lowercased(), "start_node_id": nodeA.uuidString.lowercased(),
+                 "end_node_id": nodeB.uuidString.lowercased(), "protected_topology": false,
+                 "provenance": ["geometry_origin": "fitted", "support_ids": [supportID]]],
+                ["id": UUID().uuidString.lowercased(), "start_node_id": nodeB.uuidString.lowercased(),
+                 "end_node_id": UUID().uuidString.lowercased(), "protected_topology": false,
+                 "provenance": ["geometry_origin": "unknown", "support_ids": [supportID]]]
+            ]
+        ]
+        let snapshot = ScannerSceneSnapshot(revision: 7, verticesMetres: [], triangleIndices: [],
+            sceneJSON: try JSONSerialization.data(withJSONObject: document), provenance: [.syntheticTest], isFrozen: true)
+        let edges = ScannerBoundaryEdge.decode(snapshot: snapshot, projectID: projectID)
+        XCTAssertEqual(edges.map(\.id), [edgeID])
+        XCTAssertEqual(edges.first?.lengthMetres, 1)
+
+        let command = try ScannerBoundaryEdit.dimension(a: nodeA, b: nodeB, metres: 1.25,
+            source: .laser, uncertainty: 0.005, mode: .softMeasurement)
+            .encode(projectID: projectID, revision: 7, sequence: 18)
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: command) as? [String: Any])
+        XCTAssertEqual(root["expected_scene_revision"] as? String, "7")
+        XCTAssertEqual(root["event_sequence"] as? String, "18")
+        XCTAssertEqual(root["targets"] as? [String], [nodeA.uuidString.lowercased(), nodeB.uuidString.lowercased()])
+        let payload = try XCTUnwrap(root["payload"] as? [String: Any])
+        XCTAssertEqual(payload["source"] as? String, "laser")
+        XCTAssertEqual(payload["uncertainty_m"] as? Double, 0.005)
+        XCTAssertThrowsError(try ScannerBoundaryEdit.split(edge: edgeID, parameter: .nan)
+            .encode(projectID: projectID, revision: 7, sequence: 19))
+    }
+
+    func testCorrectionHistoryOffersOnlyTheCurrentReversibleLineage() throws {
+        let projectID = UUID(), first = UUID(), second = UUID()
+        func record(_ type: String, _ commandID: UUID, _ original: UUID?, _ before: UInt64, _ after: UInt64) -> [String: Any] {
+            ["command_id": commandID.uuidString.lowercased(), "type": type,
+             "original_command_id": original?.uuidString.lowercased() as Any? ?? NSNull(),
+             "before_scene_revision": String(before), "after_scene_revision": String(after)]
+        }
+        let undoID = UUID()
+        let json: [String: Any] = [
+            "schema_version": "1.1", "project_id": projectID.uuidString.lowercased(), "scene_revision": "10",
+            "records": [record("split_edge", first, nil, 7, 8),
+                        record("set_dimension", second, nil, 8, 9),
+                        record("undo", undoID, second, 9, 10)]
+        ]
+        let history = try XCTUnwrap(ScannerCommandHistory.decode(
+            JSONSerialization.data(withJSONObject: json), projectID: projectID, revision: 10))
+        XCTAssertEqual(history.undoID, first)
+        XCTAssertEqual(history.redoID, second)
+        XCTAssertNil(ScannerCommandHistory.decode(try JSONSerialization.data(withJSONObject: json), projectID: projectID, revision: 9))
+        XCTAssertNil(ScannerCommandHistory.decode(try JSONSerialization.data(withJSONObject: json), projectID: UUID(), revision: 10))
+        let afterRefinement: [String: Any] = [
+            "schema_version": "1.1", "project_id": projectID.uuidString.lowercased(), "scene_revision": "12",
+            "records": [record("split_edge", first, nil, 7, 8),
+                        record("mark_unknown", second, nil, 10, 11),
+                        record("undo", undoID, second, 11, 12)]
+        ]
+        let current = try XCTUnwrap(ScannerCommandHistory.decode(
+            JSONSerialization.data(withJSONObject: afterRefinement), projectID: projectID, revision: 12))
+        XCTAssertNil(current.undoID, "Undo must stop at a source/control revision gap.")
+        XCTAssertEqual(current.redoID, second)
+    }
+
+    func testMeasurementEntryAcceptsLocalizedDecimalsAndRejectsPartialValues() {
+        XCTAssertEqual(ScannerMeasurementEntry.metres("١٫٢٥", locale: Locale(identifier: "ar_IQ")), 1.25)
+        XCTAssertEqual(ScannerMeasurementEntry.metres("1,25", locale: Locale(identifier: "de_DE")), 1.25)
+        XCTAssertEqual(ScannerMeasurementEntry.metres("0.005", locale: Locale(identifier: "en_US")), 0.005)
+        for invalid in ["2 metres", "NaN", "1,000", "1.2.3", "-2", "1e3", "10001"] {
+            XCTAssertNil(ScannerMeasurementEntry.metres(invalid, locale: Locale(identifier: "en_US")))
+        }
+    }
+
+    func testBoundaryLockRefinementPreservesExplicitReviewIntentAndDurableReplay() async throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID(), captureID = UUID()
+        _ = try await createSyntheticProject(root: root, projectID: projectID, captureID: captureID)
+        let runtime = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        _ = try await runtime.replayCommittedSource()
+        try await runtime.setPlanReference(projectFromFloor: matrix().map(Double.init), cutHeightMetres: 1.2,
+            sessionEpoch: 1, eventSequence: 4, monotonicTime: 3)
+        let before = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        let edge = try XCTUnwrap(ScannerBoundaryEdge.decode(snapshot: before, projectID: projectID).first)
+        let outcome = try await runtime.applyFrozenBoundaryCorrection(
+            .lock(node: edge.startID, position: edge.start, confirmed: true), expectedRevision: before.revision,
+            eventSequence: 5, monotonicTime: 3)
+        guard case .journaled(let application) = outcome else { return XCTFail("Correction was not journaled") }
+        XCTAssertEqual(application.disposition, .applied)
+        let corrected = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(corrected.verticesMetres, before.verticesMetres)
+        XCTAssertEqual(corrected.triangleIndices, before.triangleIndices)
+        let correctedHistory = try await runtime.reviewCommandHistory()
+        XCTAssertNotNil(correctedHistory.undoID)
+        try await runtime.setPlanReference(projectFromFloor: matrix().map(Double.init), cutHeightMetres: 1.3,
+            sessionEpoch: 1, eventSequence: 6, monotonicTime: 3)
+        let refined = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        let document = try XCTUnwrap(JSONSerialization.jsonObject(with: refined.sceneJSON) as? [String: Any])
+        let issues = try XCTUnwrap(document["issues"] as? [[String: Any]])
+        XCTAssertTrue(issues.contains { $0["code"] as? String == "HSS_CORRECTION_LINEAGE_UNRESOLVED" },
+            "A source rebuild must not silently discard an accepted position lock.")
+        let history = try await runtime.reviewCommandHistory()
+        XCTAssertNil(history.undoID, "Source refinement must not enable a reversal against historical geometry.")
+        _ = try await runtime.checkpoint()
+        let reopened = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        _ = try await reopened.replayCommittedSource()
+        let replayed = try await reopened.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(replayed.sceneJSON, refined.sceneJSON)
+        XCTAssertEqual(replayed.verticesMetres, before.verticesMetres)
+        XCTAssertEqual(replayed.triangleIndices, before.triangleIndices)
+    }
+
+    func testNativeBoundarySplitUndoRedoPreservesRawCaptureAndReplay() async throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID(), captureID = UUID()
+        _ = try await createSyntheticProject(root: root, projectID: projectID, captureID: captureID)
+        let runtime = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        _ = try await runtime.replayCommittedSource()
+        try await runtime.setPlanReference(projectFromFloor: matrix().map(Double.init), cutHeightMetres: 1.2,
+            sessionEpoch: 1, eventSequence: 4, monotonicTime: 3)
+        let before = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        let edge = try XCTUnwrap(ScannerBoundaryEdge.decode(snapshot: before, projectID: projectID).first)
+        let split = try await runtime.applyFrozenBoundaryCorrection(.split(edge: edge.id, parameter: 0.5),
+            expectedRevision: before.revision, eventSequence: 5, monotonicTime: 3)
+        guard case .journaled(let applied) = split else { return XCTFail("Split was not journaled") }
+        XCTAssertEqual(applied.disposition, .applied)
+        let splitSnapshot = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(ScannerBoundaryEdge.decode(snapshot: splitSnapshot, projectID: projectID).count, 2)
+        let history = try await runtime.reviewCommandHistory()
+        let originalID = try XCTUnwrap(history.undoID)
+        let undo = try await runtime.applyFrozenBoundaryCorrection(.undo(original: originalID),
+            expectedRevision: splitSnapshot.revision, eventSequence: 6, monotonicTime: 3)
+        guard case .journaled(let undone) = undo else { return XCTFail("Undo was not journaled") }
+        XCTAssertEqual(undone.disposition, .applied)
+        let undoneSnapshot = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(ScannerBoundaryEdge.decode(snapshot: undoneSnapshot, projectID: projectID).map(\.id), [edge.id])
+        let undoHistory = try await runtime.reviewCommandHistory()
+        XCTAssertEqual(undoHistory.redoID, originalID)
+        let redo = try await runtime.applyFrozenBoundaryCorrection(.redo(original: originalID),
+            expectedRevision: undoneSnapshot.revision, eventSequence: 7, monotonicTime: 3)
+        guard case .journaled(let redone) = redo else { return XCTFail("Redo was not journaled") }
+        XCTAssertEqual(redone.disposition, .applied)
+        let final = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(final.verticesMetres, before.verticesMetres)
+        XCTAssertEqual(final.triangleIndices, before.triangleIndices)
+        _ = try await runtime.checkpoint()
+        let reopened = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        _ = try await reopened.replayCommittedSource()
+        let replayed = try await reopened.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(replayed.sceneJSON, final.sceneJSON)
+    }
+
+    func testNativeBoundaryDimensionConflictIsJournaledAndReplaysWithoutChangingShape() async throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID(), captureID = UUID()
+        _ = try await createSyntheticProject(root: root, projectID: projectID, captureID: captureID)
+        let runtime = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        _ = try await runtime.replayCommittedSource()
+        try await runtime.setPlanReference(projectFromFloor: matrix().map(Double.init), cutHeightMetres: 1.2,
+            sessionEpoch: 1, eventSequence: 4, monotonicTime: 3)
+        let before = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        let edge = try XCTUnwrap(ScannerBoundaryEdge.decode(snapshot: before, projectID: projectID).first)
+        for (sequence, node, position) in [(UInt64(5), edge.startID, edge.start), (UInt64(6), edge.endID, edge.end)] {
+            let current = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+            let outcome = try await runtime.applyFrozenBoundaryCorrection(.lock(node: node, position: position, confirmed: true),
+                expectedRevision: current.revision, eventSequence: sequence, monotonicTime: 3)
+            guard case .journaled(let application) = outcome else { return XCTFail("Lock was not journaled") }
+            XCTAssertEqual(application.disposition, .applied)
+        }
+        let locked = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        let outcome = try await runtime.applyFrozenBoundaryCorrection(
+            .dimension(a: edge.startID, b: edge.endID, metres: edge.lengthMetres * 2, source: .laser,
+                uncertainty: 0.01, mode: .exactModel), expectedRevision: locked.revision, eventSequence: 7, monotonicTime: 3)
+        guard case .journaled(let conflict) = outcome else { return XCTFail("Conflict was not journaled") }
+        XCTAssertEqual(conflict.disposition, .conflict)
+        XCTAssertEqual(conflict.beforeSceneRevision, conflict.afterSceneRevision)
+        let unchanged = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(unchanged, locked)
+        _ = try await runtime.checkpoint()
+        let reopened = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        let cursor = try await reopened.replayCommittedSource()
+        XCTAssertEqual(cursor.lastEventSequence, 7)
+        let replayed = try await reopened.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(replayed.sceneJSON, locked.sceneJSON)
+    }
+
+    func testConflictingCorrectionRecoversExactResultAfterResultCopyAndJournalFaults() async throws {
+        for point in [HSSProjectRuntime.ReviewFailurePoint.resultCopy, .journalAppend] {
+            let root = try objectRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let projectID = UUID(), captureID = UUID()
+            let (runtime, edge, locked) = try await lockedBoundaryFixture(root: root, projectID: projectID, captureID: captureID)
+            await runtime.failNextReviewOperation(at: point)
+            let outcome = try await runtime.applyFrozenBoundaryCorrection(
+                .dimension(a: edge.startID, b: edge.endID, metres: edge.lengthMetres * 2, source: .laser,
+                    uncertainty: 0.01, mode: .exactModel), expectedRevision: locked.revision,
+                eventSequence: 7, monotonicTime: 3)
+            var retained: HSSFrozenUnknownCommandApplication?
+            switch outcome {
+            case .resultRecoveryRequired: XCTAssertEqual(point, .resultCopy)
+            case .journalRetryRequired(let application, _):
+                XCTAssertEqual(point, .journalAppend)
+                retained = application
+            case .journaled: return XCTFail("The one-shot fault was not exercised")
+            }
+            let exactResult = try await runtime.latestCommandResultJSON()
+            let recovered = try await runtime.retryPendingCommandJournal()
+            XCTAssertEqual(recovered.disposition, .conflict)
+            XCTAssertEqual(recovered.resultJSON, exactResult)
+            if let retained { XCTAssertEqual(recovered, retained) }
+            XCTAssertEqual(recovered.beforeSceneRevision, locked.revision)
+            XCTAssertEqual(recovered.afterSceneRevision, locked.revision)
+            let unchanged = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+            XCTAssertEqual(unchanged, locked)
+            _ = try await runtime.checkpoint()
+            let reopened = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+                sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+            let cursor = try await reopened.replayCommittedSource()
+            XCTAssertEqual(cursor.lastEventSequence, 7)
+            let restoredResult = try await reopened.latestCommandResultJSON()
+            XCTAssertEqual(restoredResult, exactResult)
+        }
+    }
+
+    func testRejectedCorrectionRecoversWithoutInventingAnAppliedRevision() async throws {
+        for point in [HSSProjectRuntime.ReviewFailurePoint.resultCopy, .journalAppend] {
+            let root = try objectRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let projectID = UUID(), captureID = UUID()
+            let (runtime, edge, before) = try await lockedBoundaryFixture(root: root, projectID: projectID, captureID: captureID)
+            await runtime.failNextReviewOperation(at: point)
+            let outcome = try await runtime.applyFrozenBoundaryCorrection(
+                .lock(node: UUID(), position: edge.start, confirmed: true), expectedRevision: before.revision,
+                eventSequence: 7, monotonicTime: 3)
+            switch outcome {
+            case .resultRecoveryRequired, .journalRetryRequired: break
+            case .journaled: return XCTFail("The one-shot fault was not exercised")
+            }
+            let exactResult = try await runtime.latestCommandResultJSON()
+            let recovered = try await runtime.retryPendingCommandJournal()
+            XCTAssertEqual(recovered.disposition, .rejected)
+            XCTAssertEqual(recovered.resultJSON, exactResult)
+            XCTAssertEqual(recovered.beforeSceneRevision, before.revision)
+            XCTAssertEqual(recovered.afterSceneRevision, before.revision)
+            let unchanged = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+            XCTAssertEqual(unchanged, before)
+            _ = try await runtime.checkpoint()
+            let reopened = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+                sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+            let cursor = try await reopened.replayCommittedSource()
+            XCTAssertEqual(cursor.lastEventSequence, 7)
+            let restoredResult = try await reopened.latestCommandResultJSON()
+            XCTAssertEqual(restoredResult, exactResult)
+        }
+    }
+
+    func testWorkspaceConflictingDimensionNeverReportsAppliedSuccess() async throws {
+        let root = try objectRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectID = UUID(), captureID = UUID()
+        let (runtime, edge, locked) = try await lockedBoundaryFixture(root: root, projectID: projectID, captureID: captureID)
+        _ = try await runtime.checkpoint()
+        let catalog = try JSONSerialization.data(withJSONObject: ["projects": [[
+            "id": projectID.uuidString, "captureID": captureID.uuidString, "name": "Conflict fixture",
+            "updatedAt": 0, "sceneRevision": locked.revision, "state": "frozen", "sourceIsSynthetic": true
+        ]]])
+        try catalog.write(to: root.appendingPathComponent("workspace-catalog.json"))
+        let model = await MainActor.run { ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true) }
+        await MainActor.run { model.openProject(id: projectID) }
+        for _ in 0..<200 {
+            if await MainActor.run(body: { model.canRecordMissingEvidence }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await MainActor.run { model.applyBoundaryEdit(
+            .dimension(a: edge.startID, b: edge.endID, metres: edge.lengthMetres * 2, source: .laser,
+                uncertainty: 0.01, mode: .exactModel), expectedRevision: locked.revision) }
+        for _ in 0..<200 {
+            if await MainActor.run(body: { model.currentIssue != nil && model.canRecordMissingEvidence }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await MainActor.run {
+            XCTAssertEqual(model.latestSnapshot?.sceneJSON, locked.sceneJSON)
+            XCTAssertEqual(model.currentIssue?.title, String(localized: "Correction was not applied"))
+            XCTAssertFalse(model.currentIssue?.message.contains("Applied locally") ?? true)
+            XCTAssertEqual(model.saveState, .hasUnsavedChanges, "Rejected proposals still retain an exact journal for saving.")
+        }
+    }
+
+    // Preserve the test caller's actor instead of sending XCTestCase across
+    // the generic executor from the MainActor export-ownership helpers.
+    private func lockedBoundaryFixture(root: URL, projectID: UUID, captureID: UUID,
+        isolation: isolated (any Actor)? = #isolation) async throws
+        -> (HSSProjectRuntime, ScannerBoundaryEdge, ScannerSceneSnapshot) {
+        _ = try await createSyntheticProject(root: root, projectID: projectID, captureID: captureID)
+        let runtime = try HSSProjectRuntime(projectID: projectID, captureID: captureID,
+            sourceIsSynthetic: true, trustedRoot: root, openMode: .openExisting)
+        _ = try await runtime.replayCommittedSource()
+        try await runtime.setPlanReference(projectFromFloor: matrix().map(Double.init), cutHeightMetres: 1.2,
+            sessionEpoch: 1, eventSequence: 4, monotonicTime: 3)
+        let before = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+        let edge = try XCTUnwrap(ScannerBoundaryEdge.decode(snapshot: before, projectID: projectID).first)
+        for (sequence, node, position) in [(UInt64(5), edge.startID, edge.start), (UInt64(6), edge.endID, edge.end)] {
+            let snapshot = try await runtime.snapshot(provenance: [.syntheticTest], frozen: true)
+            let outcome = try await runtime.applyFrozenBoundaryCorrection(.lock(node: node, position: position, confirmed: true),
+                expectedRevision: snapshot.revision, eventSequence: sequence, monotonicTime: 3)
+            guard case .journaled(let application) = outcome, application.disposition == .applied else {
+                throw HSSBridgeError.invalidValue("Fixture position lock was not accepted")
+            }
+        }
+        return (runtime, edge, try await runtime.snapshot(provenance: [.syntheticTest], frozen: true))
+    }
+
+    @MainActor
+    func testOfflineExportLateFailureCannotReplaceLibraryState() async throws {
+        try await staleExportFailure(kind: .offline, cancellation: false)
+    }
+
+    @MainActor
+    func testArchiveExportLateFailureCannotReplaceLibraryState() async throws {
+        try await staleExportFailure(kind: .archive, cancellation: false)
+    }
+
+    @MainActor
+    func testOfflineExportLateCancellationCannotReplaceLibraryState() async throws {
+        try await staleExportFailure(kind: .offline, cancellation: true)
+    }
+
+    @MainActor
+    func testArchiveExportLateCancellationCannotReplaceLibraryState() async throws {
+        try await staleExportFailure(kind: .archive, cancellation: true)
+    }
+
+    @MainActor
+    func testOfflineExportOldSuccessCannotReplaceNewSameRevisionRequest() async throws {
+        try await staleExportSuccess(kind: .offline)
+    }
+
+    @MainActor
+    func testArchiveExportOldSuccessCannotReplaceNewSameRevisionRequest() async throws {
+        try await staleExportSuccess(kind: .archive)
+    }
+
+    @MainActor
+    func testOfflineExportCurrentFailureRemainsVisibleAndRetryable() async throws {
+        try await currentExportFailure(kind: .offline)
+    }
+
+    @MainActor
+    func testArchiveExportCurrentFailureRemainsVisibleAndRetryable() async throws {
+        try await currentExportFailure(kind: .archive)
+    }
+
+    private enum ExportTestKind { case offline, archive }
+
+    @MainActor
+    private func exportOwnershipFixture(gate: SuspendedExportTestOperation) async throws
+        -> (root: URL, model: ScannerWorkspaceModel, projectID: UUID) {
+        let root = try objectRoot()
+        let projectID = UUID(), captureID = UUID()
+        let (runtime, _, snapshot) = try await lockedBoundaryFixture(
+            root: root, projectID: projectID, captureID: captureID)
+        _ = try await runtime.checkpoint()
+        let catalog = try JSONSerialization.data(withJSONObject: ["projects": [[
+            "id": projectID.uuidString, "captureID": captureID.uuidString,
+            "name": "Export ownership fixture", "updatedAt": 0,
+            "sceneRevision": snapshot.revision, "state": "frozen", "sourceIsSynthetic": true
+        ]]])
+        try catalog.write(to: root.appendingPathComponent("workspace-catalog.json"))
+        let model = ScannerWorkspaceModel(trustedRoot: root, sourceIsSynthetic: true,
+            offlineExportOperation: { _, _, _, _ in
+                try await gate.run(output: root.appendingPathComponent("export-\(UUID().uuidString)"))
+            }, archiveExportOperation: { _, destination in
+                _ = try await gate.run(output: URL(fileURLWithPath: destination))
+            })
+        model.openProject(id: projectID)
+        try await waitForExportTest { model.phase == .frozen }
+        XCTAssertTrue(model.canExport, "The native fixture must qualify through the production export gate.")
+        XCTAssertTrue(model.canExportProjectArchive)
+        return (root, model, projectID)
+    }
+
+    @MainActor
+    private func startTestExport(_ kind: ExportTestKind, model: ScannerWorkspaceModel) {
+        switch kind {
+        case .offline: model.exportSelectedProject()
+        case .archive: model.exportSelectedProjectArchive()
+        }
+    }
+
+    @MainActor
+    private func staleExportFailure(kind: ExportTestKind, cancellation: Bool) async throws {
+        let gate = SuspendedExportTestOperation()
+        let fixture = try await exportOwnershipFixture(gate: gate)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { Task { await gate.cancelAll() } }
+        startTestExport(kind, model: fixture.model)
+        try await waitForExportTest { await gate.pendingCount == 1 }
+        fixture.model.showLibrary()
+        XCTAssertEqual(fixture.model.phase, .browsing)
+        XCTAssertNil(fixture.model.selectedProjectID)
+        await gate.finishNext(failure: cancellation ? .cancelled : .injected)
+        try await waitForExportTest { await gate.finishedCount == 1 }
+        // Give the resumed operation's MainActor publication a bounded turn.
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(fixture.model.exportState, .idle,
+            "An abandoned export must not display its error on the new library context.")
+        XCTAssertEqual(fixture.model.projectArchiveExportState, .idle)
+    }
+
+    @MainActor
+    private func staleExportSuccess(kind: ExportTestKind) async throws {
+        let gate = SuspendedExportTestOperation()
+        let fixture = try await exportOwnershipFixture(gate: gate)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { Task { await gate.cancelAll() } }
+        let revision = fixture.model.latestSnapshot?.revision
+        startTestExport(kind, model: fixture.model)
+        try await waitForExportTest { await gate.pendingCount == 1 }
+        fixture.model.showLibrary()
+        fixture.model.openProject(id: fixture.projectID)
+        try await waitForExportTest { fixture.model.phase == .frozen }
+        XCTAssertEqual(fixture.model.latestSnapshot?.revision, revision,
+            "This specifically reproduces same-project/same-revision ABA; revision checks alone are insufficient.")
+        startTestExport(kind, model: fixture.model)
+        try await waitForExportTest { await gate.pendingCount == 2 }
+        await gate.finishNext()
+        try await waitForExportTest { await gate.finishedCount == 1 }
+        try await Task.sleep(for: .milliseconds(20))
+        switch kind {
+        case .offline: XCTAssertEqual(fixture.model.exportState, .exporting)
+        case .archive: XCTAssertEqual(fixture.model.projectArchiveExportState, .exporting)
+        }
+        let currentOutput = await gate.output(at: 1)
+        await gate.finishNext()
+        try await waitForExportTest {
+            switch kind {
+            case .offline:
+                if case .exported = fixture.model.exportState { return true }
+            case .archive:
+                if case .exported = fixture.model.projectArchiveExportState { return true }
+            }
+            return false
+        }
+        switch kind {
+        case .offline:
+            guard case .exported(let directory, _) = fixture.model.exportState else { return XCTFail() }
+            XCTAssertEqual(directory, currentOutput)
+        case .archive:
+            XCTAssertEqual(fixture.model.projectArchiveExportState, .exported(currentOutput))
+        }
+    }
+
+    @MainActor
+    private func currentExportFailure(kind: ExportTestKind) async throws {
+        let gate = SuspendedExportTestOperation()
+        let fixture = try await exportOwnershipFixture(gate: gate)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        defer { Task { await gate.cancelAll() } }
+        startTestExport(kind, model: fixture.model)
+        try await waitForExportTest { await gate.pendingCount == 1 }
+        await gate.finishNext(failure: .injected)
+        try await waitForExportTest {
+            switch kind {
+            case .offline:
+                if case .failed = fixture.model.exportState { return true }
+            case .archive:
+                if case .failed = fixture.model.projectArchiveExportState { return true }
+            }
+            return false
+        }
+        switch kind {
+        case .offline:
+            guard case .failed(let message) = fixture.model.exportState else { return XCTFail() }
+            XCTAssertEqual(message, SuspendedExportTestOperation.Failure.injected.localizedDescription)
+            XCTAssertTrue(fixture.model.canExport)
+        case .archive:
+            guard case .failed(let message) = fixture.model.projectArchiveExportState else { return XCTFail() }
+            XCTAssertEqual(message, SuspendedExportTestOperation.Failure.injected.localizedDescription)
+            XCTAssertTrue(fixture.model.canExportProjectArchive)
+        }
+        // The repair must not suppress ordinary failures or permanently block a retry.
+        startTestExport(kind, model: fixture.model)
+        try await waitForExportTest { await gate.pendingCount == 1 }
+        await gate.finishNext()
+        try await waitForExportTest {
+            switch kind {
+            case .offline:
+                if case .exported = fixture.model.exportState { return true }
+            case .archive:
+                if case .exported = fixture.model.projectArchiveExportState { return true }
+            }
+            return false
+        }
+    }
+
+    @MainActor
+    private func waitForExportTest(_ predicate: () async -> Bool) async throws {
+        for _ in 0..<200 {
+            if await predicate() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("The controlled native export fixture did not reach its expected state.")
+        throw SuspendedExportTestOperation.Failure.injected
+    }
+
     func testOfflineExportEligibilityRequiresFrozenPersistedMeasuredRevision() throws {
         let projectID = UUID()
         let snapshot = exportSnapshot(projectID: projectID)
@@ -543,6 +1818,8 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
         XCTAssertEqual(primitiveIDs, ["measured-edge"])
         let obj = try String(contentsOf: destination.appendingPathComponent("scene.obj"), encoding: .utf8)
         XCTAssertTrue(obj.contains("f 1 2 3"))
+        XCTAssertTrue(obj.contains("mtllib scene.mtl\n"))
+        XCTAssertFalse(obj.contains("mtllib capture.mtl"), "The material companion must exist in the actual offline bundle.")
 
         let exports = projectDirectory.appendingPathComponent("exports", isDirectory: true)
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: exports.path)
@@ -590,7 +1867,8 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
     private func createSyntheticProject(
         root: URL,
         projectID: UUID,
-        captureID: UUID
+        captureID: UUID,
+        isolation: isolated (any Actor)? = #isolation
     ) async throws -> ScannerSceneSnapshot {
         let runtime = try HSSProjectRuntime(
             projectID: projectID,
@@ -665,5 +1943,41 @@ final class ScannerWorkspacePipelineTests: XCTestCase {
             0, 0, 1, 0,
             0, 0, 0, 1,
         ]
+    }
+}
+
+/// Only controls the completion timing of injected test work. Production export
+/// eligibility, project replay and model publication still execute unchanged.
+private actor SuspendedExportTestOperation {
+    enum Failure: LocalizedError, Equatable, Sendable {
+        case injected, cancelled
+        var errorDescription: String? { "Controlled export operation failure" }
+    }
+
+    private var pending: [(URL, CheckedContinuation<URL, Error>)] = []
+    private var outputs: [URL] = []
+    private(set) var finishedCount = 0
+    var pendingCount: Int { pending.count }
+
+    func run(output: URL) async throws -> URL {
+        defer { finishedCount += 1 }
+        return try await withCheckedThrowingContinuation { continuation in
+            outputs.append(output)
+            pending.append((output, continuation))
+        }
+    }
+
+    func output(at index: Int) -> URL { outputs[index] }
+
+    func finishNext(failure: Failure? = nil) {
+        guard !pending.isEmpty else { return }
+        let (output, continuation) = pending.removeFirst()
+        if failure == .cancelled { continuation.resume(throwing: CancellationError()) }
+        else if let failure { continuation.resume(throwing: failure) }
+        else { continuation.resume(returning: output) }
+    }
+
+    func cancelAll() {
+        while !pending.isEmpty { finishNext(failure: .cancelled) }
     }
 }

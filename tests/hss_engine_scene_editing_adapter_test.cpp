@@ -1,5 +1,6 @@
 #include "hss/hss_api.h"
 #include "hss/hss_project_store.h"
+#include "hss/scene_editing.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -79,7 +80,7 @@ HSSProjectStoreConfig store_config(const std::string &root, uint32_t mode) {
   return result;
 }
 
-void drain(HSSEngine *engine, uint64_t expected_revision) {
+void drain(HSSEngine *engine, uint64_t expected_revision, uint64_t budget_us = 100U) {
   for (size_t iteration = 0U; iteration != 200000U; ++iteration) {
     HSSEngineStats stats{};
     check(hss_engine_get_stats(engine, &stats) == HSS_OK, "read engine stats");
@@ -87,7 +88,7 @@ void drain(HSSEngine *engine, uint64_t expected_revision) {
       check(stats.scene_revision == expected_revision, "expected published revision");
       return;
     }
-    check(hss_engine_step(engine, 100U) == HSS_OK, "advance source rebuild");
+    check(hss_engine_step(engine, budget_us) == HSS_OK, "advance source rebuild");
   }
   check(false, "source rebuild completed within bounded work");
 }
@@ -303,9 +304,402 @@ void submit_baseline(HSSEngine *engine, HSSProjectStore *store,
         "persist exact command/result control");
 }
 
+
+// Publication is deliberately too large for the tiny budget. A failed edit
+// must not enter the retry journal or overwrite an earlier exposed result.
+void publication_failure_is_atomic() {
+  for (bool keep_previous_result : {false, true}) {
+    auto configuration = engine_config();
+    configuration.max_working_bytes = 4096U;
+    HSSEngine *engine=nullptr;
+    check(hss_engine_create(&configuration, &engine)==HSS_OK, "tiny budget create");
+    const auto before=scene_json(engine);
+    auto at_revision_zero = [](std::string command) {
+      const std::string old="\"expected_scene_revision\":\"3\"";
+      const size_t at=command.find(old);
+      check(at!=std::string::npos, "fixture expected revision");
+      command.replace(at, old.size(), "\"expected_scene_revision\":\"0\"");
+      return command;
+    };
+    std::string previous;
+    if (keep_previous_result) {
+      const auto pending=at_revision_zero(pending_exclusion_command(project_id_from_scene(before)));
+      check(hss_engine_apply_command_json(engine,
+          {reinterpret_cast<const uint8_t*>(pending.data()),pending.size()})==HSS_UNSUPPORTED_CAPABILITY,
+          "establish previous pending result");
+      previous=result_json(engine);
+    }
+    const auto command=at_revision_zero(mark_unknown_command(project_id_from_scene(before)));
+    const HSSBytes bytes{reinterpret_cast<const uint8_t*>(command.data()),command.size()};
+    const auto first=hss_engine_apply_command_json(engine,bytes);
+    const auto retry=hss_engine_apply_command_json(engine,bytes);
+    std::cout<<"publication first="<<first<<" exact_retry="<<retry<<'\n';
+    check(first==HSS_RESOURCE_LIMIT && retry==HSS_RESOURCE_LIMIT,
+          "failed publication exact retry must execute, never false StoredRetry");
+    check(scene_json(engine)==before, "failed publication leaves complete scene unchanged");
+    HSSEngineStats stats{};
+    check(hss_engine_get_stats(engine,&stats)==HSS_OK &&
+              stats.scene_revision==0U && stats.accepted_commands==0U,
+          "failed publication does not advance revision or accepted counter");
+    if (keep_previous_result) {
+      check(result_json(engine)==previous, "prior exact result survives failed publication");
+    } else {
+      uint64_t size=99U;
+      check(hss_engine_copy_command_result_json(engine,nullptr,0U,&size)==HSS_NOT_READY,
+            "no phantom applied result on failed publication");
+    }
+    hss_engine_destroy(engine);
+  }
+}
+
+
+size_t occurrences(const std::string &text, const std::string &needle) {
+  size_t count = 0U, at = 0U;
+  while ((at = text.find(needle, at)) != std::string::npos) { ++count; at += needle.size(); }
+  return count;
+}
+
+std::string derived_id(const std::string &command, const std::string &role) {
+  auto bytes = hss::command::sha256(command + "|" + role + "|0");
+  bytes[6] = (bytes[6] & 15U) | 0x50U;
+  bytes[8] = (bytes[8] & 63U) | 0x80U;
+  const char *hex = "0123456789abcdef";
+  std::string out;
+  for (size_t i=0U;i<16U;++i) {
+    if(i==4U||i==6U||i==8U||i==10U) out += '-';
+    out += hex[bytes[i]>>4U]; out += hex[bytes[i]&15U];
+  }
+  return out;
+}
+
+void overlay_reservation_failure() {
+  HSSEngine *engine=nullptr;
+  auto cfg=engine_config();
+  check(hss_engine_create(&cfg,&engine)==HSS_OK,"measure overlay fixture");
+  std::string command=mark_unknown_command(project_id_from_scene(scene_json(engine)));
+  const std::string old="\"expected_scene_revision\":\"3\"";
+  command.replace(command.find(old),old.size(),"\"expected_scene_revision\":\"0\"");
+  const HSSBytes bytes{reinterpret_cast<const uint8_t*>(command.data()),command.size()};
+  check(hss_engine_apply_command_json(engine,bytes)==HSS_OK,"measure edited scene reservation");
+  const uint64_t scene_charge=4096U+scene_json(engine).size();
+  hss_engine_destroy(engine);
+  cfg.max_working_bytes=scene_charge;
+  check(hss_engine_create(&cfg,&engine)==HSS_OK,"scene fits but overlay does not");
+  const auto before=scene_json(engine);
+  for(int i=0;i<2;++i)
+    check(hss_engine_apply_command_json(engine,bytes)==HSS_RESOURCE_LIMIT,
+          "overlay reservation failure rolls back volatile command for true retry");
+  check(scene_json(engine)==before,"failed overlay allocation leaves original snapshot");
+  uint64_t needed=0U;
+  check(hss_engine_copy_command_result_json(engine,nullptr,0U,&needed)==HSS_NOT_READY,
+        "no result leaked from failed overlay reservation");
+  hss_engine_destroy(engine);
+}
+
+void retained_capacity_is_fail_closed() {
+  HSSEngine *engine=nullptr; const auto cfg=engine_config();
+  check(hss_engine_create(&cfg,&engine)==HSS_OK,"capacity baseline scene");
+  std::string scene=scene_json(engine);hss_engine_destroy(engine);
+  const auto project=project_id_from_scene(scene);
+  hss::scene_editing::Processor processor;
+  const auto build=[&](uint64_t index,uint64_t revision,const std::string &type,
+                       const std::string &payload) {
+    return "{\"schema_version\":\"1.1\",\"command_id\":\""+
+      derived_id("capacity-fixture",std::to_string(index))+"\",\"project_id\":\""+
+      project+"\",\"expected_scene_revision\":\""+std::to_string(revision)+
+      "\",\"event_sequence\":\""+std::to_string(revision+1U)+
+      "\",\"targets\":[],\"user_intent\":\"bounded retention\",\"type\":\""+
+      type+"\",\"payload\":"+payload+"}";
+  };
+  const size_t cap=hss::scene_editing::kMaxRetainedUnknowns;
+  for(size_t i=0;i<cap;++i) {
+    auto applied=processor.process(scene,build(i,i,"mark_unknown",R"({"reason":"capacity fixture"})"));
+    check(applied.status==hss::scene_editing::Status::kApplied &&
+          applied.retained_unknowns && applied.retained_unknowns->size()==i+1U,
+          "retention accepts up to documented capacity");
+    scene=std::move(applied.candidate_scene_json);
+  }
+  const auto overflow=build(cap,cap,"mark_unknown",R"({"reason":"capacity overflow"})");
+  for(int i=0;i<2;++i) {
+    const auto rejected=processor.process(scene,overflow);
+    check(rejected.status==hss::scene_editing::Status::kResourceLimitExceeded &&
+          !rejected.scene_changed && !rejected.owns_new_record &&
+          rejected.exact_result_json.empty() && processor.journal().size()==cap,
+          "capacity failure retains scene/history and cannot become phantom stored retry");
+  }
+  const auto undo=processor.process(scene,build(cap+1U,cap,"undo",
+      "{\"original_command_id\":\""+derived_id("capacity-fixture",std::to_string(cap-1U))+"\"}"));
+  check(undo.status==hss::scene_editing::Status::kApplied &&
+        undo.retained_unknowns->size()==cap-1U,"undo releases annotation capacity");
+  const auto accepted=processor.process(undo.candidate_scene_json,
+      build(cap,cap+1U,"mark_unknown",R"({"reason":"capacity overflow"})"));
+  check(accepted.status==hss::scene_editing::Status::kApplied &&
+        accepted.retained_unknowns->size()==cap,"failed capacity command can be validly resubmitted after undo");
+}
+
+void retained_unknown_lifecycle() {
+  HSSEngine *engine=nullptr;
+  const auto cfg=engine_config();
+  check(hss_engine_create(&cfg,&engine)==HSS_OK, "overlay lifecycle create");
+  check(hss_engine_set_source_is_synthetic(engine,1U)==HSS_OK, "overlay synthetic");
+  const auto project=project_id_from_scene(scene_json(engine));
+  const std::string one="cccccccc-cccc-5ccc-8ccc-ccccccccccc1";
+  const std::string two="cccccccc-cccc-5ccc-8ccc-ccccccccccc2";
+  const auto apply = [&](const std::string &cid, uint64_t rev, const std::string &type,
+                         const std::string &payload, const std::string &targets="[]") {
+    const std::string cmd="{\"schema_version\":\"1.1\",\"command_id\":\""+cid+
+       "\",\"project_id\":\""+project+"\",\"expected_scene_revision\":\""+
+       std::to_string(rev)+"\",\"event_sequence\":\""+std::to_string(rev+1U)+
+       "\",\"targets\":"+targets+",\"user_intent\":\"retention test\",\"type\":\""+
+       type+"\",\"payload\":"+payload+"}";
+    const auto rc=hss_engine_apply_command_json(engine,
+        {reinterpret_cast<const uint8_t*>(cmd.data()),cmd.size()});
+    check(rc==HSS_OK, "accepted annotation lifecycle action");
+    return cmd;
+  };
+  const auto first=apply(one,0U,"mark_unknown",R"({"reason":"quoted \"note\" \\ next\n غير مرئي"})");
+  (void)first;
+  apply(two,1U,"mark_unknown",R"({"reason":"second unknown note"})");
+  apply("cccccccc-cccc-5ccc-8ccc-ccccccccccc3",2U,"undo",
+        "{\"original_command_id\":\""+two+"\"}");
+  check(occurrences(scene_json(engine),"HSS_UNKNOWN_REGION")==1U, "undo removes only second intent");
+  apply("cccccccc-cccc-5ccc-8ccc-ccccccccccc4",3U,"redo",
+        "{\"original_command_id\":\""+two+"\"}");
+  const auto feature_id=derived_id(one,"unknown-feature");
+  apply("cccccccc-cccc-5ccc-8ccc-ccccccccccc5",4U,"protect_feature",
+        R"({"preserve_topology":true,"lock_position":false})", "[\""+feature_id+"\"]");
+  const std::string before_source=scene_json(engine), before_result=result_json(engine);
+  HSSSnapshot *held=nullptr;
+  check(hss_engine_acquire_snapshot(engine,&held)==HSS_OK, "pin accepted annotation snapshot");
+  HSSEpoch epoch{};epoch.abi_version=HSS_ABI_VERSION;epoch.struct_size=sizeof(epoch);
+  epoch.capture_id=id(2U);epoch.event_sequence=8U;epoch.relationship_state=1U;
+  epoch.transform_revision=1U;epoch.T_project_world=identity();
+  check(hss_engine_set_epoch(engine,&epoch)==HSS_OK,"epoch after annotation");drain(engine,6U);
+  const std::array<float,9> vertices{0,0,0,2,0,0,0,3,0};
+  const std::array<uint32_t,3> triangles{0,1,2};
+  HSSMeshEvent mesh{};mesh.abi_version=HSS_ABI_VERSION;mesh.struct_size=sizeof(mesh);
+  mesh.capture_id=id(2U);mesh.anchor_id=id(3U);mesh.event_sequence=9U;mesh.anchor_revision=1U;
+  mesh.T_world_anchor=identity();mesh.vertices_xyz=vertices.data();mesh.vertex_count=3U;
+  mesh.triangle_indices=triangles.data();mesh.triangle_count=1U;
+  check(hss_engine_submit_mesh_event(engine,&mesh)==HSS_OK,"mesh after annotations");drain(engine,7U);
+  const auto floor=identity();
+  check(hss_engine_set_plan_reference(engine,&floor,1.2)==HSS_OK,"plan reference retains intent");drain(engine,8U);
+  const auto final=scene_json(engine);
+  check(hss::scene_editing::scene_counts(final).has_value(),"retained scene validates all references/escaping");
+  check(occurrences(final,"\"kind\":\"unknown\"")==2U &&
+        occurrences(final,"\"code\":\"HSS_UNKNOWN_REGION\"")==2U,
+        "repeated source rebuilds retain each intent exactly once");
+  check(occurrences(final,"\"kind\":\"topology_protection\"")==1U &&
+        final.find(feature_id)!=std::string::npos,
+        "protect existing nonmetric annotation remains supported and retained");
+  check(final.find("غير مرئي")!=std::string::npos &&
+        final.find("second unknown note")!=std::string::npos,
+        "escaped unicode reasons survive source serialization");
+  for (const auto &original : {one, two}) {
+    const auto at=final.find("\"id\":\""+derived_id(original,"unknown-issue")+"\"");
+    const auto revision=final.find("\"scene_revision\":\"8\"",at);
+    const auto severity=final.find("\"severity\":",at);
+    check(at!=std::string::npos && revision!=std::string::npos && revision<severity,
+          "retained issue revision matches newest immutable source snapshot");
+  }
+  check(result_json(engine)==before_result, "source revisions never rewrite exact result");
+  mesh.kind=1U;mesh.anchor_revision=2U;mesh.event_sequence=10U;mesh.T_world_anchor.column_major[0]=2.0;
+  check(hss_engine_submit_mesh_event(engine,&mesh)==HSS_INVALID_COORDINATE_FRAME,
+        "invalid replacement rejected without altering retained annotations");
+  check(scene_json(engine)==final && result_json(engine)==before_result,
+        "rejected source keeps previous geometry, intent, exact result");
+  uint64_t count=0U;
+  check(hss_snapshot_copy_scene_json(held,nullptr,0U,&count)==HSS_BUFFER_TOO_SMALL,"pinned size");
+  std::string pinned(count,'\0');
+  check(hss_snapshot_copy_scene_json(held,reinterpret_cast<uint8_t*>(pinned.data()),
+        pinned.size(),&count)==HSS_OK && pinned==before_source,"old immutable snapshot unchanged");
+  hss_snapshot_release(held);hss_engine_destroy(engine);
+}
+
+// A source-derived target is not stable lineage. Keep the accepted intention
+// visible as an unresolved, nonmetric annotation rather than redirecting it.
+void targeted_protection_source_conflict() {
+  for (bool undo_before_source : {false, true}) {
+    char temporary[] = "/tmp/hss-protection-refine-XXXXXX";
+    check(mkdtemp(temporary) != nullptr, "targeted temporary store");
+    const std::string root(temporary);
+    HSSProjectStore *store = nullptr;
+    auto sc = store_config(root, HSS_PROJECT_STORE_CREATE_NEW);
+    check(hss_project_store_create(&sc, &store) == HSS_OK, "targeted store create");
+    HSSEngine *engine = nullptr;
+    const auto cfg = engine_config();
+    check(hss_engine_create(&cfg, &engine) == HSS_OK, "targeted engine create");
+    check(hss_engine_set_source_is_synthetic(engine, 1U) == HSS_OK, "targeted synthetic");
+    const auto project = project_id_from_scene(scene_json(engine));
+    std::string baseline_scene, baseline_result;
+    submit_baseline(engine, store, mark_unknown_command(project),
+                    &baseline_scene, &baseline_result);
+    const size_t edges = baseline_scene.find("\"edges\":[");
+    const size_t at = baseline_scene.find("\"id\":\"", edges);
+    check(edges != std::string::npos && at != std::string::npos,
+          "target comes from actual captured section");
+    const std::string target = baseline_scene.substr(at + 6U, 36U);
+    const std::string protect_id = "dddddddd-dddd-5ddd-8ddd-ddddddddddd1";
+    uint64_t revision = 4U, sequence = 5U;
+    const auto apply = [&](const std::string &cid, const std::string &type,
+                           const std::string &payload, const std::string &targets) {
+      const std::string cmd = "{\"schema_version\":\"1.1\",\"command_id\":\"" + cid +
+          "\",\"project_id\":\"" + project + "\",\"expected_scene_revision\":\"" +
+          std::to_string(revision) + "\",\"event_sequence\":\"" +
+          std::to_string(++sequence) + "\",\"targets\":" + targets +
+          ",\"user_intent\":\"keep narrow return\",\"type\":\"" + type +
+          "\",\"payload\":" + payload + "}";
+      check(hss_engine_apply_command_json(engine,
+                {reinterpret_cast<const uint8_t *>(cmd.data()), cmd.size()}) == HSS_OK,
+            "apply targeted workflow command");
+      const auto result = result_json(engine);
+      HSSProjectCommandRecord record{};
+      record.abi_version = HSS_PROJECT_STORE_ABI_VERSION;
+      record.struct_size = sizeof(record);
+      record.before_scene_revision = revision++;
+      record.after_scene_revision = revision;
+      record.context = context(sequence, revision);
+      record.command_json = {reinterpret_cast<const uint8_t *>(cmd.data()), cmd.size()};
+      record.result_json = {reinterpret_cast<const uint8_t *>(result.data()), result.size()};
+      HSSProjectStoreReceipt receipt{};
+      check(hss_project_store_append_command_record(store, &record, &receipt) == HSS_OK,
+            "persist targeted exact command and result");
+      return cmd;
+    };
+    const auto protection = apply(protect_id, "protect_feature",
+        R"({"preserve_topology":true,"lock_position":false})", "[\"" + target + "\"]");
+    const auto protection_result = result_json(engine);
+    check(occurrences(scene_json(engine), "\"kind\":\"topology_protection\"") == 1U,
+          "protection actually applied before refinement");
+    check(scene_json(engine).find("HSS_TARGET_LINEAGE_UNRESOLVED") == std::string::npos,
+          "protection not conflicted before any source change");
+    if (undo_before_source)
+      apply("dddddddd-dddd-5ddd-8ddd-ddddddddddd2", "undo",
+            "{\"original_command_id\":\"" + protect_id + "\"}", "[]");
+    const auto last_result = result_json(engine);
+    const std::array<float, 9U> vertices{0, 0, 0, 2.5F, 0, 0, 0, 3.5F, 0};
+    const std::array<uint32_t, 3U> indices{0, 1, 2};
+    HSSMeshEvent mesh{};
+    mesh.abi_version = HSS_ABI_VERSION; mesh.struct_size = sizeof(mesh);
+    mesh.capture_id = id(2U); mesh.anchor_id = id(3U);
+    mesh.event_sequence = ++sequence; mesh.anchor_revision = 2U; mesh.kind = 1U;
+    mesh.T_world_anchor = identity(); mesh.vertices_xyz = vertices.data(); mesh.vertex_count = 3U;
+    mesh.triangle_indices = indices.data(); mesh.triangle_count = 1U;
+    check(hss_engine_submit_mesh_event(engine, &mesh) == HSS_OK, "replace protected source");
+    drain(engine, ++revision, undo_before_source ? 1U : 50U);
+    HSSProjectStoreReceipt receipt{};
+    const auto mc = context(sequence, revision);
+    check(hss_project_store_append_mesh_event(store, &mc, &mesh, &receipt) == HSS_OK,
+          "persist refinement after protection");
+    const auto raw = mesh_vertices(engine);
+    check(raw.size() == 3U && raw[1].x == 2.5 && raw[2].y == 3.5,
+          "protection conflict never restores stale measured vertices");
+    const auto verify = [&] {
+      const auto scene = scene_json(engine);
+      check(hss::scene_editing::scene_counts(scene).has_value(), "conflict scene references validate");
+      const auto expected = undo_before_source ? 0U : 1U;
+      check(occurrences(scene, "HSS_TARGET_LINEAGE_UNRESOLVED") == expected,
+            "source refinement must surface accepted protection or remove an undone intent");
+      check(occurrences(scene, "\"kind\":\"topology_protection\"") == 0U,
+            "unproven lineage never rebinds an active metric constraint");
+      if (!undo_before_source) {
+        check(scene.find(protect_id) != std::string::npos && scene.find(target) != std::string::npos,
+              "conflict identifies original command and target without pretending current identity");
+        const auto issue_at = scene.find("\"id\":\"" + derived_id(protect_id, "protection-conflict-issue") + "\"");
+        const auto issue_rev = scene.find("\"scene_revision\":\"" + std::to_string(revision) + "\"", issue_at);
+        check(issue_at != std::string::npos && issue_rev != std::string::npos &&
+                  issue_rev < scene.find("\"severity\":", issue_at), "conflict belongs to current revision");
+        check(scene.find("\"geometry_origin\":\"unknown\"") != std::string::npos &&
+                  scene.find("\"semantic_origin\":\"user\"") != std::string::npos,
+              "retained intent never claims an observed replacement surface");
+      }
+    };
+    check(result_json(engine) == last_result, "refinement preserves original exact command result");
+    verify();
+    // A rejected source packet must not retire the accepted conflict overlay.
+    const auto before_invalid = scene_json(engine);
+    const std::array<uint32_t, 3U> invalid_indices{0U, 1U, 99U};
+    auto invalid = mesh;
+    invalid.anchor_revision = 3U; invalid.event_sequence = sequence + 1U;
+    invalid.triangle_indices = invalid_indices.data();
+    check(hss_engine_submit_mesh_event(engine, &invalid) == HSS_INVALID_ARGUMENT,
+          "invalid refinement rejects before publication");
+    check(scene_json(engine) == before_invalid && result_json(engine) == last_result,
+          "failed source update preserves conflict and command result atomically");
+    if (!undo_before_source) {
+      check(hss_engine_apply_command_json(engine,
+                {reinterpret_cast<const uint8_t *>(protection.data()), protection.size()}) == HSS_OK,
+            "accepted protection exact retry remains idempotent");
+      check(result_json(engine) == protection_result, "retry returns original applied bytes, not rewritten conflict");
+    }
+    // A second rebuild and a later independent edit must not lose the conflict.
+    HSSProjectPlanReference plan{};
+    plan.abi_version = HSS_PROJECT_STORE_ABI_VERSION; plan.struct_size = sizeof(plan);
+    plan.T_project_floor = identity(); plan.cut_height_m = 1.3;
+    plan.before_scene_revision = revision; plan.after_scene_revision = revision + 1U;
+    check(hss_engine_set_plan_reference(engine, &plan.T_project_floor, plan.cut_height_m) == HSS_OK,
+          "second source control");
+    drain(engine, ++revision, undo_before_source ? 1U : 50U);
+    const auto pc = context(++sequence, revision);
+    check(hss_project_store_append_plan_reference(store, &pc, &plan, &receipt) == HSS_OK,
+          "persist second rebuild");
+    verify();
+    apply("dddddddd-dddd-5ddd-8ddd-ddddddddddd3", "mark_unknown",
+          R"({"reason":"independent missing ceiling view"})", "[]");
+    // Issues may keep the immediately preceding source revision during an edit;
+    // the next source rebuild must rebind only issue metadata, never geometry.
+    plan.before_scene_revision = revision; plan.after_scene_revision = revision + 1U;
+    plan.cut_height_m = 1.4;
+    check(hss_engine_set_plan_reference(engine, &plan.T_project_floor, plan.cut_height_m) == HSS_OK,
+          "source rebuild after another edit");
+    drain(engine, ++revision, undo_before_source ? 1U : 50U);
+    const auto pc2 = context(++sequence, revision);
+    check(hss_project_store_append_plan_reference(store, &pc2, &plan, &receipt) == HSS_OK,
+          "persist third rebuild");
+    verify();
+    const auto final_scene = scene_json(engine), final_result = result_json(engine);
+    HSSProjectCheckpointResult cp{};
+    check(hss_project_store_checkpoint(store, &cp) == HSS_OK, "checkpoint targeted workflow");
+    hss_engine_destroy(engine); hss_project_store_destroy(store);
+    sc = store_config(root, HSS_PROJECT_STORE_OPEN_EXISTING);
+    check(hss_project_store_create(&sc, &store) == HSS_OK, "reopen targeted store");
+    check(hss_engine_create(&cfg, &engine) == HSS_OK, "replay targeted engine");
+    HSSProjectReplayResult replay{};
+    check(hss_project_store_replay(store, engine, &replay) == HSS_OK &&
+              replay.applied_event_count == sequence, "replay all targeted events");
+    check(scene_json(engine) == final_scene && result_json(engine) == final_result,
+          "target conflict and exact result survive byte-equivalent durable replay");
+    check(same_vertices(raw, mesh_vertices(engine)), "replay preserves refined raw measurements");
+    if (!undo_before_source) {
+      const std::string undo = "{\"schema_version\":\"1.1\",\"command_id\":\"dddddddd-dddd-5ddd-8ddd-ddddddddddd4\","
+          "\"project_id\":\"" + project + "\",\"expected_scene_revision\":\"" + std::to_string(revision) +
+          "\",\"event_sequence\":\"" + std::to_string(sequence + 1U) +
+          "\",\"targets\":[],\"user_intent\":\"undo protection\",\"type\":\"undo\","
+          "\"payload\":{\"original_command_id\":\"" + protect_id + "\"}}";
+      check(hss_engine_apply_command_json(engine,
+                {reinterpret_cast<const uint8_t *>(undo.data()), undo.size()}) == HSS_INVALID_ARGUMENT,
+            "post-refinement undo cannot copy a stale whole-scene snapshot");
+      check(result_json(engine).find("current topology diverged") != std::string::npos &&
+                scene_json(engine) == final_scene && same_vertices(raw, mesh_vertices(engine)),
+            "unsupported reversal explains lineage conflict and preserves newer geometry");
+    }
+    hss_engine_destroy(engine); hss_project_store_destroy(store);
+    std::filesystem::remove_all(root);
+  }
+  std::cout << "targeted protection refinement, conflict, undo and durable replay passed\n";
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc == 2 && std::string(argv[1]) == "--targeted-protection") {
+    targeted_protection_source_conflict();
+    return 0;
+  }
+  publication_failure_is_atomic();
+  retained_unknown_lifecycle();
+  overlay_reservation_failure();
+  retained_capacity_is_fail_closed();
   char temporary[] = "/tmp/hss-engine-edit-XXXXXX";
   check(mkdtemp(temporary) != nullptr, "temporary project root");
   const std::string root(temporary);
@@ -316,6 +710,21 @@ int main() {
   HSSEngine *engine = nullptr;
   const auto config = engine_config();
   check(hss_engine_create(&config, &engine) == HSS_OK, "create engine");
+  uint64_t history_bytes = 99U;
+  check(hss_engine_copy_command_history_json(nullptr, nullptr, 0U, &history_bytes) == HSS_INVALID_ARGUMENT && history_bytes == 0U,
+        "history failure clears required length");
+  check(hss_engine_copy_command_history_json(engine, nullptr, 0U, &history_bytes) == HSS_BUFFER_TOO_SMALL && history_bytes > 1U,
+        "history uses complete-size query");
+  uint8_t sentinel = 0xa5U;
+  check(hss_engine_copy_command_history_json(engine, &sentinel, 1U, &history_bytes) == HSS_BUFFER_TOO_SMALL && sentinel == 0xa5U,
+        "history never writes partial JSON");
+  std::vector<uint8_t> empty_history(history_bytes);
+  check(hss_engine_copy_command_history_json(engine, empty_history.data(), empty_history.size(), &history_bytes) == HSS_OK,
+        "copy empty revision-bound history");
+  const std::string history_json(empty_history.begin(), empty_history.end());
+  check(history_json.find("\"records\":[]") != std::string::npos &&
+            history_json.find("\"project_id\":") != std::string::npos,
+        "history carries project identity and no private command payload");
   check(hss_engine_set_source_is_synthetic(engine, 1U) == HSS_OK,
         "set fixture provenance before source");
 
@@ -336,6 +745,48 @@ int main() {
   check(result_json(engine) == exact_result && scene_json(engine) == before_retry,
         "retry preserves exact result and snapshot revision");
 
+  // A fresh source revision must keep an accepted target-independent note.
+  const std::array<float, 9U> replacement_vertices{0.F, 0.F, 0.F, 2.5F, 0.F, 0.F,
+                                                 0.F, 3.5F, 0.F};
+  const std::array<uint32_t, 3U> replacement_indices{0U, 1U, 2U};
+  HSSMeshEvent replacement{};
+  replacement.abi_version = HSS_ABI_VERSION;
+  replacement.struct_size = sizeof(replacement);
+  replacement.capture_id = id(2U);
+  replacement.anchor_id = id(3U);
+  replacement.event_sequence = 6U;
+  replacement.anchor_revision = 2U;
+  replacement.kind = 1U;
+  replacement.T_world_anchor = identity();
+  replacement.vertices_xyz = replacement_vertices.data();
+  replacement.vertex_count = 3U;
+  replacement.triangle_indices = replacement_indices.data();
+  replacement.triangle_count = 1U;
+  check(hss_engine_submit_mesh_event(engine, &replacement) == HSS_OK,
+        "queue source replacement after accepted user command");
+  drain(engine, 5U);
+  const auto updated_vertices = mesh_vertices(engine);
+  check(updated_vertices.size() == 3U && updated_vertices[1].x == 2.5 &&
+            updated_vertices[2].y == 3.5, "new raw observations are not replaced by stale edited geometry");
+  const auto refined_scene = scene_json(engine);
+  check(refined_scene.find("HSS_UNKNOWN_REGION") != std::string::npos &&
+            refined_scene.find("occluded rear face remains unknown") != std::string::npos,
+        "accepted unknown intent survives source rebuild");
+  check(refined_scene.find("\"kind\":\"unknown\"") != std::string::npos,
+        "unknown feature survives without inventing measured geometry");
+  check(occurrences(refined_scene, "\"kind\":\"unknown\"") == 1U &&
+            occurrences(refined_scene, "HSS_UNKNOWN_REGION") == 1U,
+        "source rebuild does not duplicate retained intent");
+  check(hss::scene_editing::scene_counts(refined_scene).has_value(),
+        "refined complete Scene is valid");
+  check(result_json(engine) == exact_result, "source rebuild does not rewrite exact command result");
+  check(has_typed_plan(engine), "fresh source rebuild produces its current typed plan");
+  HSSProjectStoreReceipt replacement_receipt{};
+  const auto replacement_context = context(6U, 5U);
+  check(hss_project_store_append_mesh_event(store, &replacement_context,
+              &replacement, &replacement_receipt) == HSS_OK, "persist source after command");
+  edited_scene = refined_scene;
+
   HSSProjectCheckpointResult checkpoint{};
   check(hss_project_store_checkpoint(store, &checkpoint) == HSS_OK,
         "checkpoint command after captured baseline");
@@ -348,12 +799,12 @@ int main() {
   HSSProjectReplayResult replay{};
   check(hss_project_store_replay(store, engine, &replay) == HSS_OK,
         "replay source baseline then command once");
-  check(replay.applied_event_count == 5U && replay.engine_status == HSS_OK,
+  check(replay.applied_event_count == 6U && replay.engine_status == HSS_OK,
         "all durable source/control events replayed");
   check(scene_json(engine) == edited_scene && result_json(engine) == exact_result,
         "reopened scene and exact command result match accepted publication");
-  check(!has_typed_plan(engine),
-        "replay preserves explicit unavailable typed-plan state");
+  check(has_typed_plan(engine),
+        "replay preserves fresh source-rebuilt typed-plan state");
 
   hss_engine_destroy(engine);
   hss_project_store_destroy(store);

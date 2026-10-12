@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -76,9 +77,25 @@ struct DynamicExclusion {
   uint64_t end_sequence{0U};
 };
 
+// Derived only from validated, applied zero-target mark_unknown commands or
+// unresolved protect_feature intent after source refinement. Conflict markers
+// contain no measured targets/geometry and never rebind an active constraint.
+// The JSON parts are serialized by the existing parser/writer, not user text.
+// Splitting the issue at its revision lets source serialization stay one
+// bounded record per quantum without parsing/replaying the command journal.
+struct RetainedUnknown {
+  std::string feature_json;
+  std::string issue_before_revision;
+  std::string issue_after_revision;
+  std::vector<std::string> protection_constraints_json;
+};
+using RetainedUnknowns = std::vector<RetainedUnknown>;
+inline constexpr size_t kMaxRetainedUnknowns = 256U;
+
 struct ProcessResult {
   Status status{Status::kInvalidCommand};
   bool scene_changed{false};
+  std::shared_ptr<const RetainedUnknowns> retained_unknowns;
 
   // Populated for accepted mutations. Rejections preserve the caller's scene.
   std::string candidate_scene_json;
@@ -89,6 +106,10 @@ struct ProcessResult {
   std::array<uint8_t, 32U> command_sha256{};
   std::optional<JournalRecord> journal_record;
   std::optional<DynamicExclusion> pending_dynamic_exclusion;
+  // Only a newly committed volatile process can be aborted by its owner.
+  bool owns_new_record{false};
+  std::optional<command::Outcome> recorded_outcome;
+  uint64_t associated_scene_revision{0U};
 };
 
 // Counts parsed from a schema-valid complete scene candidate. The engine uses
@@ -119,6 +140,8 @@ public:
   find_journal_record(std::string_view command_id) const;
   [[nodiscard]] const std::vector<DynamicExclusion> &
   pending_dynamic_exclusions() const;
+
+  [[nodiscard]] bool rollback_last_process(const ProcessResult &result) noexcept;
 
 private:
   Options options_;

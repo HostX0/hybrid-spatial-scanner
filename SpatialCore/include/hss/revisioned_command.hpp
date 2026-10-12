@@ -123,6 +123,12 @@ public:
   [[nodiscard]] const Record *find_record(std::string_view command_id) const;
   [[nodiscard]] size_t record_count() const;
 
+  // Abort only the exact latest volatile record before its owner commits.
+  // This never removes durable history or a previously acknowledged command.
+  [[nodiscard]] bool rollback_last_record(
+      std::string_view command_id, const std::array<uint8_t, 32U> &digest,
+      Outcome outcome, uint64_t associated_revision) noexcept;
+
 private:
   Options options_;
   struct Storage {

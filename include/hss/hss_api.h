@@ -318,6 +318,13 @@ HSSStatus hss_engine_apply_dynamic_evidence(HSSEngine*, const HSSDynamicEvidence
  * NULL destination with capacity=0 is a size query: BUFFER_TOO_SMALL and required
  * length, unless the result has zero bytes. Never writes partial JSON. */
 HSSStatus hss_engine_copy_command_result_json(const HSSEngine*, uint8_t*, uint64_t capacity, uint64_t* required);
+/* Derived command identity/history view, not durability evidence. Serialized
+ * engine owner only; replay regenerates it. JSON contains schema_version=1.1,
+ * project_id, current scene_revision and records {command_id,type,original_command_id
+ * (null if absent),before_scene_revision,after_scene_revision}. No private
+ * command payload/result or clock values are included. Ordinary complete-size
+ * copy protocol; no partial writes. No existing struct layout changes. */
+HSSStatus hss_engine_copy_command_history_json(const HSSEngine*, uint8_t*, uint64_t capacity, uint64_t* required);
 HSSStatus hss_engine_step(HSSEngine*, uint32_t work_budget_us); /* bounded slice */
 HSSStatus hss_engine_get_stats(const HSSEngine*, HSSEngineStats*);
 HSSStatus hss_engine_acquire_snapshot(const HSSEngine*, HSSSnapshot**);

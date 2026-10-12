@@ -183,6 +183,43 @@ void test_bounds_and_invalid_visual_inputs_are_explicit() {
         "malformed visual confidence is rejected without being interpreted as metric evidence");
 }
 
+void test_multiple_targets_can_share_one_verified_local_image() {
+  auto value=snapshot();
+  auto second=verified_slot();
+  second.target_id="surface-gap-b";
+  second.binding->target.entity_id=second.target_id;
+  value.appearance_slots[1]=second;
+  value.faces[1].texture_coordinate_indices=std::array<uint32_t,3>{0,1,2};
+  const auto result=exporter::export_snapshot(value);
+  check(result.status==exporter::Status::kOk && result.artifact,
+        "different measured targets may reuse one exact local image without duplicating source pixels");
+  if (result.artifact)
+    check(result.artifact->texture_references.size()==1,
+          "bundle references shared local asset once while preserving per-target admission");
+  value.appearance_slots[1].texture->sha256_hex=std::string(64,'a');
+  const auto mismatch=exporter::export_snapshot(value);
+  check(mismatch.status==exporter::Status::kInvalidTextureReference && !mismatch.artifact,
+        "shared path with different checksum fails closed without partial artifact");
+}
+
+void test_companion_filename_matches_the_actual_bundle() {
+  const auto input=snapshot();
+  exporter::Options options; options.material_library_filename="scene.mtl";
+  const auto output=exporter::export_snapshot(input,options);
+  const auto baseline=exporter::export_snapshot(input);
+  check(output.artifact && baseline.artifact && output.status==exporter::Status::kOk &&
+        output.artifact->obj_utf8.find("mtllib scene.mtl\n")!=std::string::npos &&
+        output.artifact->obj_utf8.find("mtllib capture.mtl")==std::string::npos &&
+        geometry_lines(output.artifact->obj_utf8)==geometry_lines(baseline.artifact->obj_utf8),
+        "native scene.obj references its actual scene.mtl without changing geometry");
+  for (const std::string name:{"../escape.mtl","scene.mtl\nusemtl injected","a/b.mtl",".hidden.mtl","a..mtl","scene.obj",""}) {
+    options.material_library_filename=name;
+    const auto invalid=exporter::export_snapshot(input,options);
+    check(invalid.status==exporter::Status::kInvalidOptions && !invalid.artifact,
+          "unsafe or non-MTL companion filenames fail without a partial artifact");
+  }
+}
+
 } // namespace
 
 int main() {
@@ -190,6 +227,8 @@ int main() {
   test_texture_free_bundle_keeps_metric_geometry_identical();
   test_revision_and_appearance_contract_fail_closed();
   test_bounds_and_invalid_visual_inputs_are_explicit();
+  test_multiple_targets_can_share_one_verified_local_image();
+  test_companion_filename_matches_the_actual_bundle();
   if (failures == 0)
     std::cout << "OBJ/MTL exporter tests passed\n";
   return failures == 0 ? 0 : 1;

@@ -1,3 +1,5 @@
 #import "HSSExportBridge.h"
 #import "HSSProjectArchiveExportBridge.h"
 #import "HSSProjectImportBridge.h"
+#include "hss/hss_guidance.h"
+#import "HSSAppearanceBridge.h"

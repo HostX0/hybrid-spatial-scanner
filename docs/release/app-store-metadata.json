@@ -1,0 +1,30 @@
+{
+  "publisher": "THE THIRD ACT LLC",
+  "copyright": "2026 THE THIRD ACT LLC",
+  "version": "0.1",
+  "build_number": "5",
+  "primary_category": "Productivity",
+  "secondary_category": "Utilities",
+  "localizations": {
+    "en-US": {
+      "name": "Hybrid Spatial Scanner",
+      "subtitle": "Room scans. Your device.",
+      "promotional_text": "Capture a room, review its evidence and keep your projects offline. Supported corrections and clear sharing choices put you in control.",
+      "description": "Capture a space. Understand what you have. Keep your work with you.\n\nHybrid Spatial Scanner brings room capture, evidence-aware review and local project files into one on-device workflow. No account or cloud reconstruction service is required.\n\nROOMS, WITH CONTEXT\nCapture visible room geometry on supported LiDAR devices. Review the captured 3D mesh and available plan detail, without turning an unseen region into a made-up measurement. Missing floor references, incomplete boundaries and tracking issues remain visible.\n\nREVIEW AND REFINE\nInspect supported current targets, protect important boundary features and add reference dimensions with their source and uncertainty. Position locking is a separate confirmed action. Corrections and undo remain tied to the geometry they actually support.\n\nSOURCE COLOR, NOT FALSE CONFIDENCE\nUse supported local source views to recognize captured surfaces. Areas without verified image support stay neutral. Color does not change the measured geometry or certify precision.\n\nKEEP IT LOCAL\nSave, reopen, rename and manage room projects on your device. Trash keeps projects recoverable until permanent deletion. Separate object-capture sessions retain their photographs and models locally on supported hardware.\n\nSHARE WHAT YOU CHOOSE\nExport supported plan PDF, SVG and DXF files, captured 3D OBJ bundles or portable room archives. Include used source images in 3D exports only when you choose; this option is off by default. Use the system share sheet to select your destination.\n\nEnglish and Arabic interfaces. Practical offline help. No advertising or analytics service.\n\nCAPTURE REQUIREMENTS AND LIMITS\nRoom scanning requires supported LiDAR depth and mesh reconstruction, camera permission, usable storage and tracking. Object capture has separate device requirements. Export availability depends on valid source and plan evidence. Verify critical dimensions independently: the app is not a certified surveying instrument or a substitute for professional safety assessment.\n\nProvided by THE THIRD ACT LLC.",
+      "keywords": "lidar,floorplan,room,measure,object,3dscan,offline,cad,mesh,photogrammetry",
+      "support_url": "https://hybrid-spatial-scanner.azoz96.chatgpt.site/support/",
+      "privacy_policy_url": "https://hybrid-spatial-scanner.azoz96.chatgpt.site/privacy/",
+      "marketing_url": "https://hybrid-spatial-scanner.azoz96.chatgpt.site/"
+    },
+    "ar-SA": {
+      "name": "Hybrid Spatial Scanner",
+      "subtitle": "مسح غرفك على جهازك",
+      "promotional_text": "امسح الغرفة وراجع أدلتها واحتفظ بمشاريعك دون اتصال. تصحيحات مدعومة وخيارات مشاركة واضحة تمنحك التحكم بنتيجتك.",
+      "description": "امسح المكان. افهم ما التقطته. واحتفظ بعملك معك.\n\nيجمع Hybrid Spatial Scanner مسح الغرف ومراجعة الأدلة والملفات المحلية في مسار واحد يعمل على الجهاز. دون حساب أو خدمة إعادة بناء سحابية.\n\nغرف بتفاصيلها وأدلتها\nالتقط الهندسة المرئية للغرفة على أجهزة LiDAR المدعومة. راجع الشبكة الثلاثية الأبعاد وتفاصيل المخطط المتاحة، دون تحويل منطقة غير مرئية إلى قياس مختلق. تبقى مراجع الأرضية الناقصة والحدود غير المكتملة ومشكلات التتبع واضحة.\n\nراجع وحسّن\nافحص الأهداف الحالية المدعومة، واحمِ التفاصيل المهمة للحدود، وأضف أبعاداً مرجعية مع مصدرها وعدم اليقين. قفل الموضع إجراء مستقل يتطلب تأكيداً. ترتبط التصحيحات والتراجع بالهندسة التي تدعمها فعلاً.\n\nلون المصدر، لا ثقة زائفة\nاستخدم صور المصدر المحلية المدعومة للتعرف على الأسطح الملتقطة. تبقى المناطق فاقدة الدعم الصوري محايدة. لا يغيّر اللون الهندسة المقاسة ولا يثبت دقتها.\n\nعملك محلي\nاحفظ مشاريع الغرف وافتحها مجدداً وسمّها وأدرها على جهازك. تبقي السلة المشاريع قابلة للاستعادة حتى حذفها نهائياً. تحتفظ جلسات التقاط المجسمات المستقلة بصورها ونماذجها محلياً على الأجهزة المدعومة.\n\nشارك ما تختاره\nصدّر مخططات PDF وSVG وDXF المدعومة، أو حزم OBJ للهندسة الملتقطة، أو أرشيفات الغرف المحمولة. أدرج صور المصدر المستخدمة في التصدير الثلاثي الأبعاد فقط عندما تختار ذلك؛ الخيار متوقف افتراضياً. اختر وجهتك من نافذة المشاركة في النظام.\n\nواجهة عربية وإنكليزية. مساعدة عملية دون اتصال. دون إعلانات أو خدمة تحليلات.\n\nمتطلبات الالتقاط وحدوده\nيتطلب مسح الغرف دعماً لعمق LiDAR وإعادة بناء الشبكة وإذن الكاميرا ومساحة تخزين وتتبعاً صالحين. لمسح المجسمات متطلبات أجهزة مستقلة. تعتمد إتاحة التصدير على أدلة مصدر ومخطط صالحة. تحقّق من الأبعاد الحساسة بقياس مستقل؛ التطبيق ليس أداة مساحة معتمدة أو بديلاً عن تقييم السلامة المهني.\n\nتقدّمه THE THIRD ACT LLC.",
+      "keywords": "ليدار,مخطط,غرفة,مجسم,قياس",
+      "support_url": "https://hybrid-spatial-scanner.azoz96.chatgpt.site/ar/support/",
+      "privacy_policy_url": "https://hybrid-spatial-scanner.azoz96.chatgpt.site/ar/privacy/",
+      "marketing_url": "https://hybrid-spatial-scanner.azoz96.chatgpt.site/ar/"
+    }
+  }
+}

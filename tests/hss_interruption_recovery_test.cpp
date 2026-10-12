@@ -118,7 +118,7 @@ void test_valid_latest_state_publishes_once() {
 
   RecordingPublisher publisher;
   InterruptionRecoveryCoordinator coordinator(store, file_system);
-  const auto report = coordinator.recover_and_publish({.current_epoch = 3U}, publisher);
+  const auto report = coordinator.recover_and_publish({.current_epoch = 3U, .accepted_epoch_relationships = {}}, publisher);
   check(report.outcome == RecoveryOutcome::kLatestValidated,
         "latest fully validated state has explicit outcome");
   check(report.revision == 1U && report.record_count == 1U &&
@@ -142,7 +142,7 @@ void test_interrupted_candidate_is_reported_and_preserved() {
 
   RecordingPublisher publisher;
   InterruptionRecoveryCoordinator coordinator(store, file_system);
-  const auto report = coordinator.recover_and_publish({.current_epoch = 4U}, publisher);
+  const auto report = coordinator.recover_and_publish({.current_epoch = 4U, .accepted_epoch_relationships = {}}, publisher);
   check(report.outcome == RecoveryOutcome::kValidatedAfterInterruptedCandidate &&
             report.interrupted_candidate_detected,
         "incomplete newest candidate is visible while committed state survives");
@@ -170,7 +170,7 @@ void test_corrupt_newest_falls_back_without_rewriting_evidence() {
 
   RecordingPublisher publisher;
   InterruptionRecoveryCoordinator coordinator(store, file_system);
-  const auto report = coordinator.recover_and_publish({.current_epoch = 5U}, publisher);
+  const auto report = coordinator.recover_and_publish({.current_epoch = 5U, .accepted_epoch_relationships = {}}, publisher);
   check(report.outcome == RecoveryOutcome::kPreviousValidatedAfterInvalidLatest &&
             report.used_previous_manifest && report.revision == 1U,
         "invalid newest state returns explicit validated fallback");
@@ -190,7 +190,7 @@ void test_no_valid_state_never_publishes() {
   RecordingPublisher empty_publisher;
   InterruptionRecoveryCoordinator empty_coordinator(empty_store, empty_file_system);
   const auto absent =
-      empty_coordinator.recover_and_publish({.current_epoch = 6U}, empty_publisher);
+      empty_coordinator.recover_and_publish({.current_epoch = 6U, .accepted_epoch_relationships = {}}, empty_publisher);
   check(absent.outcome == RecoveryOutcome::kNoValidState &&
             absent.no_valid_state_reason == NoValidStateReason::kNoCheckpoint &&
             empty_publisher.publish_count == 0U,
@@ -208,7 +208,7 @@ void test_no_valid_state_never_publishes() {
   InterruptionRecoveryCoordinator corrupt_coordinator(corrupt_store,
                                                        corrupt_file_system);
   const auto corrupt =
-      corrupt_coordinator.recover_and_publish({.current_epoch = 6U}, corrupt_publisher);
+      corrupt_coordinator.recover_and_publish({.current_epoch = 6U, .accepted_epoch_relationships = {}}, corrupt_publisher);
   check(corrupt.outcome == RecoveryOutcome::kNoValidState &&
             corrupt.no_valid_state_reason == NoValidStateReason::kAllCandidatesInvalid &&
             corrupt.store_status == StoreStatus::kCorrupt &&
@@ -227,7 +227,7 @@ void test_epoch_mismatch_blocks_until_explicit_relationship() {
   RecordingPublisher blocked_publisher;
   InterruptionRecoveryCoordinator coordinator(store, file_system);
   const auto blocked =
-      coordinator.recover_and_publish({.current_epoch = 8U}, blocked_publisher);
+      coordinator.recover_and_publish({.current_epoch = 8U, .accepted_epoch_relationships = {}}, blocked_publisher);
   check(blocked.outcome == RecoveryOutcome::kRelocalizationRequired &&
             blocked.blocked_epochs == std::vector<uint32_t>{7U} &&
             blocked_publisher.publish_count == 0U,
@@ -269,7 +269,7 @@ void test_order_resource_and_publication_failures_are_atomic() {
   RecordingPublisher ordered_publisher;
   InterruptionRecoveryCoordinator coordinator(store, file_system);
   const auto ordered =
-      coordinator.recover_and_publish({.current_epoch = 9U}, ordered_publisher);
+      coordinator.recover_and_publish({.current_epoch = 9U, .accepted_epoch_relationships = {}}, ordered_publisher);
   check(ordered.outcome == RecoveryOutcome::kLatestValidated && ordered.revision == 1U &&
             ordered.record_count == 1U && ordered_publisher.publish_count == 1U,
         "order failures preserve the last committed state");
@@ -284,7 +284,7 @@ void test_order_resource_and_publication_failures_are_atomic() {
   RecordingPublisher bounded_publisher;
   InterruptionRecoveryCoordinator bounded(store, file_system, tight);
   const auto bounded_report =
-      bounded.recover_and_publish({.current_epoch = 9U}, bounded_publisher);
+      bounded.recover_and_publish({.current_epoch = 9U, .accepted_epoch_relationships = {}}, bounded_publisher);
   check(bounded_report.outcome == RecoveryOutcome::kResourceLimit &&
             bounded_publisher.publish_count == 0U,
         "recovery record limit fails before publication");
@@ -292,7 +292,7 @@ void test_order_resource_and_publication_failures_are_atomic() {
   RecordingPublisher rejecting_publisher;
   rejecting_publisher.accept = false;
   const auto rejected =
-      coordinator.recover_and_publish({.current_epoch = 9U}, rejecting_publisher);
+      coordinator.recover_and_publish({.current_epoch = 9U, .accepted_epoch_relationships = {}}, rejecting_publisher);
   check(rejected.outcome == RecoveryOutcome::kPublicationRejected &&
             rejecting_publisher.publish_count == 1U,
         "publisher rejection remains explicit after full validation");

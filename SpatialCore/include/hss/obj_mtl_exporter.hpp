@@ -102,6 +102,9 @@ struct Options {
   // When false, the OBJ remains topology-identical but emits only the neutral
   // material; MTL contains no texture path and result has no texture refs.
   bool include_textures{true};
+  // The caller's actual companion file name, not an arbitrary relative path.
+  // Defaults preserve existing bundles; native offline bundles use scene.mtl.
+  std::string material_library_filename{"capture.mtl"};
 };
 
 enum class Status : uint8_t {
@@ -136,5 +139,8 @@ struct Result {
                                      const Options &options = {});
 [[nodiscard]] const char *status_name(Status status);
 [[nodiscard]] const char *appearance_state_name(AppearanceState state);
+// Shared local-asset boundary for projection/native packaging. This validates
+// identity/path/digest syntax; callers still verify retained bytes themselves.
+[[nodiscard]] bool is_valid_texture_reference(const TextureReference &texture);
 
 } // namespace hss::obj_mtl

@@ -282,6 +282,38 @@ final class HSSProjectImportTests: XCTestCase {
         XCTAssertTrue(reopened.2)
     }
 
+    func testLegacyArchiveRemovesBootOriginWithoutChangingLocalSourcesOrReplayGeometry() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hss-portable-time-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceRoot = root.appendingPathComponent("source")
+        try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
+        let projectID = UUID(), captureID = UUID()
+        let source = try await createCommittedSyntheticProject(
+            root: sourceRoot, projectID: projectID, captureID: captureID, timeOrigin: 1_000_000
+        )
+        let project = sourceRoot.appendingPathComponent(projectID.hssDirectoryName)
+        let originalManifest = try Data(contentsOf: project.appendingPathComponent("active.manifest"))
+        let archive = root.appendingPathComponent("portable.hsscan")
+        try HSSProjectArchiveExportBridge.writeHSSCANArchive(forProjectDirectory: project, to: archive)
+        let importedRoot = root.appendingPathComponent("imported")
+        let staged = importedRoot.appendingPathComponent(projectID.hssDirectoryName)
+        try FileManager.default.createDirectory(at: importedRoot, withIntermediateDirectories: true)
+        try HSSProjectImportBridge.extractHSSCANArchive(at: archive, toStagingDirectory: staged)
+        let imported = try HSSProjectRuntime(
+            projectID: projectID, captureID: UUID(), sourceIsSynthetic: true,
+            trustedRoot: importedRoot, openMode: .openExisting
+        )
+        let cursor = try await imported.replayCommittedSource()
+        let snapshot = try await imported.snapshot(provenance: [.syntheticTest], frozen: true)
+        XCTAssertEqual(cursor.lastMonotonicTime, 2, "Only in-project intervals belong in a portable archive.")
+        XCTAssertEqual(cursor.durableRevision, source.durableRevision)
+        XCTAssertEqual(snapshot.sceneJSON, source.snapshot.sceneJSON)
+        XCTAssertEqual(snapshot.verticesMetres, source.snapshot.verticesMetres)
+        XCTAssertEqual(snapshot.triangleIndices, source.snapshot.triangleIndices)
+        XCTAssertEqual(try Data(contentsOf: project.appendingPathComponent("active.manifest")), originalManifest)
+        XCTAssertFalse(try String(contentsOf: staged.appendingPathComponent("active.manifest"), encoding: .utf8).contains("100000"))
+    }
+
     private func metadata(projectID: UUID, synthetic: Bool) -> Data {
         let hex = projectID.hssDirectoryName
         let sourceKind = synthetic ? "true" : "false"
@@ -293,7 +325,8 @@ final class HSSProjectImportTests: XCTestCase {
     private func createCommittedSyntheticProject(
         root: URL,
         projectID: UUID,
-        captureID: UUID
+        captureID: UUID,
+        timeOrigin: TimeInterval = 0
     ) async throws -> (snapshot: ScannerSceneSnapshot, durableRevision: UInt64) {
         let runtime = try HSSProjectRuntime(
             projectID: projectID,
@@ -311,7 +344,7 @@ final class HSSProjectImportTests: XCTestCase {
                 transformRevision: 1
             ),
             eventSequence: 1,
-            monotonicTime: 1
+            monotonicTime: timeOrigin + 1
         )
         try await runtime.setEpoch(
             CaptureEpochControl(
@@ -321,7 +354,7 @@ final class HSSProjectImportTests: XCTestCase {
                 transformRevision: 2
             ),
             eventSequence: 2,
-            monotonicTime: 2
+            monotonicTime: timeOrigin + 2
         )
         let mesh = OwnedMeshAnchorEvent(
             kind: .add,
@@ -330,7 +363,7 @@ final class HSSProjectImportTests: XCTestCase {
             generation: 1,
             sessionEpoch: 1,
             sequence: 3,
-            monotonicTimestamp: 3,
+            monotonicTimestamp: timeOrigin + 3,
             worldFromAnchor: matrix(),
             payload: MeshAnchorPayload(
                 vertices: [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 0, -1)],
@@ -341,7 +374,7 @@ final class HSSProjectImportTests: XCTestCase {
                 localBoundsMax: SIMD3(1, 0, 0)
             )
         )
-        try await runtime.submitMeshEvent(mesh, eventSequence: 3, projectTime: 3)
+        try await runtime.submitMeshEvent(mesh, eventSequence: 3, projectTime: timeOrigin + 3)
         let checkpoint = try await runtime.checkpoint()
         XCTAssertEqual(checkpoint.durableEventCount, 3)
         return (

@@ -46,6 +46,39 @@ NOT_READY means the requested result or accepted snapshot does not yet exist. DU
 
 ## 5. JSON schema set
 
+### Additive review-history facade (2026-10-11)
+
+`hss_engine_copy_command_history_json` is an owner-serialized, bounded derived
+view, using the same two-call no-partial-output protocol as other JSON copy
+functions. Schema version `1.1`, project UUID and current scene revision bind
+the view. Each record exposes only command UUID, type, optional original-command
+UUID, and before/after revisions. It does not expose command payloads, private
+notes or event clocks, and is not a durable-journal replacement. A stored exact
+command retry returns `HSS_OK` even for an originally conflicting/rejected
+proposal; callers must still validate its original result state, unchanged
+revision boundary and exact bytes before journaling it.
+
+The native review supports current evidence-backed edge protection/split,
+confirmed node-position lock, dimension with source/uncertainty and hard/soft
+mode, and strict-lineage undo/redo. Source/control revision gaps disable
+historical reversal. An unresolved correction after source refinement remains
+an explicit nonmetric review marker, not a constraint rebound to a nearby node
+or generated measured geometry. A conflicting proposal retains the last
+accepted scene and its exact journal result; it must never be presented as an
+applied correction.
+
+Compatibility: this adds a function, not a binary-layout or persisted schema
+change. Older clients ignore the new function; existing projects replay without
+migration. UI history is recomputed after replay and after an ordered command
+append. New-project relative time fixes remain separate from legacy export:
+portable HSSCAN sharing creates a validated derivative with its first event
+time subtracted from every source/control context. Derived chunk hashes and
+manifests change consistently; original sources, metadata, geometry, sequence,
+revision, and exact command/result bytes remain unchanged. Existing imported
+archives remain readable and future export can normalize their clock origin.
+Do not rewrite a local project in place or label an exported derivative as the
+original byte-identical archive.
+
 The pack includes seven Draft 2020-12 JSON Schemas: command, command-result, frame, scene, manifest, export and room-proposal. Every defined object rejects unrecognized additional properties. Command variants are discriminated with oneOf and a const type, rather than an unrestricted payload dictionary.
 
 Schemas verify shape, declared enums, ordinary bounds and UUID syntax when the validator enables format checks. They do not verify geometry, memory accessibility, correspondence between entity IDs, numeric finiteness in a permissive parser, archive hashes, transform rigidity or all uint64 bounds. Run a semantic validation pass after schema validation. Standard JSON rejects NaN and Infinity; configure writers and readers accordingly.
@@ -199,3 +232,52 @@ clear the input fault; recovery from a policy pause still requires explicit
 checkpoint acknowledgement and the policy's complete nominal-sample
 hysteresis. `last_accepted_sample_sequence` and time identify the last sample
 the policy accepted, not the last call attempted.
+
+### Additive measured-guidance owner and appearance sidecar (2026-10-11)
+
+`include/hss/hss_guidance.h` adds a serialized, presentation-only opaque owner.
+ABI version remains 1; no existing layout, core source schema or archive format
+is changed. New guidance structs require their exact known `struct_size`, valid
+wide enum values and zero reserved fields. No exception crosses C. Invalid input
+leaves owner state and presentation output unchanged. Destroy/reset are safe on
+a null owner; the caller owns serialization and lifetime.
+
+`measured_facts` is the public `HSS_GUIDANCE_*_MEASURED` availability mask:
+depth/support/views/fit/stability/coverage/occlusion are bits 0 through 6.
+Unknown bits are invalid. Zero-initialized C input means all scalar facts are
+unavailable; finite [0,1] placeholders do not themselves certify measurement.
+The older complete C++ `QualityVector` default retains all-facts availability
+for compatibility; partial adapters must explicitly clear unavailable bits.
+Native capture supplies only actually measured current-frame depth support,
+not guessed fit, independent views, stability or target coverage. Every issued
+recommendation is bound to its evidence revision and expires before the next
+quality revision. Presentation debounce cannot extend stale evidence. UI clocks
+and owner revisions are ephemeral and never persisted in a project or export.
+
+The optional local native appearance sidecar is independently versioned at 1.
+It stores at most 24 owned JPEG/depth records with project/capture/epoch/source
+event identity, accepted scene/transform revision, project-relative time,
+calibration, pose and digests. No borrowed image buffer or original device clock
+origin is saved. Pending images are bound to an ephemeral runtime token and
+become durable only after the canonical source checkpoint's last event sequence;
+event count is not a cursor when bounded intake creates sequence gaps. Recovery
+prunes bindings above the recovered cursor before new source events are accepted.
+An unverifiable sidecar disables optional color, never the valid metric project.
+
+Local asset publication is immutable-assets-first/manifest-last with protected
+files, flush and readback. Projection uses only an accepted frozen project,
+revision, topology and one verified epoch cohort. Supported coincident RGB/depth
+camera poses, checksums and full depth visibility are required; cross-camera
+occlusion is unsupported rather than guessed. Work/binding/image budgets may
+return neutral appearance without changing source geometry or any metric result.
+
+Legacy projects with no sidecar remain valid and colorless. HSSCAN import/export
+does not carry this new sidecar; no automatic archive migration is implied.
+Default 3D export remains colorless; explicit image inclusion adds only verified
+relative JPEG references and provenance. OBJ's new material-library option is a
+validated simple `.mtl` basename; the legacy `capture.mtl` default is retained,
+while native bundles choose their actual `scene.mtl` companion. No metric
+positions/indices are changed by UV binding or disposable renderer duplication.
+Native imports, layout/type checks, raster orientation, crash/rollback, protected
+file enforcement and end-to-end export tests remain required on the exact final
+native tree; host portable tests are not a substitute for them.

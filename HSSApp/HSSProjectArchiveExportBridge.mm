@@ -1,6 +1,7 @@
 #import "HSSProjectArchiveExportBridge.h"
 
 #include "HSSProjectArchiveExport.hpp"
+#include <exception>
 
 namespace {
 
@@ -21,8 +22,13 @@ NSString *const kHSSProjectArchiveExportErrorDomain = @"org.hybridspatialscanner
     }
     return NO;
   }
-  const hss::native_export::Result result = hss::native_export::write_hsscan_archive(
-      projectDirectory.path.UTF8String, destinationURL.path.UTF8String);
+  hss::native_export::Result result;
+  try {
+    result = hss::native_export::write_portable_hsscan_archive(
+        projectDirectory.path.UTF8String, destinationURL.path.UTF8String);
+  } catch (...) {
+    result = {hss::native_export::Status::kIoError, "Portable export failed safely. The local source project was preserved."};
+  }
   if (result.status == hss::native_export::Status::kOk) return YES;
   if (error != nil) {
     NSString *message = [NSString stringWithUTF8String:result.message.c_str()];
