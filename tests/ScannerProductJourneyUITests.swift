@@ -12,6 +12,39 @@ final class ScannerProductJourneyUITests: XCTestCase {
     }
 
     @MainActor
+    func testEnglishPrivacyAndOfflineSupportRoundTrip() {
+        privacyAndSupportJourney(language: "en", locale: "en_US")
+    }
+
+    @MainActor
+    func testArabicPrivacyAndOfflineSupportRoundTrip() {
+        privacyAndSupportJourney(language: "ar", locale: "ar_IQ")
+    }
+
+    @MainActor
+    private func privacyAndSupportJourney(language: String, locale: String) {
+        let app = launch(language: language, locale: locale)
+        defer { app.terminate() }
+        XCTAssertTrue(app.buttons["privacy.open"].waitForExistence(timeout: 10))
+        app.buttons["privacy.open"].tap()
+        XCTAssertTrue(app.buttons["privacy.done"].waitForExistence(timeout: 5))
+        attach(app, name: language + " offline privacy disclosure")
+        app.buttons["privacy.done"].tap()
+        app.buttons["support.open"].tap()
+        XCTAssertTrue(app.buttons["support.done"].waitForExistence(timeout: 5))
+        let email = app.descendants(matching: .any).matching(identifier: "support.email").firstMatch
+        reveal(email, in: app)
+        XCTAssertTrue(email.exists)
+        let phone = app.descendants(matching: .any).matching(identifier: "support.phone").firstMatch
+        reveal(phone, in: app)
+        XCTAssertTrue(phone.exists)
+        attach(app, name: language + " approved support destinations")
+        // Inspect reachability only. No call, email, browser or capture upload.
+        app.buttons["support.done"].tap()
+        XCTAssertTrue(app.buttons["object-library.open"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     private func auditLibraries(language: String, locale: String) throws {
         let app = launch(language: language, locale: locale)
         defer { app.terminate() }
@@ -108,6 +141,53 @@ final class ScannerProductJourneyUITests: XCTestCase {
     }
 
     @MainActor
+    func testEnglishLargestTextLibraryAndBoundaryControls() {
+        largestTextJourney(language: "en", locale: "en_US")
+    }
+
+    @MainActor
+    func testArabicLargestTextLibraryAndBoundaryControls() {
+        largestTextJourney(language: "ar", locale: "ar_IQ")
+    }
+
+    @MainActor
+    private func largestTextJourney(language: String, locale: String) {
+        let app = launch(language: language, locale: locale, referenceRoom: true,
+            contentSize: "UICTContentSizeCategoryAccessibilityXXXL")
+        defer { app.terminate() }
+        let project = app.buttons["project.open.01000000-0000-5000-8000-000000000000"]
+        // Largest text pushes the lazy project row below the initial viewport.
+        reveal(project, in: app)
+        XCTAssertTrue(project.waitForExistence(timeout: 10))
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = language + " largest-text library accessibility hierarchy"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+        attach(app, name: language + " largest-text project library")
+        let name = app.staticTexts["Reference room"].firstMatch
+        XCTAssertTrue(name.exists)
+        // At the normal category this headline is about 20 points high. Check
+        // actual rendered growth, not merely a semantic font declaration.
+        XCTAssertGreaterThan(name.frame.height, 35)
+        project.tap()
+        let review = app.buttons["boundary-review.open"]
+        reveal(review, in: app)
+        review.tap()
+        XCTAssertTrue(app.buttons["boundary-review.done"].waitForExistence(timeout: 5))
+        attach(app, name: language + " largest-text boundary introduction")
+        let form = app.collectionViews.firstMatch
+        let edge = form.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "boundary-review.edge.")).firstMatch
+        reveal(edge, in: app)
+        XCTAssertTrue(edge.isEnabled)
+        edge.tap()
+        let split = form.buttons["boundary-review.split"]
+        reveal(split, in: app)
+        XCTAssertTrue(split.isEnabled)
+        attach(app, name: language + " largest-text correction controls")
+        app.buttons["boundary-review.done"].tap()
+    }
+
+    @MainActor
     private func boundaryCorrectionJourney(language: String, locale: String, audits: Bool = false) throws {
         let app = launch(language: language, locale: locale, referenceRoom: true)
         defer { app.terminate() }
@@ -169,7 +249,7 @@ final class ScannerProductJourneyUITests: XCTestCase {
     @MainActor
     private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
         for _ in 0..<14 {
-            if element.isHittable { return }
+            if element.exists && element.isHittable { return }
             let moveDown = element.exists && element.frame.midY < app.frame.minY + 120
             if app.buttons["boundary-review.done"].exists {
                 // A center swipe pans the interactive SceneKit preview instead
@@ -180,6 +260,12 @@ final class ScannerProductJourneyUITests: XCTestCase {
                 let upper = form.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.25))
                 if moveDown { upper.press(forDuration: 0.01, thenDragTo: lower) }
                 else { lower.press(forDuration: 0.01, thenDragTo: upper) }
+            } else if app.scrollViews.firstMatch.exists {
+                let scroll = app.scrollViews.firstMatch
+                let lower = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.9))
+                let upper = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.25))
+                if moveDown { upper.press(forDuration: 0.01, thenDragTo: lower) }
+                else { lower.press(forDuration: 0.01, thenDragTo: upper) }
             } else if moveDown { app.swipeDown() }
             else { app.swipeUp() }
         }
@@ -187,10 +273,11 @@ final class ScannerProductJourneyUITests: XCTestCase {
     }
 
     @MainActor
-    private func launch(language: String, locale: String, referenceRoom: Bool = false) -> XCUIApplication {
+    private func launch(language: String, locale: String, referenceRoom: Bool = false, contentSize: String? = nil) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(\(language))", "-AppleLocale", locale]
+        if let contentSize { app.launchArguments += ["-UIPreferredContentSizeCategoryName", contentSize] }
         if referenceRoom { app.launchEnvironment["HSS_UI_REFERENCE_ROOM"] = "1" }
         app.launch()
         return app

@@ -73,6 +73,15 @@ class StorePreparationTests(unittest.TestCase):
         self.assertIn("not Apple compilation", result["checks"])
         self.assertFalse(result["schema_or_abi_change"])
 
+    def test_release_build_must_be_valid_and_match_native_configurations(self):
+        metadata, _ = verify.verify_metadata(ROOT, self.content)
+        # A real new build is allowed; silently retaining stale store metadata
+        # or accepting a malformed CFBundleVersion is not.
+        for bad in (None, 2, "0", "01", "-1", "1.0", "10000", "invalid", "1"):
+            changed = dict(metadata, build_number=bad)
+            with self.subTest(build_number=bad), self.assertRaises(verify.CheckFailure):
+                verify.verify_native_source(ROOT, self.content, changed)
+
     def test_live_delivery_requires_exact_product_and_reviewed_host_suffix(self):
         page = generate.render(self.content, "en", "privacy")
         self.assertEqual(verify.verify_delivery(page, page), "exact")

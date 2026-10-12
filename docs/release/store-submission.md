@@ -4,18 +4,24 @@
 
 The earlier Mac pause below is historical: the owner resumed necessary native
 verification, signing and direct Apple upload. App record `6821764872`, exact
-bundle `org.hybridspatialscanner.app`, version 0.1/build 1 and company team
+bundle `org.hybridspatialscanner.app`, version 0.1/build 2 and company team
 `J3VB9XTF33` were verified. English metadata, support/marketing/privacy URLs and
 approved review contact are saved. Manual release is selected. The signed arm64
 Release archive passed signature/privacy packaging checks and Xcode confirmed
-**0.1 (1) uploaded**. Final native tests passed 121/121 and five functional UI
-journeys passed; four independent accessibility audits remain failures.
+**0.1 (2) uploaded**. Apple processed both builds; current build 2 is **Validated**
+and **Ready to Submit**. Final native tests passed 121/121; seven adaptive iPhone
+functional journeys and seven build-2 iPad functional journeys passed. Four
+independent iPhone font-scaling audits remain failures, not waived acceptance.
+Two separate English/Arabic iPhone privacy/offline-help round trips also passed;
+the original audit failures are not allowed to prevent this interaction coverage.
 
 The No-data-collection answer is saved but not published: Apple's final Publish
 dialog requires an owner-confirmed legal attestation. No App Review submission,
-TestFlight install or public release is claimed. iPad, actual clean screenshots,
-questionnaires/pricing, Apple processing and physical-device gates remain.
-See `docs/evidence/ENG-NATIVE-STORE-DELIVERY-01.md` for the actual delivery receipt.
+TestFlight install or public release is claimed. Complete iPad accessibility,
+actual clean screenshots, questionnaires/pricing and physical-device gates remain.
+Build 2's product-only testing notes are saved; no tester group or invitation was
+created. See `docs/evidence/ENG-NATIVE-ACCESSIBILITY-02.md` for current evidence
+and `docs/evidence/ENG-NATIVE-STORE-DELIVERY-01.md` for the first delivery receipt.
 
 ## Retained October 11 preparation (historical)
 

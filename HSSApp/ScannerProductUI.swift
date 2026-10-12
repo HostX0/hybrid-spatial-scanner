@@ -549,6 +549,7 @@ private struct ScannerAssessmentRow: View {
 private struct ScannerLibraryScreen: View {
     let presentation: ScannerWorkspacePresentation
     let actions: ScannerWorkspaceActions
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var search = ""
     @State private var sortByName = false
     @State private var showingTrash = false
@@ -564,10 +565,16 @@ private struct ScannerLibraryScreen: View {
         return sortByName ? filtered.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } : filtered
     }
 
+    private var headingLayout: AnyLayout {
+        dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 14))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 8))
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                HStack(alignment: .top) {
+                headingLayout {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("HSS · ON DEVICE")
                             .font(.caption.weight(.bold)).tracking(2)
@@ -575,19 +582,21 @@ private struct ScannerLibraryScreen: View {
                         Text(showingTrash ? String(localized: "Trash") : String(localized: "Your spaces"))
                             .font(.largeTitle.weight(.bold))
                     }
-                    Spacer(minLength: 8)
+                    if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 8) }
+                    HStack {
                     Button { showingSupport = true } label: {
-                        Image(systemName: "questionmark.circle").frame(width: 48, height: 48)
+                        Image(systemName: "questionmark.circle").font(.system(size: 20)).frame(width: 48, height: 48)
                     }
                     .buttonStyle(ScannerGlassButtonStyle())
                     .accessibilityLabel("Help and support")
                     .accessibilityIdentifier("support.open")
                     Button { showingPrivacy = true } label: {
-                        Image(systemName: "lock.shield").frame(width: 48, height: 48)
+                        Image(systemName: "lock.shield").font(.system(size: 20)).frame(width: 48, height: 48)
                     }
                     .buttonStyle(ScannerGlassButtonStyle())
                     .accessibilityLabel("Privacy and local data")
                     .accessibilityIdentifier("privacy.open")
+                    }
                 }
 
                 if !showingTrash {
@@ -616,31 +625,43 @@ private struct ScannerLibraryScreen: View {
                     .background(ScannerProductTheme.elevatedSurface, in: RoundedRectangle(cornerRadius: 26))
                 }
 
-                HStack {
+                headingLayout {
                     Text(showingTrash ? String(localized: "Retained until you delete") : String(localized: "Local library")).font(.headline)
-                    Spacer()
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                     Button {
                         showingTrash.toggle()
                         search = ""
                     } label: {
                         Label(showingTrash ? String(localized: "Projects") : String(localized: "Trash"), systemImage: showingTrash ? "square.stack.3d.up" : "trash")
                             .font(.subheadline).frame(minHeight: 44)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 if !presentation.projects.isEmpty || showingTrash {
-                    HStack(spacing: 12) {
-                        Image(systemName: "magnifyingglass").foregroundStyle(ScannerProductTheme.muted)
-                        TextField("Search projects", text: $search)
+                    VStack(alignment: .leading, spacing: 8) {
+                        if dynamicTypeSize.isAccessibilitySize {
+                            Text("Search projects").font(.headline)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        HStack(spacing: 12) {
+                        Image(systemName: "magnifyingglass").font(.system(size: 20))
+                            .foregroundStyle(ScannerProductTheme.muted).accessibilityHidden(true)
+                        TextField("", text: $search, prompt: dynamicTypeSize.isAccessibilitySize ? Text("") : Text("Search projects"))
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .accessibilityLabel("Search projects")
+                            .frame(minHeight: 44)
                         Menu {
                             Button("Recently updated") { sortByName = false }
                             Button("Name") { sortByName = true }
                         } label: {
-                            Image(systemName: "arrow.up.arrow.down").frame(width: 44, height: 44)
+                            Image(systemName: "arrow.up.arrow.down").font(.system(size: 20)).frame(width: 44, height: 44)
                         }
                         .accessibilityLabel("Sort projects")
+                        }
                     }
                     .padding(.leading, 16)
+                    .padding(.vertical, dynamicTypeSize.isAccessibilitySize ? 12 : 0)
                     .background(ScannerProductTheme.surface, in: RoundedRectangle(cornerRadius: 16))
                 }
                 if presentation.isManagingLibrary {

@@ -843,12 +843,16 @@ private struct ScannerBoundaryReviewSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Review your scan") {
-                    Label {
+                Section {
+                    Text("Boundary corrections").font(.title2.weight(.bold))
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "scope").font(.system(size: 20))
+                            .accessibilityHidden(true)
                         Text("Choose a captured boundary, then add a measurement or refine its shape. Your original capture remains available.")
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(.vertical, 4)
-                    } icon: { Image(systemName: "scope") }
+                    }
                     .font(.subheadline).foregroundStyle(.secondary)
                     ScannerBoundaryPicker(snapshot: snapshot, edges: edges, selectedEdgeID: selectedEdgeID) { id in
                         guard canApply else { return }
@@ -976,7 +980,8 @@ private struct ScannerBoundaryReviewSheet: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            .navigationTitle("Boundary corrections")
+            .navigationTitle("Review")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) {
                 Button { dismiss() } label: {
                     Label("Done", systemImage: "xmark").labelStyle(.iconOnly)
@@ -1006,6 +1011,12 @@ private struct ScannerBoundaryPicker: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(edges: edges, select: select) }
     func makeUIView(context: Context) -> SCNView {
         let view = SCNView()
+        // Represent the preview as one image. Individual SceneKit nodes are
+        // not text controls; the accessible edge list supplies their measures.
+        view.isAccessibilityElement = true
+        view.accessibilityTraits = .image
+        view.accessibilityLabel = String(localized: "Captured boundaries")
+        view.accessibilityHint = String(localized: "Rotate to inspect the scan. Select a boundary from the list below.")
         view.backgroundColor = UIColor(ScannerProductTheme.canvas)
         view.allowsCameraControl = true
         view.autoenablesDefaultLighting = true

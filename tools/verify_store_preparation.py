@@ -166,10 +166,13 @@ def verify_native_source(source, content, metadata):
     project = (app / "HybridSpatialScanner.xcodeproj/project.pbxproj").read_text()
     settings = [line for line in project.splitlines() if "INFOPLIST_KEY_NSCameraUsageDescription =" in line]
     require(len(settings) == 2, "Expected both app configurations")
+    build_number = metadata.get("build_number")
+    require(isinstance(build_number, str) and re.fullmatch(r"[1-9][0-9]{0,3}", build_number) is not None,
+            "Expected an explicit valid release build number")
     for line in settings:
         require('INFOPLIST_KEY_CFBundleDisplayName = "' + content["product_name"] + '"' in line, "Unpolished app display name")
         require("MARKETING_VERSION = " + metadata["version"] + ";" in line, "Store/native version mismatch")
-        require("CURRENT_PROJECT_VERSION = 1;" in line, "Unexpected build number")
+        require("CURRENT_PROJECT_VERSION = " + build_number + ";" in line, "Store/native build number mismatch")
     ui = (app / "ScannerProductUI.swift").read_text()
     for destination in (content["origin"] + "/privacy/", content["origin"] + "/support/", "mailto:" + content["support_email"], "tel:" + content["support_phone"]):
         require(destination in ui, "Native public destination mismatch")

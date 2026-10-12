@@ -3,26 +3,37 @@
 ## Current native and Apple delivery verdict
 
 The owner resumed necessary Mac verification and direct Apple upload on October
-12. The final native unit/bridge suite passed **121/121**. All **five functional
-UI journeys** passed, including English/Arabic supported boundary split, undo
-and redo. Four separate, unsuppressed accessibility audits still fail (Arabic
-boundary clipping and Dynamic Type support); they are not accepted or hidden.
+12. Build 2's native unit/bridge suite passed **121/121**. The adaptive interface
+passed **seven functional iPhone Simulator journeys**, including English/Arabic
+supported boundary split, undo/redo and actual largest-text controls. Build 2
+also passed **seven functional iPad Simulator journeys**. These are interaction
+and device-family results, not physical scanning or complete accessibility.
+Two additional build-2 iPhone English/Arabic privacy/offline-help round trips
+passed independently; approved contact destinations are reachable without
+actually sending a message, placing a call or sharing a capture.
+Four separate, unsuppressed iPhone accessibility audits still report partially
+unsupported Dynamic Type. The earlier Arabic clipping report is absent after
+the demonstrated layout repairs; the four font warnings remain unresolved.
 
 A fresh arm64 Release archive was signed with THE THIRD ACT LLC's existing
 distribution identity. Deep/strict signature verification, exact bundle/team,
 file-protection entitlement, packaged privacy manifest, localized camera text,
 encryption declaration and absence of Debug fixtures were checked. Authenticated
-Xcode Organizer confirmed **HybridSpatialScanner 0.1 (1) uploaded** to Apple.
-App Store record `6821764872` and English metadata/contact URLs exist. This is a
-verified first binary upload, not TestFlight processing, App Review or public launch.
+Xcode Organizer confirmed **HybridSpatialScanner 0.1 (2) uploaded** to Apple.
+App Store record `6821764872` and English metadata/contact URLs exist. Apple's
+Build Metadata reports **Validated**, version 0.1/build 2, exact bundle/team,
+arm64, Arabic/English and the expected file protection. TestFlight shows
+**Ready to Submit**. This closes binary upload/processing, not tester access,
+installation, App Review approval or public launch.
 
-Remain: four accessibility issues, iPad acceptance, clean actual store screenshots,
+Remain: four accessibility audit warnings, full iPad accessibility, clean actual store screenshots,
 required store questionnaires/pricing, owner-confirmed legal privacy publication,
-Apple processing/review and supported-phone installation/capture/measurement/
+Apple review and supported-phone installation/capture/measurement/
 recovery/thermal/locked-device acceptance. No iPhone was connected or installed.
 The finite engine assessment remains closed; do not restart synthetic engine
 loops, widen tolerances, or rewrite the core to replace these delivery gates.
-See `docs/evidence/ENG-NATIVE-STORE-DELIVERY-01.md` for current evidence.
+See `docs/evidence/ENG-NATIVE-ACCESSIBILITY-02.md` for the current follow-up and
+`docs/evidence/ENG-NATIVE-STORE-DELIVERY-01.md` for the retained first-upload evidence.
 
 ## Retained October 11 assessment (historical, superseded where noted above)
 

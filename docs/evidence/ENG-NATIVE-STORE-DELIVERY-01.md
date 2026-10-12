@@ -3,6 +3,11 @@
 Engineering evidence, not customer-facing material. Date: 2026-10-12.
 This closes a real signing/upload milestone, not App Review or physical acceptance.
 
+Follow-up: `ENG-NATIVE-ACCESSIBILITY-02.md` records adaptive largest-text repairs,
+build 2's signed/validated Apple delivery and actual iPad functional execution.
+The build-1 observations and failures below are retained as history, not the
+current release verdict.
+
 ## Source and ownership
 
 Started from published integration head `4dbbf46f81f857a769b98d7486b564d9154d9bb6`
