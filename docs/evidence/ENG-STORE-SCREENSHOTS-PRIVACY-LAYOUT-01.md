@@ -1,6 +1,13 @@
 # ENG-17 — Authentic store assets and the demonstrated privacy title repair
 
 Engineering evidence, not public product copy. Date: 2026-10-12.
+
+This prepared-assets/authentication checkpoint is retained history. The later
+actual upload of all twenty images, Validated/saved build 3, free pricing and
+**Waiting for Review** submission are recorded in
+`docs/evidence/ENG-APP-STORE-SUBMISSION-01.md`. No native artifact was replaced
+by that account/documentation-only increment.
+
 Parent published integration head: `a24727522b344529e7ac63993a3c6254c89af227`.
 No engine, C/C++ interface, capture owner, numerical tolerance, source geometry,
 appearance admission rule or data-collection behavior changes.

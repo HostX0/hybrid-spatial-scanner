@@ -1,6 +1,27 @@
 # Software release readiness — 2026-10-12
 
-## Current native and Apple delivery verdict
+## Current Apple submission and software verdict
+
+The exact signed **0.1 (3)** is **Validated**, saved on version 0.1 and now
+actually submitted to App Review. Independent readback of request
+`806f5402-6ace-4df7-922f-e479cae79f28` shows **Waiting for Review**, one item,
+submitted **12 October at 10:16 AM Baghdad**. Twenty actual-app EN/AR iPhone/iPad
+screenshots persisted in all four groups. The first release is free, with all
+175 territories Available on App Release; untested Mac/Vision Pro availability
+is off. Privacy is Published / Data Not Collected. **Manual release is retained;
+review approval and public launch have not occurred.**
+
+This closes actual upload/processing, store assets, pricing/availability and
+App Review submission, not physical or complete accessibility acceptance.
+Four unsuppressed Dynamic Type findings and supported-phone capture, recovery,
+protected-data/thermal/storage and measurement gates remain. No phone was
+connected or installed. The unchanged shipping code is the earlier verified
+build 3; this account/documentation increment runs no native build or synthetic
+engine loop. Source publication, PR merge, native build, Apple review and
+physical verification must not be conflated. See
+`docs/evidence/ENG-APP-STORE-SUBMISSION-01.md` for actual evidence.
+
+## Retained earlier native/Apple delivery (historical)
 
 Store-asset follow-through found a real standard-text Arabic privacy title
 truncation. Build 3 repairs it with an inline short title and a full multiline

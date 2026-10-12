@@ -1,6 +1,25 @@
 # ENG-14 — Store preparation and final submission gates
 
-## October 12 delivery update
+## Current actual submission — October 12, 10:16 AM Baghdad
+
+Apple accepted the actual **0.1 (3)** App Review submission. Fresh request
+readback shows **Waiting for Review**, one item, and the exact build-3 link.
+Submission ID: `806f5402-6ace-4df7-922f-e479cae79f28`. Build 3 is **Validated**
+and saved on version 0.1. All twenty final EN/AR iPhone/iPad screenshots are
+uploaded, ordered and retained after reopening all four display/locale groups.
+Owner-selected free pricing is saved across 175 territories; all availability
+entries show Available on App Release. Untested Mac/Vision Pro availability
+is disabled. Privacy is Published / Data Not Collected, and factual store/review
+inputs persisted. **Manual release remains selected; the app is not live.**
+
+See `docs/evidence/ENG-APP-STORE-SUBMISSION-01.md` for the actual receipt and
+unchanged shipping source/artifact. No new native build or engine experiment
+was needed for this account/docs-only increment. Apple approval, tester/phone
+installation, physical capture acceptance and the four unresolved Dynamic Type
+findings remain distinct. This current section supersedes pending authentication,
+assets, pricing, association and submission statements in the retained history.
+
+## Retained earlier October 12 delivery (historical)
 
 Latest actual work: twenty designed EN/AR iPhone/iPad PNGs are prepared from
 the real Release UI, with truthful reference-geometry notices, opaque accepted
