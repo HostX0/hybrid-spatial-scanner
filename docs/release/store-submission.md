@@ -8,14 +8,21 @@ unchanged geometry/command guards. Original EN/AR strict editor audits and paire
 largest-text/input checks passed (four affected methods), without filtering or a
 full-suite/engine rerun. Store-source checks pass10/10. Signed arm64 0.1(5) archive
 and independent local IPA passed strict signature/privacy verification using the
-existing company identity/profile. Actual Xcode upload started; it is not yet a
-completed processing/review receipt at this source checkpoint.
+existing company identity/profile. Actual Xcode upload completed and Apple
+Validated build5, GUID `6d272898-bf74-48dd-b8e0-b9053967c8d3`. Source software
+head `4f2e785882e8626cfea2b6fe150fbc0df188858b` is published/read back;
+the narrow hosted anchor check passed, PR18 remains draft/unmerged.
 
-The owner now expressly authorizes removing the exact existing build3 review and
-submitting processed corrected build5 instead. Do not cancel before the replacement
-is processed/verified. Preserve manual release/free pricing/privacy and retained
-store assets. Adding for review is not submission; read back the new request/build.
-Subsequent actual outcome is recorded in paired Apple/server delivery receipts.
+After that processing proof, the exact one-item build3 review was cancelled as
+expressly requested. Version Developer Rejected was observed before the saved
+build5 association. Add for Review created the build5 draft; actual Submit for
+Review returned 1 Item Submitted. New request
+`27397c2a-be27-4bad-9547-d2611a1f987d` independently shows Waiting for Review,
+one item 0.1(5) and the exact GUID; submitted October 12 at 21:06 Baghdad.
+Manual release/free pricing/Published privacy/company URLs/twenty screenshots
+are retained. No approval, public release, tester invitation or physical
+installation is asserted. Actual Apple/server delivery receipts preserve build3
+and build4 history separately rather than relabelling their binaries.
 See `docs/evidence/ENG-CORRECTION-TEXT-REFLOW-01.md`; earlier build3/4 history remains.
 
 ## Build-4 software follow-through (not an Apple replacement receipt)
@@ -32,7 +39,7 @@ remain open; test-namespace repair does not change the uploaded Release behavior
 No installation, review approval or public release is inferred. Exact retained
 failed/successful results are in `docs/evidence/ENG-NATIVE-DYNAMIC-TYPE-EXPORT-01.md`.
 
-## Current actual submission — October 12, 10:16 AM Baghdad
+## Retained build-3 submission — October 12, 10:16 AM Baghdad (historical)
 
 Apple accepted the actual **0.1 (3)** App Review submission. Fresh request
 readback shows **Waiting for Review**, one item, and the exact build-3 link.

@@ -14,16 +14,29 @@ historical evidence, not silently rewritten. Final store-source checks pass10/10
 
 Actual signed arm64 build5 Release archive/local IPA passed independent strict
 signature, existing company/profile, exact0.1(5), protection/privacy and absent
-DEBUG fixtures. Native upload was initiated; completed processing/association/
-replacement receipts are recorded separately when observed. The owner explicitly
-requested replacing build3's review with processed corrected build5. Manual release,
+DEBUG fixtures. Actual Xcode upload completed; Apple Validated build5, GUID
+`6d272898-bf74-48dd-b8e0-b9053967c8d3`. The owner-authorized replacement
+completed: build3 request cancelled, build5 selected/Saved and actually submitted.
+The new one-item request `27397c2a-be27-4bad-9547-d2611a1f987d` is Waiting for
+Review, submitted October 12 at 21:06 Baghdad, with the exact 0.1(5) build link.
+Published software head `4f2e785882e8626cfea2b6fe150fbc0df188858b`; its narrow
+hosted anchor check passed, PR18 remains draft/unmerged and main is unchanged.
+Manual release,
 privacy and store assets remain unchanged. Not review approval, launch, install or
 physical metrology. See `docs/evidence/ENG-CORRECTION-TEXT-REFLOW-01.md`.
 
 The build4 selected-editor unresolved warnings below are superseded only by the
 new demonstrated editor repair/affected checks, not by blanket accessibility claims.
 
-## Current build-4 software repair and actual Apple processing
+Current verdict: the demonstrated editor font/clip defect is repaired and its
+affected English/Arabic strict and largest-text/input gates passed. Build5,
+including prior build4 export fixes, is now the actual review candidate. Complete
+VoiceOver/current iPad/minimum-OS/file-provider and supported-phone sensor,
+recovery/protected-data/thermal/storage/measurement/aligned-color acceptance
+remain unverified. No phone was connected or installed. No approval/public launch
+is inferred; no further synthetic engine loop is required.
+
+## Retained build-4 software repair and Apple processing (historical)
 
 ENG-19 implements semantic multiline project/header text, an accessible modal
 focus boundary, correction input feedback/keyboard dismissal, request-identity
@@ -56,7 +69,7 @@ See `docs/evidence/ENG-NATIVE-DYNAMIC-TYPE-EXPORT-01.md` for retained failures
 and exact product/evidence boundaries. This section supersedes pending build-4
 signing/upload/processing claims, not the retained failures or physical gaps.
 
-## Current Apple submission and software verdict
+## Retained build-3 Apple submission and software verdict (historical)
 
 The exact signed **0.1 (3)** is **Validated**, saved on version 0.1 and now
 actually submitted to App Review. Independent readback of request
