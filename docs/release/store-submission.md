@@ -15,13 +15,23 @@ independent iPhone font-scaling audits remain failures, not waived acceptance.
 Two separate English/Arabic iPhone privacy/offline-help round trips also passed;
 the original audit failures are not allowed to prevent this interaction coverage.
 
-The No-data-collection answer is saved but not published: Apple's final Publish
-dialog requires an owner-confirmed legal attestation. No App Review submission,
+The initial No-data-collection draft awaited an owner-confirmed legal attestation;
+that confirmation and actual publication are now complete below. No App Review submission,
 TestFlight install or public release is claimed. Complete iPad accessibility,
-actual clean screenshots, questionnaires/pricing and physical-device gates remain.
+actual clean screenshots, remaining commercial inputs and physical-device gates remain.
 Build 2's product-only testing notes are saved; no tester group or invitation was
 created. See `docs/evidence/ENG-NATIVE-ACCESSIBILITY-02.md` for current evidence
 and `docs/evidence/ENG-NATIVE-STORE-DELIVERY-01.md` for the first delivery receipt.
+
+Subsequent confirmed account progress: App Privacy **Published / Data Not
+Collected** after the owner's explicit action-time confirmation. Arabic and
+English policy links, version copy/subtitles and support/marketing URLs are
+saved. Build 2 is selected on draft version 0.1. Productivity/Utilities categories,
+the factual content-rights inventory and calculated 4+ age rating (with regional
+exceptions) are completed. A build-2 App Store IPA export also succeeded; that
+profile is not a direct registered-device sideload. Screenshot design is now
+authorized and in progress. No App Review submission or public release is yet
+claimed, and physical capture/accessibility limits are unchanged.
 
 ## Retained October 11 preparation (historical)
 

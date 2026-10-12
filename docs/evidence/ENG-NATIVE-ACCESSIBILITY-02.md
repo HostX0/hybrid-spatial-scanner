@@ -96,6 +96,31 @@ acceptance, VoiceOver and minimum-supported-OS checks remain unverified.
 - App Privacy No-data-collection draft and public policy URL are saved. Final
   privacy Publish awaits the owner's requested action-time legal confirmation.
 
+Subsequent live follow-through, after those initial observations:
+
+- The owner explicitly confirmed the privacy Publish attestation in this chat.
+  The exact HSS App Privacy page then showed **Published a few seconds ago**
+  and **Data Not Collected**. English/Arabic app-specific public policy URLs are
+  saved; publishing the privacy response is not submitting the application.
+- Version 0.1 has saved build-2 association, English/Arabic product descriptions,
+  keywords/subtitles and support/marketing URLs. Productivity and Utilities
+  categories are saved. The factual age questionnaire calculates global 4+ with
+  displayed regional exceptions. No Made for Kids or age override was selected.
+  Content-rights answer matches the shipped inventory: no third-party media or
+  content service. No licensed research images are bundled in the application.
+- The age-capability answers follow Apple's definition of broad user-content
+  distribution, not the existence of a private local scan or system share sheet.
+  There is no in-app browser, social feed, messaging, advertising, medical advice,
+  supplied mature/violent content, gambling, contest or randomized purchase.
+  Reference: https://developer.apple.com/help/app-store-connect/reference/app-information/age-ratings-values-and-definitions
+- Build-2 App Store IPA export succeeded, approximately 2.3 MiB. SHA-256:
+  `89c72c5c686ee5c96cb337bcc494c8e31659365467dc89245e2352005b5d0c53`.
+  This distribution profile is not direct sideload or installation evidence.
+- The owner requested designed actual-app screenshots and continued submission.
+  A Release Simulator build of the unchanged build-2 app source succeeded
+  for authentic UI images (`native-store-release-build-20261012.log`). Reference geometry must remain explicitly disclosed
+  as illustrative, never a captured-room or physical-precision result.
+
 The native application files in the uploaded archive are the current build-2
 source. Later changes add test harness coverage and engineering records only;
 they do not require reusing a changed app under the same uploaded build number.

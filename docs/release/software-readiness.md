@@ -27,13 +27,24 @@ arm64, Arabic/English and the expected file protection. TestFlight shows
 installation, App Review approval or public launch.
 
 Remain: four accessibility audit warnings, full iPad accessibility, clean actual store screenshots,
-required store questionnaires/pricing, owner-confirmed legal privacy publication,
+remaining store/commercial inputs,
 Apple review and supported-phone installation/capture/measurement/
 recovery/thermal/locked-device acceptance. No iPhone was connected or installed.
 The finite engine assessment remains closed; do not restart synthetic engine
 loops, widen tolerances, or rewrite the core to replace these delivery gates.
 See `docs/evidence/ENG-NATIVE-ACCESSIBILITY-02.md` for the current follow-up and
 `docs/evidence/ENG-NATIVE-STORE-DELIVERY-01.md` for the retained first-upload evidence.
+
+Store follow-through: the owner explicitly confirmed Apple's privacy attestation,
+and App Privacy now reports **Published** with **Data Not Collected**. English
+and Arabic public policy URLs are saved. Build 2 is associated with draft version
+0.1; both language descriptions, subtitles and public support/marketing URLs
+are saved, as are Productivity/Utilities categories. Apple calculated/saved a
+global 4+ age rating (with displayed regional exceptions) from the actual offline
+feature/content inventory. Content rights inventory is completed. These gates
+are no longer pending; screenshots/pricing, remaining accessibility, review and
+physical acceptance remain separate. The owner requested actual store screenshot
+design and continued submission preparation; that work is now in progress.
 
 ## Retained October 11 assessment (historical, superseded where noted above)
 
